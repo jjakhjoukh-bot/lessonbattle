@@ -3,6 +3,8 @@ import { io } from "socket.io-client"
 import "./App.css"
 
 const socket = io(window.location.origin.startsWith("http://localhost:5173") ? "http://localhost:3001" : window.location.origin)
+const HOST_SESSION_KEY = "lessonbattle-host-session"
+const PLAYER_SESSION_KEY = "lessonbattle-player-session"
 
 const TOPIC_PRESETS = [
   "Breuken en procenten",
@@ -73,7 +75,14 @@ function HostPage() {
   const [teamNamesInput, setTeamNamesInput] = useState("Team Zon\nTeam Oceaan")
   const [status, setStatus] = useState("Kies onderwerp, stel teams in en start de battle.")
   const [loginForm, setLoginForm] = useState({ username: "", password: "" })
-  const [hostSession, setHostSession] = useState({ authenticated: false, username: "", roomCode: "" })
+  const [hostSession, setHostSession] = useState(() => {
+    try {
+      const stored = window.localStorage.getItem(HOST_SESSION_KEY)
+      return stored ? JSON.parse(stored) : { authenticated: false, username: "", roomCode: "" }
+    } catch {
+      return { authenticated: false, username: "", roomCode: "" }
+    }
+  })
 
   useEffect(() => {
     if (teams.length > 0) {
@@ -83,7 +92,7 @@ function HostPage() {
 
   useEffect(() => {
     const onLoginSuccess = ({ username, roomCode }) => {
-      setHostSession({ authenticated: true, username, roomCode })
+      setHostSession((current) => ({ ...current, authenticated: true, username, roomCode }))
       setStatus("Docentaccount verbonden.")
     }
     const onRoomUpdate = ({ roomCode }) => {
@@ -107,6 +116,23 @@ function HostPage() {
       socket.off("host:generate:success", onSuccess)
     }
   }, [])
+
+  useEffect(() => {
+    window.localStorage.setItem(HOST_SESSION_KEY, JSON.stringify(hostSession))
+  }, [hostSession])
+
+  useEffect(() => {
+    const onConnect = () => {
+      if (!hostSession.authenticated || !loginForm.username || !loginForm.password) return
+      socket.emit("host:login", {
+        ...loginForm,
+        roomCode: hostSession.roomCode,
+      })
+    }
+
+    socket.on("connect", onConnect)
+    return () => socket.off("connect", onConnect)
+  }, [hostSession.authenticated, hostSession.roomCode, loginForm])
 
   const timeLeft = useQuestionCountdown(game)
   const [presenterMode, setPresenterMode] = useState(false)
@@ -157,7 +183,7 @@ function HostPage() {
 
   const login = () => {
     setStatus("Docentlogin controleren...")
-    socket.emit("host:login", loginForm)
+    socket.emit("host:login", { ...loginForm, roomCode: hostSession.roomCode })
   }
 
   const generate = () => {
@@ -391,11 +417,19 @@ function HostPage() {
 
 function PlayerPage() {
   const { players, teams, leaderboard, game } = useQuizState()
-  const [name, setName] = useState("")
-  const [teamId, setTeamId] = useState("")
-  const [roomCode, setRoomCode] = useState("")
+  const [playerSession, setPlayerSession] = useState(() => {
+    try {
+      const stored = window.localStorage.getItem(PLAYER_SESSION_KEY)
+      return stored ? JSON.parse(stored) : { name: "", teamId: "", roomCode: "", joined: false }
+    } catch {
+      return { name: "", teamId: "", roomCode: "", joined: false }
+    }
+  })
+  const [name, setName] = useState(playerSession.name || "")
+  const [teamId, setTeamId] = useState(playerSession.teamId || "")
+  const [roomCode, setRoomCode] = useState(playerSession.roomCode || "")
   const [roomPreview, setRoomPreview] = useState({ valid: false, teams: [] })
-  const [joined, setJoined] = useState(false)
+  const [joined, setJoined] = useState(Boolean(playerSession.joined))
   const [result, setResult] = useState(null)
   const [chosenAnswer, setChosenAnswer] = useState(null)
   const [status, setStatus] = useState("Kies je team en doe mee.")
@@ -446,6 +480,12 @@ function PlayerPage() {
   }, [roomCode.length])
 
   useEffect(() => {
+    const nextSession = { name, teamId, roomCode, joined }
+    setPlayerSession(nextSession)
+    window.localStorage.setItem(PLAYER_SESSION_KEY, JSON.stringify(nextSession))
+  }, [joined, name, roomCode, teamId])
+
+  useEffect(() => {
     if (roomCode.trim().length < 5) {
       setRoomPreview({ valid: false, teams: [] })
       return
@@ -459,8 +499,23 @@ function PlayerPage() {
     setChosenAnswer(null)
   }, [game.question?.id])
 
+  useEffect(() => {
+    const onConnect = () => {
+      const normalizedCode = roomCode.trim().toUpperCase()
+      if (normalizedCode.length >= 5) {
+        socket.emit("player:lookup-room", { roomCode: normalizedCode })
+      }
+      if (joined && name.trim() && teamId && normalizedCode.length >= 5) {
+        socket.emit("player:join", { name: name.trim(), teamId, roomCode: normalizedCode })
+      }
+    }
+
+    socket.on("connect", onConnect)
+    return () => socket.off("connect", onConnect)
+  }, [joined, name, roomCode, teamId])
+
   const join = () => {
-    socket.emit("player:join", { name, teamId, roomCode })
+    socket.emit("player:join", { name: name.trim(), teamId, roomCode: roomCode.trim().toUpperCase() })
   }
 
   const availableTeams = roomPreview.valid ? roomPreview.teams : teams

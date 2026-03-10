@@ -38,6 +38,7 @@ const genAI = apiKey ? new GoogleGenerativeAI(apiKey) : null
 
 const TEAM_COLORS = ["#ff8c42", "#3dd6d0", "#8f7cff", "#ff5d8f"]
 const DEFAULT_TEAMS = ["Team Zon", "Team Oceaan"]
+const ROOM_HOST_GRACE_MS = 2 * 60 * 1000
 const hostSocketIds = new Set()
 const socketToRoom = new Map()
 const rooms = new Map()
@@ -96,11 +97,13 @@ function createRoom(hostSocketId) {
   const room = {
     code: roomCode,
     hostSocketId,
+    hostOnline: true,
     players: [],
     teams: createTeams(),
     questions: [],
     currentQuestionIndex: -1,
     answeredPlayers: new Set(),
+    closingTimeout: null,
     game: {
       topic: "",
       audience: "vmbo",
@@ -220,6 +223,32 @@ function emitStateToSocket(socket, room) {
 
 function stampQuestionStart(room) {
   room.game = { ...room.game, questionStartedAt: new Date().toISOString() }
+}
+
+function clearRoomClosingTimeout(room) {
+  if (!room?.closingTimeout) return
+  clearTimeout(room.closingTimeout)
+  room.closingTimeout = null
+}
+
+function scheduleRoomClosure(room) {
+  clearRoomClosingTimeout(room)
+  room.hostOnline = false
+  room.closingTimeout = setTimeout(() => {
+    for (const player of room.players) {
+      socketToRoom.delete(player.id)
+      io.to(player.id).emit("player:error", { message: "Deze room is gesloten door de docent." })
+    }
+    rooms.delete(room.code)
+  }, ROOM_HOST_GRACE_MS)
+}
+
+function claimRoomForHost(room, socketId) {
+  clearRoomClosingTimeout(room)
+  hostSocketIds.add(socketId)
+  socketToRoom.set(socketId, room.code)
+  room.hostSocketId = socketId
+  room.hostOnline = true
 }
 
 function extractJsonArray(text) {
@@ -391,6 +420,26 @@ app.get("/api/question-image", async (req, res) => {
     if (!response.ok) throw new Error(`Afbeelding ophalen mislukt met status ${response.status}`)
     const contentType = response.headers.get("content-type") || ""
     if (!contentType.startsWith("image/")) throw new Error("Onverwacht content-type voor afbeelding")
+    const isSvgLike = contentType.includes("svg") || contentType.includes("xml")
+
+    if (isSvgLike) {
+      const svgText = await response.text()
+      const lowerSvg = svgText.toLowerCase()
+      const looksBroken =
+        lowerSvg.includes("temporarily not available") ||
+        lowerSvg.includes("failed to generate") ||
+        lowerSvg.includes("error") ||
+        lowerSvg.includes("blocked") ||
+        lowerSvg.includes("quota")
+
+      if (looksBroken) throw new Error("Externe afbeeldingsdienst gaf een fout-SVG terug")
+
+      res.setHeader("Content-Type", contentType)
+      res.setHeader("Cache-Control", "public, max-age=1800")
+      res.status(200).send(svgText)
+      return
+    }
+
     const arrayBuffer = await response.arrayBuffer()
     res.setHeader("Content-Type", contentType)
     res.setHeader("Cache-Control", "public, max-age=3600")
@@ -417,17 +466,20 @@ if (fs.existsSync(clientDistPath)) {
 io.on("connection", (socket) => {
   emitStateToSocket(socket, getRoomBySocketId(socket.id))
 
-  socket.on("host:login", ({ username, password }) => {
+  socket.on("host:login", ({ username, password, roomCode }) => {
     if (String(username ?? "").trim() !== teacherUsername || String(password ?? "") !== teacherPassword) {
       socket.emit("host:error", { message: "Onjuiste docentgegevens." })
       return
     }
 
-    hostSocketIds.add(socket.id)
-    const room = getRoomBySocketId(socket.id) ?? createRoom(socket.id)
+    const requestedCode = String(roomCode ?? "").trim().toUpperCase()
+    const reclaimableRoom = requestedCode ? rooms.get(requestedCode) : null
+    const room = reclaimableRoom ?? getRoomBySocketId(socket.id) ?? createRoom(socket.id)
+    claimRoomForHost(room, socket.id)
     socket.emit("host:login:success", { username: teacherUsername, roomCode: room.code })
     socket.emit("host:room:update", { roomCode: room.code })
     socket.emit("host:generate:success", { count: room.questions.length })
+    emitStateToRoom(room)
     emitStateToSocket(socket, room)
   })
 
@@ -458,6 +510,7 @@ io.on("connection", (socket) => {
     const room = requireHostRoom(socket)
     if (!room) return
 
+    clearRoomClosingTimeout(room)
     rooms.delete(room.code)
     room.code = generateRoomCode()
     rooms.set(room.code, room)
@@ -554,6 +607,10 @@ io.on("connection", (socket) => {
       socket.emit("player:error", { message: "De spelcode klopt niet." })
       return
     }
+    if (!room.hostOnline) {
+      socket.emit("player:error", { message: "De docent is tijdelijk offline. Probeer over een paar seconden opnieuw." })
+      return
+    }
 
     const trimmedName = String(name ?? "").trim()
     const selectedTeamId = room.teams.some((team) => team.id === teamId) ? teamId : room.teams[0]?.id
@@ -619,11 +676,8 @@ io.on("connection", (socket) => {
     if (!room) return
 
     if (room.hostSocketId === socket.id) {
-      for (const player of room.players) {
-        socketToRoom.delete(player.id)
-        io.to(player.id).emit("player:error", { message: "Deze room is gesloten door de docent." })
-      }
-      rooms.delete(room.code)
+      scheduleRoomClosure(room)
+      emitStateToRoom(room)
       return
     }
 
