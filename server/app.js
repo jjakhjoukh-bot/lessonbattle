@@ -467,7 +467,56 @@ function rebalanceQuestions(questionList) {
   })
 }
 
+function topicIncludes(topic, pattern) {
+  return pattern.test(String(topic || "").toLowerCase())
+}
+
 function buildFallbackQuestions({ topic, questionCount }) {
+  const normalizedTopic = String(topic || "").toLowerCase()
+  const rekenenBase = [
+    ["Welke breuk is gelijk aan 50%?", ["1/4", "1/2", "2/3", "3/4"], 1, "50% is hetzelfde als 1/2."],
+    ["Hoeveel is 25% van 80?", ["10", "20", "25", "40"], 1, "25% van 80 is 20."],
+    ["Wat is 7 x 8?", ["54", "56", "58", "64"], 1, "7 keer 8 is 56."],
+    ["Welke waarde is het grootst?", ["0,8", "0,5", "0,75", "0,25"], 0, "0,8 is het grootste getal."],
+    ["Hoeveel minuten zitten er in een half uur?", ["15", "20", "30", "45"], 2, "Een half uur is 30 minuten."],
+  ]
+  const taalBase = [
+    ["Welk woord is juist gespeld?", ["gebeurt", "gebeurd", "gebeurtd", "gebuert"], 0, "De juiste spelling is 'gebeurt'."],
+    ["Wat is het tegenovergestelde van 'groot'?", ["hoog", "klein", "breed", "lang"], 1, "'Klein' is het tegenovergestelde van 'groot'."],
+    ["Welke zin is een vraagzin?", ["Ik loop naar school.", "Waar woon jij?", "Hij eet brood.", "Wij lezen een boek."], 1, "'Waar woon jij?' is een vraagzin."],
+    ["Wat betekent het Engelse woord 'book'?", ["tafel", "boek", "school", "pen"], 1, "'Book' betekent 'boek'."],
+  ]
+  const aardrijkskundeBase = [
+    ["Welke hoofdstad hoort bij Frankrijk?", ["Madrid", "Parijs", "Rome", "Berlijn"], 1, "Parijs is de hoofdstad van Frankrijk."],
+    ["In welk werelddeel ligt Egypte?", ["Azië", "Europa", "Afrika", "Zuid-Amerika"], 2, "Egypte ligt in Afrika."],
+    ["Wat is een kaart?", ["Een soort plant", "Een tekening van een gebied", "Een feest", "Een dier"], 1, "Een kaart is een tekening van een gebied."],
+    ["Welke zee ligt aan Nederland?", ["Zwarte Zee", "Noordzee", "Middellandse Zee", "Rode Zee"], 1, "Nederland ligt aan de Noordzee."],
+  ]
+  const geschiedenisBase = [
+    ["Wat bestudeert geschiedenis?", ["Planten", "Het verleden", "Sterren", "Getallen"], 1, "Geschiedenis gaat over het verleden."],
+    ["Wat kwam eerder?", ["Middeleeuwen", "Tweede Wereldoorlog", "Vandaag", "Volgend jaar"], 0, "De Middeleeuwen kwamen veel eerder."],
+    ["Wie bouwden veel aquaducten?", ["Romeinen", "Vikingen", "Egyptenaren", "Piraten"], 0, "De Romeinen bouwden veel aquaducten."],
+    ["Wat is een bron in geschiedenis?", ["Alleen een boek", "Informatie uit of over het verleden", "Een rivier", "Een gebouw"], 1, "Een bron geeft informatie over het verleden."],
+  ]
+  const biologieBase = [
+    ["Welk orgaan pompt bloed door je lichaam?", ["Long", "Hart", "Maag", "Lever"], 1, "Het hart pompt bloed rond."],
+    ["Waarmee adem je vooral?", ["Nieren", "Longen", "Oren", "Spieren"], 1, "Je ademt met je longen."],
+    ["Wat heeft een plant nodig om te groeien?", ["Water en licht", "Alleen zand", "Alleen wind", "Alleen schaduw"], 0, "Planten hebben water en licht nodig."],
+    ["Tot welk deel van het lichaam behoren je botten?", ["Spierstelsel", "Zenuwstelsel", "Skelet", "Huid"], 2, "Botten vormen samen het skelet."],
+  ]
+  const economieBase = [
+    ["Wat betekent sparen?", ["Alles direct uitgeven", "Geld bewaren voor later", "Geld lenen", "Geld weggooien"], 1, "Sparen is geld bewaren voor later."],
+    ["Wat is korting?", ["Extra betalen", "Een lagere prijs", "Een belasting", "Een soort rekening"], 1, "Korting betekent dat de prijs lager wordt."],
+    ["Waarvoor gebruik je een bankrekening?", ["Om op te koken", "Om geld te beheren", "Om te sporten", "Om huiswerk te maken"], 1, "Met een bankrekening beheer je geld."],
+    ["Wat is duurder?", ["5 euro", "8 euro", "3 euro", "2 euro"], 1, "8 euro is het hoogste bedrag."],
+  ]
+  const cultuurBase = [
+    ["Hoe heet het heilige boek van de islam?", ["Bijbel", "Thora", "Koran", "Psalmen"], 2, "De Koran is het heilige boek van de islam."],
+    ["Wat betekent respect?", ["Iemand uitlachen", "Rekening houden met anderen", "Niet luisteren", "Ruzie maken"], 1, "Respect betekent dat je rekening houdt met anderen."],
+    ["Wat doe je in een museum?", ["Sporten", "Kunst en geschiedenis bekijken", "Boodschappen doen", "Autorijden"], 1, "In een museum bekijk je vaak kunst en geschiedenis."],
+    ["Wat is een traditie?", ["Iets dat mensen vaker op een bekende manier doen", "Een soort spelcomputer", "Alleen een liedje", "Een som"], 0, "Een traditie is iets dat vaker op een bekende manier terugkomt."],
+  ]
+
   const base = [
     ["Wat is de grootste planeet van ons zonnestelsel?", ["Mars", "Aarde", "Jupiter", "Venus"], 2, "Jupiter is de grootste planeet van ons zonnestelsel."],
     ["Welke kleur krijg je door rood en geel te mengen?", ["Groen", "Oranje", "Paars", "Blauw"], 1, "Rood en geel samen geven oranje."],
@@ -477,9 +526,19 @@ function buildFallbackQuestions({ topic, questionCount }) {
     ["Welke hoofdstad hoort bij Frankrijk?", ["Madrid", "Parijs", "Rome", "Berlijn"], 1, "Parijs is de hoofdstad van Frankrijk."],
   ]
 
+  const selectedBase =
+    topicIncludes(normalizedTopic, /(rekenen|wiskunde|breuk|procent|getal|meten|geld|tijd)/) ? rekenenBase :
+    topicIncludes(normalizedTopic, /(taal|spelling|woordenschat|nederlands|engels|grammatica|lezen)/) ? taalBase :
+    topicIncludes(normalizedTopic, /(aardrijkskunde|kaart|land|wereld|europa|geografie)/) ? aardrijkskundeBase :
+    topicIncludes(normalizedTopic, /(geschiedenis|romeinen|middeleeuwen|oorlog|histor)/) ? geschiedenisBase :
+    topicIncludes(normalizedTopic, /(biologie|lichaam|dieren|planten|natuur|gezondheid)/) ? biologieBase :
+    topicIncludes(normalizedTopic, /(economie|geld|verzeker|sparen|bank|korting|prijs)/) ? economieBase :
+    topicIncludes(normalizedTopic, /(cultuur|religie|islam|koran|moskee|burgerschap|normen|waarden)/) ? cultuurBase :
+    base
+
   const safeQuestionCount = Math.max(6, Math.min(24, Number(questionCount) || 12))
   const questions = Array.from({ length: safeQuestionCount }, (_, index) => {
-    const [prompt, options, correctIndex, explanation] = base[index % base.length]
+    const [prompt, options, correctIndex, explanation] = selectedBase[index % selectedBase.length]
     return {
       id: `fallback-${index + 1}`,
       prompt,
@@ -525,8 +584,14 @@ Onderwerp:
 ${topic.trim()}
 
 Regels:
+- Analyseer eerst welk soort onderwerp dit is en maak inhoudelijk passende vragen.
+- Pas taalniveau, moeilijkheid en context aan op de doelgroep.
+- Als het onderwerp basisniveau vraagt, gebruik dan korte zinnen en concrete voorbeelden.
+- Als het onderwerp specialistischer is, maak de vragen inhoudelijk preciezer maar nog steeds helder.
 - Respectvol en feitelijk.
 - 4 antwoordopties per vraag.
+- Zorg dat er precies 1 duidelijk goed antwoord is.
+- Vermijd te algemene placeholder-vragen die alleen het onderwerp herhalen.
 - Korte uitleg per vraag.
 - Voeg "category", "imagePrompt" en "imageAlt" toe.
 - Bij islamitische kennis: geen gezichten, personen, profeten of levende wezens afbeelden; kies abstracte, objectgerichte of symbolische visuals.
