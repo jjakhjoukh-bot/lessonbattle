@@ -2,7 +2,7 @@
   "type": "module",
   "scripts": {
     "server": "node server/index.js",
-    "build": "npm --prefix client run build"
+    "build": "npm --prefix client install && npm --prefix client run build"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
