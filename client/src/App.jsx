@@ -5,6 +5,7 @@ import "./App.css"
 const socket = io(window.location.origin.startsWith("http://localhost:5173") ? "http://localhost:3001" : window.location.origin)
 const HOST_SESSION_KEY = "lessonbattle-host-session"
 const PLAYER_SESSION_KEY = "lessonbattle-player-session"
+const DEFAULT_HOST_SESSION = { authenticated: false, username: "", roomCode: "" }
 
 const TOPIC_PRESETS = [
   "Breuken en procenten",
@@ -78,9 +79,15 @@ function HostPage() {
   const [hostSession, setHostSession] = useState(() => {
     try {
       const stored = window.localStorage.getItem(HOST_SESSION_KEY)
-      return stored ? JSON.parse(stored) : { authenticated: false, username: "", roomCode: "" }
+      if (!stored) return DEFAULT_HOST_SESSION
+      const parsed = JSON.parse(stored)
+      return {
+        authenticated: false,
+        username: parsed?.username || "",
+        roomCode: "",
+      }
     } catch {
-      return { authenticated: false, username: "", roomCode: "" }
+      return DEFAULT_HOST_SESSION
     }
   })
 
@@ -99,7 +106,12 @@ function HostPage() {
       setHostSession((current) => ({ ...current, roomCode }))
     }
     const onStarted = ({ message }) => setStatus(message)
-    const onError = ({ message }) => setStatus(`Fout: ${message}`)
+    const onError = ({ message }) => {
+      setStatus(`Fout: ${message}`)
+      if (/onjuiste docentgegevens|log eerst in als docent/i.test(String(message))) {
+        setHostSession((current) => ({ ...current, authenticated: false, roomCode: "" }))
+      }
+    }
     const onSuccess = ({ count }) => setStatus(`${count} vragen klaar. De battle is live.`)
 
     socket.on("host:login:success", onLoginSuccess)
@@ -118,8 +130,13 @@ function HostPage() {
   }, [])
 
   useEffect(() => {
-    window.localStorage.setItem(HOST_SESSION_KEY, JSON.stringify(hostSession))
-  }, [hostSession])
+    window.localStorage.setItem(
+      HOST_SESSION_KEY,
+      JSON.stringify({
+        username: hostSession.username,
+      })
+    )
+  }, [hostSession.username])
 
   useEffect(() => {
     const onConnect = () => {
@@ -183,7 +200,7 @@ function HostPage() {
 
   const login = () => {
     setStatus("Docentlogin controleren...")
-    socket.emit("host:login", { ...loginForm, roomCode: hostSession.roomCode })
+    socket.emit("host:login", { ...loginForm, roomCode: "" })
   }
 
   const generate = () => {
