@@ -316,6 +316,8 @@ function HostPage() {
 
           {game.question ? (
             <QuestionCard question={game.question} />
+          ) : game.status === "finished" ? (
+            <ResultsCard teams={teams} leaderboard={leaderboard} />
           ) : (
             <div className="empty-state">
               <h3>Start een ronde</h3>
@@ -436,7 +438,7 @@ function PlayerPage() {
 
           {game.question ? (
             <>
-              <QuestionCard question={game.question} compact={false} />
+              <QuestionCard question={game.question} compact={false} showOptions={false} />
               <div className="answer-grid">
                 {game.question.options.map((option, index) => {
                   const isCorrectChoice = result && index === result.correctIndex
@@ -466,6 +468,8 @@ function PlayerPage() {
                 </div>
               ) : null}
             </>
+          ) : game.status === "finished" ? (
+            <ResultsCard teams={teams} leaderboard={leaderboard} />
           ) : (
             <div className="empty-state">
               <h3>De battle komt zo</h3>
@@ -483,7 +487,7 @@ function PlayerPage() {
   )
 }
 
-function QuestionCard({ question, compact = false }) {
+function QuestionCard({ question, compact = false, showOptions = true }) {
   return (
     <article className={`question-card ${compact ? "compact" : ""}`}>
       <div className="question-visual-wrap">
@@ -492,14 +496,16 @@ function QuestionCard({ question, compact = false }) {
       <div className="question-body">
         <span className="category-badge">{question.category}</span>
         <h3>{question.prompt}</h3>
-        <ul className="option-list">
-          {question.options.map((option, index) => (
-            <li key={`${question.id}-preview-${index}`}>
-              <span>{index + 1}</span>
-              {option}
-            </li>
-          ))}
-        </ul>
+        {showOptions ? (
+          <ul className="option-list">
+            {question.options.map((option, index) => (
+              <li key={`${question.id}-preview-${index}`}>
+                <span>{index + 1}</span>
+                {option}
+              </li>
+            ))}
+          </ul>
+        ) : null}
       </div>
     </article>
   )
@@ -514,7 +520,13 @@ function QuestionVisual({ question }) {
   }, [question.id])
 
   if (hasImageError) {
-    return <div className="visual-fallback">{question.imageAlt || question.category}</div>
+    return (
+      <div className="visual-fallback">
+        <span className="visual-label">{question.category}</span>
+        <strong>{question.imageAlt || question.prompt}</strong>
+        <p>{question.prompt}</p>
+      </div>
+    )
   }
 
   return (
@@ -524,6 +536,30 @@ function QuestionVisual({ question }) {
       onError={() => setHasImageError(true)}
       src={imageUrl}
     />
+  )
+}
+
+function ResultsCard({ teams, leaderboard }) {
+  const winningTeam = [...teams].sort((left, right) => right.score - left.score)[0]
+  const topPlayer = leaderboard[0]
+
+  return (
+    <div className="results-card">
+      <span className="eyebrow">Ronde klaar</span>
+      <h3>{winningTeam ? `${winningTeam.name} wint deze battle` : "De battle is afgelopen"}</h3>
+      <p>
+        {winningTeam ? `Eindsaldo: ${winningTeam.score} punten.` : "Bekijk hieronder de eindstand."}
+        {topPlayer ? ` Topspeler: ${topPlayer.name} met ${topPlayer.score} punten.` : ""}
+      </p>
+      <div className="results-grid">
+        {teams.map((team) => (
+          <div className="result-tile" key={team.id} style={{ "--team-accent": team.color }}>
+            <span>{team.name}</span>
+            <strong>{team.score}</strong>
+          </div>
+        ))}
+      </div>
+    </div>
   )
 }
 
