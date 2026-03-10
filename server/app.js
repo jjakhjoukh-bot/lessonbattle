@@ -1,6 +1,7 @@
 import express from "express"
 import fs from "fs"
 import http from "http"
+import OpenAI from "openai"
 import path from "path"
 import { Server } from "socket.io"
 import { fileURLToPath } from "url"
@@ -31,10 +32,13 @@ const io = new Server(server, { cors: { origin: "*" } })
 
 const apiKey = process.env.GEMINI_API_KEY
 const modelName = process.env.GEMINI_MODEL || "gemini-2.5-flash"
+const openAIApiKey = process.env.OPENAI_API_KEY
+const openAIModel = process.env.OPENAI_MODEL || "gpt-4.1-mini"
 const port = Number(process.env.PORT || 3001)
 const teacherUsername = process.env.TEACHER_USERNAME || "docent"
 const teacherPassword = process.env.TEACHER_PASSWORD || "les1234"
 const genAI = apiKey ? new GoogleGenerativeAI(apiKey) : null
+const openAI = openAIApiKey ? new OpenAI({ apiKey: openAIApiKey }) : null
 
 const TEAM_COLORS = ["#ff8c42", "#3dd6d0", "#8f7cff", "#ff5d8f"]
 const DEFAULT_TEAMS = ["Team Zon", "Team Oceaan"]
@@ -700,15 +704,13 @@ async function fetchWithTimeout(url, options, ms) {
   return withTimeout(fetch(url, options), ms)
 }
 
-async function generateQuestions({ topic, audience, questionCount }) {
-  if (!genAI) throw new Error("GEMINI_API_KEY ontbreekt in de serveromgeving.")
-  if (!topic?.trim()) throw new Error("Voer eerst een onderwerp of thema in.")
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
 
-  const safeQuestionCount = Math.max(6, Math.min(24, Number(questionCount) || 12))
-  const targetAudience = audience?.trim() || "vmbo"
-  const model = genAI.getGenerativeModel({ model: modelName })
-  const prompt = `
-Maak precies ${safeQuestionCount} quizvragen in het Nederlands voor ${targetAudience}.
+function buildQuestionPrompt({ topic, audience, questionCount, extraRules = "" }) {
+  return `
+Maak precies ${questionCount} quizvragen in het Nederlands voor ${audience}.
 Onderwerp:
 ${topic.trim()}
 
@@ -725,6 +727,7 @@ Regels:
 - Voeg "category", "imagePrompt" en "imageAlt" toe.
 - Bij islamitische kennis: geen gezichten, personen, profeten of levende wezens afbeelden; kies abstracte, objectgerichte of symbolische visuals.
 - Geen markdown, alleen geldige JSON.
+${extraRules}
 
 Formaat:
 [
@@ -739,19 +742,202 @@ Formaat:
   }
 ]
 `
+}
 
+function buildRepairPrompt({ topic, audience, questionCount, brokenOutput, previousIssue }) {
+  return `
+Zet de onderstaande AI-output om naar exact geldige JSON voor een quiz.
+
+Onderwerp: ${topic.trim()}
+Doelgroep: ${audience}
+Aantal vragen: ${questionCount}
+
+Probleem dat hersteld moet worden:
+${previousIssue}
+
+Regels:
+- Geef alleen een JSON-array terug.
+- Zorg voor precies ${questionCount} objecten.
+- Elk object moet bevatten: prompt, options, correctIndex, explanation, category, imagePrompt, imageAlt.
+- options moet exact 4 items hebben.
+- correctIndex moet 0, 1, 2 of 3 zijn.
+- Verbeter waar nodig de inhoud zodat de vragen echt over het onderwerp gaan.
+- Geen markdown en geen extra tekst.
+
+Te herstellen output:
+${String(brokenOutput || "").slice(0, 12000)}
+`
+}
+
+async function requestGeminiText(prompt) {
+  if (!genAI) throw new Error("Gemini is niet geconfigureerd.")
+  const model = genAI.getGenerativeModel({ model: modelName })
   const result = await model.generateContent(prompt)
-  const parsed = JSON.parse(extractJsonArray(result.response.text()))
-  const normalized = normalizeQuestions(parsed).map((question) => ({
+  return result.response.text()
+}
+
+async function requestOpenAIText(prompt) {
+  if (!openAI) throw new Error("OpenAI is niet geconfigureerd.")
+  const response = await openAI.responses.create({
+    model: openAIModel,
+    input: prompt,
+  })
+  return response.output_text || ""
+}
+
+async function requestProviderText(provider, prompt, timeoutMs) {
+  if (provider === "gemini") return withTimeout(requestGeminiText(prompt), timeoutMs)
+  if (provider === "openai") return withTimeout(requestOpenAIText(prompt), timeoutMs)
+  throw new Error(`Onbekende AI-provider: ${provider}`)
+}
+
+function normalizeQuestionsForTopic(rawQuestions, topic) {
+  const normalized = normalizeQuestions(rawQuestions).map((question) => ({
     ...question,
     category: sanitizeCategory(question.category, topic),
   }))
-  if (normalized.length === 0) throw new Error("AI output kon niet worden omgezet naar geldige vragen.")
+
+  if (normalized.length === 0) {
+    throw new Error("AI output kon niet worden omgezet naar geldige vragen.")
+  }
+
   const fitCheck = validateQuestionFit(normalized, topic)
   if (!fitCheck.isValid) {
     throw new Error(`AI-vragen sloten te weinig aan op het onderwerp (${fitCheck.matches}/${normalized.length} passend).`)
   }
+
   return rebalanceQuestions(normalized)
+}
+
+function parseQuestionsFromText(text, topic) {
+  const parsed = JSON.parse(extractJsonArray(text))
+  return normalizeQuestionsForTopic(parsed, topic)
+}
+
+function retryDelaySecondsFromError(error) {
+  const rawMessage =
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : ""
+
+  const retryMatch = rawMessage.match(/retry(?:\s+in)?\s+(\d+(?:\.\d+)?)s/i) || rawMessage.match(/"retryDelay":"(\d+)s"/i)
+  return retryMatch?.[1] ? Math.max(1, Math.ceil(Number(retryMatch[1]))) : null
+}
+
+async function generateQuestionsWithProvider(provider, { topic, audience, questionCount }) {
+  const providerTimeoutMs = provider === "gemini" ? 30000 : 35000
+  let lastError = null
+
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const extraRules =
+      attempt === 1
+        ? ""
+        : "\n- Vorige poging was niet bruikbaar. Wees strenger op onderwerpstrouw, correcte JSON en exacte schema-volgorde."
+
+    try {
+      console.info(`[AI] ${provider} attempt ${attempt} gestart voor onderwerp: ${topic}`)
+      const rawText = await requestProviderText(provider, buildQuestionPrompt({ topic, audience, questionCount, extraRules }), providerTimeoutMs)
+
+      try {
+        const questions = parseQuestionsFromText(rawText, topic)
+        console.info(`[AI] ${provider} attempt ${attempt} geaccepteerd met ${questions.length} vragen`)
+        return questions
+      } catch (parseError) {
+        lastError = parseError
+        console.warn(`[AI] ${provider} attempt ${attempt} afgekeurd: ${parseError instanceof Error ? parseError.message : "onbekende parsefout"}`)
+
+        try {
+          const repairedText = await requestProviderText(
+            provider,
+            buildRepairPrompt({
+              topic,
+              audience,
+              questionCount,
+              brokenOutput: rawText,
+              previousIssue: parseError instanceof Error ? parseError.message : "output was ongeldig",
+            }),
+            20000
+          )
+          const repairedQuestions = parseQuestionsFromText(repairedText, topic)
+          console.info(`[AI] ${provider} repair-pass geslaagd`)
+          return repairedQuestions
+        } catch (repairError) {
+          lastError = repairError
+          console.warn(`[AI] ${provider} repair-pass mislukt: ${repairError instanceof Error ? repairError.message : "onbekende repairfout"}`)
+        }
+      }
+    } catch (providerError) {
+      lastError = providerError
+      console.warn(`[AI] ${provider} attempt ${attempt} request-fout: ${providerError instanceof Error ? providerError.message : "onbekende providerfout"}`)
+      const retrySeconds = retryDelaySecondsFromError(providerError)
+      if (retrySeconds && retrySeconds <= 5 && attempt < 2) {
+        await sleep(retrySeconds * 1000)
+      }
+    }
+  }
+
+  throw lastError ?? new Error(`${provider} kon geen bruikbare vragen genereren.`)
+}
+
+function formatGenerationError(error) {
+  const rawMessage =
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : "Onbekende AI-fout."
+
+  if (/429 Too Many Requests|quota exceeded|rate limit/i.test(rawMessage)) {
+    const retryMatch = rawMessage.match(/retry(?:\s+in)?\s+(\d+(?:\.\d+)?)s/i) || rawMessage.match(/"retryDelay":"(\d+)s"/i)
+    const retrySeconds = retryMatch?.[1] ? Math.max(1, Math.ceil(Number(retryMatch[1]))) : null
+    return retrySeconds
+      ? `AI-limiet bereikt bij Gemini. Probeer over ${retrySeconds} seconden opnieuw.`
+      : "AI-limiet bereikt bij Gemini. Probeer het over een paar minuten opnieuw."
+  }
+
+  if (/GEMINI_API_KEY ontbreekt/i.test(rawMessage)) {
+    return "De AI-sleutel ontbreekt op de server."
+  }
+
+  if (/geen passende vragen/i.test(rawMessage)) {
+    return rawMessage
+  }
+
+  if (/geen geldige JSON|JSON-array|niet worden omgezet/i.test(rawMessage)) {
+    return "De AI gaf geen bruikbare vragen terug. Probeer je onderwerp iets concreter te formuleren."
+  }
+
+  return `AI kon de ronde niet genereren. Details: ${rawMessage}`
+}
+
+async function generateQuestions({ topic, audience, questionCount }) {
+  if (!genAI && !openAI) throw new Error("Er is geen AI-provider geconfigureerd op de server.")
+  if (!topic?.trim()) throw new Error("Voer eerst een onderwerp of thema in.")
+
+  const safeQuestionCount = Math.max(6, Math.min(24, Number(questionCount) || 12))
+  const targetAudience = audience?.trim() || "vmbo"
+  const attempts = [
+    ...(genAI ? ["gemini"] : []),
+    ...(openAI ? ["openai"] : []),
+  ]
+
+  const errors = []
+  for (const provider of attempts) {
+    try {
+      return await generateQuestionsWithProvider(provider, {
+        topic,
+        audience: targetAudience,
+        questionCount: safeQuestionCount,
+      })
+    } catch (providerError) {
+      errors.push(`${provider}: ${providerError instanceof Error ? providerError.message : "onbekende fout"}`)
+      console.warn(`[AI] provider ${provider} definitief afgekeurd`)
+    }
+  }
+
+  throw new Error(errors.join(" | "))
 }
 
 app.get("/api/question-image", async (req, res) => {
@@ -856,7 +1042,9 @@ io.on("connection", (socket) => {
     try {
       room.questions = await withTimeout(generateQuestions({ topic, audience, questionCount }), 25000)
     } catch (aiError) {
-      const errorMessage = aiError instanceof Error ? aiError.message : "AI-fout"
+      const fullErrorMessage = aiError instanceof Error ? aiError.message : "AI-fout"
+      const userMessage = formatGenerationError(aiError)
+      console.error("AI generatie mislukt:", fullErrorMessage)
       room.questions = []
       room.currentQuestionIndex = -1
       room.answeredPlayers = new Set()
@@ -871,7 +1059,7 @@ io.on("connection", (socket) => {
         generatedAt: null,
       }
       emitStateToRoom(room)
-      socket.emit("host:error", { message: `AI kon geen passende vragen maken. De ronde is niet gestart. Details: ${errorMessage}` })
+      socket.emit("host:error", { message: userMessage })
       return
     }
 
