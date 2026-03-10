@@ -56,13 +56,8 @@ const hostSockets = new Set()
 let players = []
 let teams = createTeams(DEFAULT_TEAMS)
 let questions = []
-let questionPool = []
-let questionPoolMeta = {
-  topicKey: "",
-  audience: "",
-  generatedAt: null,
-}
-let questionPoolPromise = null
+let questionsPerTopic = {}
+let topicGenerationPromises = {}
 let currentQuestionIndex = -1
 let answeredPlayers = new Set()
 let roomCode = generateRoomCode()
@@ -629,8 +624,12 @@ function getQuestionPoolCacheKey(topic, audience) {
   return `${normalizeTopicKey(topic)}::${normalizeTopicKey(audience || "vmbo")}`
 }
 
-function clonePoolQuestionsForRound(poolQuestions, requestedCount) {
-  return poolQuestions.splice(0, requestedCount)
+function getTopicCacheEntry(topic, audience) {
+  return questionsPerTopic[getQuestionPoolCacheKey(topic, audience)] ?? null
+}
+
+function cloneCachedQuestionsForRound(cacheEntry, requestedCount) {
+  return cacheEntry.questions.splice(0, requestedCount)
 }
 
 async function generateQuestions({ topic, audience, minimumCount = QUESTION_POOL_LOW_WATERMARK }) {
@@ -695,11 +694,11 @@ JSON-formaat:
 
 async function refillQuestionPool({ topic, audience, minimumCount }) {
   const poolKey = getQuestionPoolCacheKey(topic, audience)
-  const currentPoolKey = getQuestionPoolCacheKey(questionPoolMeta.topicKey, questionPoolMeta.audience)
+  const existingPromise = topicGenerationPromises[poolKey]
 
-  if (questionPoolPromise?.key === poolKey) {
-    console.log("Vraagpool: bestaande AI-generatie wordt hergebruikt.")
-    return questionPoolPromise.promise
+  if (existingPromise) {
+    console.log(`Vraagcache: lopende AI-generatie hergebruikt voor "${poolKey}".`)
+    return existingPromise
   }
 
   const generationPromise = withTimeout(
@@ -707,85 +706,71 @@ async function refillQuestionPool({ topic, audience, minimumCount }) {
     QUESTION_GENERATION_TIMEOUT_MS
   )
     .then((generatedQuestions) => {
-      questionPool = [...generatedQuestions]
-      questionPoolMeta = {
+      const cacheEntry = {
         topicKey: normalizeTopicKey(topic),
+        topicLabel: String(topic ?? "").trim(),
         audience: audience?.trim() || "vmbo",
         generatedAt: new Date().toISOString(),
+        questions: [...generatedQuestions],
       }
+
+      questionsPerTopic[poolKey] = cacheEntry
 
       console.log(
-        `Vraagpool vernieuwd: ${questionPool.length} vragen voor "${questionPoolMeta.topicKey}" (${questionPoolMeta.audience}).`
+        `Vraagcache vernieuwd: ${cacheEntry.questions.length} vragen voor "${cacheEntry.topicLabel || cacheEntry.topicKey}" (${cacheEntry.audience}).`
       )
 
-      return questionPool
+      return cacheEntry
     })
     .catch((error) => {
-      if (currentPoolKey !== poolKey) {
-        questionPool = []
-        questionPoolMeta = {
-          topicKey: "",
-          audience: "",
-          generatedAt: null,
-        }
-      }
-
+      console.error(`Vraagcache refill mislukt voor "${poolKey}":`, error instanceof Error ? error.message : error)
       throw error
     })
+    .finally(() => {
+      delete topicGenerationPromises[poolKey]
+    })
 
-  questionPoolPromise = {
-    key: poolKey,
-    promise: generationPromise,
-  }
-
-  try {
-    return await generationPromise
-  } finally {
-    if (questionPoolPromise?.promise === generationPromise) {
-      questionPoolPromise = null
-    }
-  }
+  topicGenerationPromises[poolKey] = generationPromise
+  return generationPromise
 }
 
 async function ensureQuestionPool({ topic, audience, questionCount }) {
   const normalizedTopicKey = normalizeTopicKey(topic)
   const normalizedAudience = String(audience?.trim() || "vmbo")
-  const sameTopic =
-    questionPoolMeta.topicKey === normalizedTopicKey &&
-    normalizeTopicKey(questionPoolMeta.audience) === normalizeTopicKey(normalizedAudience)
   const requiredCount = Math.max(6, Math.min(24, Number(questionCount) || 12))
+  let cacheEntry = getTopicCacheEntry(topic, normalizedAudience)
   const needsRefill =
-    !sameTopic ||
-    questionPool.length < requiredCount ||
-    questionPool.length < QUESTION_POOL_LOW_WATERMARK
+    !cacheEntry ||
+    cacheEntry.questions.length < requiredCount ||
+    cacheEntry.questions.length < QUESTION_POOL_LOW_WATERMARK
 
   if (needsRefill) {
-    console.log("Vraagpool refill nodig", {
-      sameTopic,
-      available: questionPool.length,
+    console.log("Vraagcache refill nodig", {
+      hasEntry: Boolean(cacheEntry),
+      available: cacheEntry?.questions.length ?? 0,
       requiredCount,
       topic: normalizedTopicKey,
       audience: normalizedAudience,
     })
 
-    await refillQuestionPool({
+    cacheEntry = await refillQuestionPool({
       topic,
       audience: normalizedAudience,
       minimumCount: requiredCount,
     })
   } else {
     console.log(
-      `Vraagpool hergebruikt: ${questionPool.length} vragen beschikbaar voor "${normalizedTopicKey}".`
+      `Vraagcache hergebruikt: ${cacheEntry.questions.length} vragen beschikbaar voor "${normalizedTopicKey}".`
     )
   }
 
-  if (questionPool.length < requiredCount) {
+  if (!cacheEntry || cacheEntry.questions.length < requiredCount) {
     throw new Error(
-      `Vraagpool bevat te weinig vragen (${questionPool.length}/${requiredCount}) voor deze ronde.`
+      `Vraagcache bevat te weinig vragen (${cacheEntry?.questions.length ?? 0}/${requiredCount}) voor deze ronde.`
     )
   }
 
-  return clonePoolQuestionsForRound(questionPool, requiredCount)
+  return cloneCachedQuestionsForRound(cacheEntry, requiredCount)
 }
 
 app.get("/api/question-image", async (req, res) => {
@@ -921,8 +906,10 @@ io.on("connection", (socket) => {
           questionCount: safeQuestionCount,
         })
 
+        const cacheEntry = getTopicCacheEntry(cleanTopic, cleanAudience)
+
         console.log(
-          `Ronde geladen: ${questions.length} vragen actief, ${questionPool.length} vragen blijven in de pool.`
+          `Ronde geladen: ${questions.length} vragen actief, ${cacheEntry?.questions.length ?? 0} vragen blijven in de cache voor dit onderwerp.`
         )
       } catch (aiError) {
         const fallbackMessage = aiError instanceof Error ? aiError.message : "AI-fout"
