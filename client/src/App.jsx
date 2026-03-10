@@ -7,16 +7,6 @@ const HOST_SESSION_KEY = "lessonbattle-host-session"
 const PLAYER_SESSION_KEY = "lessonbattle-player-session"
 const DEFAULT_HOST_SESSION = { authenticated: false, username: "", roomCode: "" }
 
-const TOPIC_PRESETS = [
-  "Breuken en procenten",
-  "Aardrijkskunde Europa",
-  "Nederlandse spelling",
-  "Engelse woordenschat",
-  "Biologie van het menselijk lichaam",
-  "Islamitische kennis",
-  "Gemixte algemene kennis",
-]
-
 function App() {
   const path = window.location.pathname
 
@@ -69,12 +59,12 @@ function useQuizState() {
 
 function HostPage() {
   const { players, teams, leaderboard, game } = useQuizState()
-  const [topic, setTopic] = useState("Brede quiz over schoolvakken, algemene kennis en islamitische kennis")
+  const [topic, setTopic] = useState("")
   const [audience, setAudience] = useState("vmbo")
   const [questionCount, setQuestionCount] = useState(12)
   const [questionDurationSec, setQuestionDurationSec] = useState(20)
   const [teamNamesInput, setTeamNamesInput] = useState("Team Zon\nTeam Oceaan")
-  const [status, setStatus] = useState("Kies onderwerp, stel teams in en start de battle.")
+  const [status, setStatus] = useState("Vul het onderwerp in, stel de teams in en start de ronde.")
   const [loginForm, setLoginForm] = useState({ username: "", password: "" })
   const [hostSession, setHostSession] = useState(() => {
     try {
@@ -100,7 +90,7 @@ function HostPage() {
   useEffect(() => {
     const onLoginSuccess = ({ username, roomCode }) => {
       setHostSession((current) => ({ ...current, authenticated: true, username, roomCode }))
-      setStatus("Docentaccount verbonden.")
+      setStatus("Beheeraccount verbonden.")
     }
     const onRoomUpdate = ({ roomCode }) => {
       setHostSession((current) => ({ ...current, roomCode }))
@@ -112,7 +102,7 @@ function HostPage() {
         setHostSession((current) => ({ ...current, authenticated: false, roomCode: "" }))
       }
     }
-    const onSuccess = ({ count }) => setStatus(`${count} vragen klaar. De battle is live.`)
+    const onSuccess = ({ count }) => setStatus(`${count} vragen klaar. De ronde is live.`)
 
     socket.on("host:login:success", onLoginSuccess)
     socket.on("host:room:update", onRoomUpdate)
@@ -199,12 +189,12 @@ function HostPage() {
   }
 
   const login = () => {
-    setStatus("Docentlogin controleren...")
+    setStatus("Inloggegevens controleren...")
     socket.emit("host:login", { ...loginForm, roomCode: "" })
   }
 
   const generate = () => {
-    setStatus("AI is nieuwe vragen en visuals aan het maken...")
+    setStatus("AI bouwt de nieuwe ronde op...")
     socket.emit("host:generate", {
       topic,
       audience,
@@ -219,11 +209,10 @@ function HostPage() {
       <section className="hero-card">
         <div className="hero-copy">
           <span className="eyebrow">Lesson Battle Live</span>
-          <h1>Maak van elke les een energieke teamquiz.</h1>
+          <h1>Maak van elk onderwerp een energieke teamquiz.</h1>
           <p>
-            Deze versie kan brede thema&apos;s aan: schoolvakken, algemene kennis, cultuur en
-            islamitische kennis. Per vraag wordt een bijpassende AI-visual geladen en de teamscores
-            lopen live mee.
+            Deze versie kan brede thema&apos;s aan. Typ zelf het onderwerp, niveau en de gewenste
+            focus; de vragen, visuals en teamscores worden daarna live opgebouwd.
           </p>
         </div>
         <div className="hero-panel glass">
@@ -248,7 +237,7 @@ function HostPage() {
       {!hostSession.authenticated ? (
         <section className="glass control-card login-card">
           <div className="section-head">
-            <h2>Docent login</h2>
+            <h2>Beheerlogin</h2>
             <span className="pill">{status}</span>
           </div>
           <div className="field-row">
@@ -257,7 +246,7 @@ function HostPage() {
               <input
                 value={loginForm.username}
                 onChange={(event) => setLoginForm((current) => ({ ...current, username: event.target.value }))}
-                placeholder="docent"
+                placeholder="gebruikersnaam"
               />
             </label>
             <label className="field">
@@ -272,7 +261,7 @@ function HostPage() {
           </div>
           <div className="action-row single-action">
             <button className="button-primary" onClick={login} type="button">
-              Inloggen als docent
+              Inloggen
             </button>
           </div>
         </section>
@@ -287,8 +276,8 @@ function HostPage() {
 
           <div className="host-meta-bar">
             <div className="meta-card">
-              <span>Docent</span>
-              <strong>{hostSession.username || "Niet ingelogd"}</strong>
+              <span>Account</span>
+              <strong>{hostSession.username || "Niet verbonden"}</strong>
             </div>
             <div className="meta-card">
               <span>Spelcode</span>
@@ -300,27 +289,19 @@ function HostPage() {
           </div>
 
           <div className="lobby-banner">
-            <span>Leerlingen gaan naar /join en gebruiken code</span>
+            <span>Deelnemers openen /join en gebruiken code</span>
             <strong>{hostSession.roomCode || "-----"}</strong>
           </div>
 
           <label className="field">
-            <span>Onderwerp of mix</span>
+            <span>Onderwerp</span>
             <textarea
               rows="4"
               value={topic}
               onChange={(event) => setTopic(event.target.value)}
-              placeholder="Bijv. Brugklas aardrijkskunde, rekenen, islamitische kennis en algemene kennis"
+              placeholder="Bijv. economie vmbo leerjaar 3 over verzekeringen en sparen"
             />
           </label>
-
-          <div className="preset-row">
-            {TOPIC_PRESETS.map((preset) => (
-              <button key={preset} className="chip" onClick={() => setTopic(preset)} type="button">
-                {preset}
-              </button>
-            ))}
-          </div>
 
           <div className="field-row">
             <label className="field">
@@ -376,7 +357,7 @@ function HostPage() {
               Teams opslaan
             </button>
             <button className="button-primary" disabled={!hostSession.authenticated} onClick={generate} type="button">
-              AI battle starten
+              Ronde starten
             </button>
             <button
               className="button-secondary"
@@ -392,7 +373,7 @@ function HostPage() {
               onClick={() => socket.emit("host:reset")}
               type="button"
             >
-              Reset ronde
+              Nieuwe ronde
             </button>
           </div>
         </div>
@@ -449,7 +430,7 @@ function PlayerPage() {
   const [joined, setJoined] = useState(Boolean(playerSession.joined))
   const [result, setResult] = useState(null)
   const [chosenAnswer, setChosenAnswer] = useState(null)
-  const [status, setStatus] = useState("Kies je team en doe mee.")
+  const [status, setStatus] = useState("Vul je gegevens in en sluit aan.")
   const timeLeft = useQuestionCountdown(game)
 
   useSoundEffects(result, game.status)
@@ -464,7 +445,7 @@ function PlayerPage() {
   useEffect(() => {
     const onJoined = () => {
       setJoined(true)
-      setStatus("Je bent binnen. Wacht op de vraag of geef meteen antwoord.")
+      setStatus("Je bent verbonden. Wacht op de volgende vraag.")
     }
     const onPlayerError = ({ message }) => setStatus(message)
     const onRoomPreview = (payload) => {
@@ -480,7 +461,7 @@ function PlayerPage() {
     }
     const onAnswerResult = (payload) => {
       setResult(payload)
-      setStatus(payload.correct ? "Goed antwoord. Je team pakt punten." : "Helaas, niet goed.")
+      setStatus(payload.correct ? "Goed antwoord. Je team pakt punten." : "Niet correct. Probeer de volgende vraag.")
     }
 
     socket.on("player:joined", onJoined)
@@ -542,8 +523,8 @@ function PlayerPage() {
     <main className="page-shell player-shell">
       <section className="player-layout">
         <div className="glass join-card">
-          <span className="eyebrow">Join The Arena</span>
-          <h1>Speel mee in Lesson Battle</h1>
+          <span className="eyebrow">Deelnemen</span>
+          <h1>Sluit aan bij de quiz</h1>
           <p className="muted">{status}</p>
 
           <label className="field">
@@ -552,7 +533,7 @@ function PlayerPage() {
           </label>
 
           <label className="field">
-            <span>Kies je team</span>
+            <span>Team</span>
             <select value={teamId} onChange={(event) => setTeamId(event.target.value)}>
               {availableTeams.map((team) => (
                 <option key={team.id} value={team.id}>
@@ -572,7 +553,7 @@ function PlayerPage() {
           </label>
 
           <button className="button-primary" disabled={!roomPreview.valid} onClick={join} type="button">
-            {joined ? "Team bijwerken" : "Meedoen"}
+            {joined ? "Bijwerken" : "Verbinden"}
           </button>
 
           {selectedTeam ? (
@@ -630,8 +611,8 @@ function PlayerPage() {
             <ResultsCard teams={teams} leaderboard={leaderboard} />
           ) : (
             <div className="empty-state">
-              <h3>De battle komt zo</h3>
-              <p>De docent genereert eerst de ronde. Zodra die live staat, verschijnt de vraag hier automatisch.</p>
+              <h3>De ronde start zo</h3>
+              <p>Zodra de beheerder de ronde start, verschijnt de vraag hier automatisch.</p>
             </div>
           )}
         </div>
@@ -764,7 +745,7 @@ function ResultsCard({ teams, leaderboard }) {
   return (
     <div className="results-card">
       <span className="eyebrow">Ronde klaar</span>
-      <h3>{winningTeam ? `${winningTeam.name} wint deze battle` : "De battle is afgelopen"}</h3>
+      <h3>{winningTeam ? `${winningTeam.name} wint deze ronde` : "De ronde is afgelopen"}</h3>
       <p>
         {winningTeam ? `Eindsaldo: ${winningTeam.score} punten.` : "Bekijk hieronder de eindstand."}
         {topPlayer ? ` Topspeler: ${topPlayer.name} met ${topPlayer.score} punten.` : ""}
@@ -809,10 +790,10 @@ function ProgressBar({ current, total, timeLeft, duration }) {
 function LobbyCard({ roomCode, teams, players }) {
   return (
     <div className="lobby-card">
-      <span className="eyebrow">Klaslobby</span>
-      <h3>Pak je telefoon en join de battle</h3>
+      <span className="eyebrow">Wachtruimte</span>
+      <h3>Open de quiz en voer de code in</h3>
       <div className="lobby-code">{roomCode || "-----"}</div>
-      <p>Open <strong>/join</strong>, voer de code in en kies een team. Zodra de docent start, verschijnen de vragen hier live.</p>
+      <p>Open <strong>/join</strong>, voer de code in en kies een team. Zodra de ronde start, verschijnen de vragen hier live.</p>
       <div className="lobby-stats">
         <div className="result-tile">
           <span>Teams</span>
@@ -863,7 +844,7 @@ function RosterBoard({ players, teams, compact = false }) {
   return (
     <section className={`glass board-card ${compact ? "compact" : ""}`}>
       <div className="section-head">
-        <h2>Spelers per team</h2>
+        <h2>Deelnemers per team</h2>
         <span className="pill">{players.length} online</span>
       </div>
       <div className="roster-grid">
