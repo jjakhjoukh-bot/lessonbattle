@@ -471,8 +471,120 @@ function topicIncludes(topic, pattern) {
   return pattern.test(String(topic || "").toLowerCase())
 }
 
+function detectTopicDomain(topic) {
+  const normalizedTopic = String(topic || "").toLowerCase()
+
+  if (topicIncludes(normalizedTopic, /(meten en maten|meten|maten|lengte|gewicht|inhoud|liter|milliliter|centimeter|meter|kilo|gram)/)) return "meten"
+  if (topicIncludes(normalizedTopic, /(rekenen|wiskunde|breuk|procent|getal|optellen|aftrekken|delen|vermenigvuldigen)/)) return "rekenen"
+  if (topicIncludes(normalizedTopic, /(taal|spelling|woordenschat|nederlands|engels|grammatica|lezen|schrijven)/)) return "taal"
+  if (topicIncludes(normalizedTopic, /(aardrijkskunde|kaart|land|wereld|europa|geografie|hoofdstad)/)) return "aardrijkskunde"
+  if (topicIncludes(normalizedTopic, /(geschiedenis|romeinen|middeleeuwen|oorlog|histor|bron)/)) return "geschiedenis"
+  if (topicIncludes(normalizedTopic, /(biologie|lichaam|dieren|planten|natuur|gezondheid|orgaan)/)) return "biologie"
+  if (topicIncludes(normalizedTopic, /(economie|geld|verzeker|sparen|bank|korting|prijs|ondernemen)/)) return "economie"
+  if (topicIncludes(normalizedTopic, /(cultuur|religie|islam|koran|moskee|burgerschap|normen|waarden)/)) return "cultuur"
+  return "general"
+}
+
+const DOMAIN_LABELS = {
+  meten: "Meten en maten",
+  rekenen: "Rekenen",
+  taal: "Taal",
+  aardrijkskunde: "Aardrijkskunde",
+  geschiedenis: "Geschiedenis",
+  biologie: "Biologie",
+  economie: "Economie",
+  cultuur: "Cultuur en samenleving",
+  general: "Quiz",
+}
+
+const DOMAIN_KEYWORDS = {
+  meten: ["meter", "centimeter", "milliliter", "liter", "gram", "kilo", "lengte", "gewicht", "inhoud", "meten", "tijd"],
+  rekenen: ["som", "getal", "breuk", "procent", "keer", "delen", "optellen", "aftrekken", "rekenen", "waarde"],
+  taal: ["woord", "zin", "spelling", "betekent", "taal", "engels", "nederlands", "grammatica", "lezen"],
+  aardrijkskunde: ["land", "werelddeel", "kaart", "hoofdstad", "zee", "rivier", "berg", "europa"],
+  geschiedenis: ["verleden", "vroeger", "romeinen", "middeleeuwen", "oorlog", "bron", "historie"],
+  biologie: ["lichaam", "hart", "longen", "plant", "dier", "skelet", "gezondheid", "orgaan"],
+  economie: ["geld", "prijs", "korting", "bank", "rekening", "sparen", "verzekering", "euro"],
+  cultuur: ["religie", "cultuur", "traditie", "respect", "museum", "moskee", "koran", "burgerschap"],
+  general: [],
+}
+
+const TOPIC_STOPWORDS = new Set([
+  "stel", "vragen", "over", "het", "de", "een", "en", "voor", "van", "op", "in", "aan", "vak", "thema", "onderwerp",
+  "leerlingen", "leerling", "niveau", "doelgroep", "met", "bij", "tot", "algemeen",
+])
+
+function extractTopicKeywords(topic) {
+  return [...new Set(
+    String(topic || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9à-ž\s-]/gi, " ")
+      .split(/\s+/)
+      .map((word) => word.trim())
+      .filter((word) => word.length >= 4 && !TOPIC_STOPWORDS.has(word))
+  )]
+}
+
+function questionTextBlob(question) {
+  return [
+    question.prompt,
+    ...(question.options || []),
+    question.explanation,
+    question.category,
+    question.imageAlt,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase()
+}
+
+function questionMatchesTopic(question, topic, domain) {
+  const text = questionTextBlob(question)
+  const topicKeywords = extractTopicKeywords(topic)
+  const domainKeywords = DOMAIN_KEYWORDS[domain] || []
+  const topicHit = topicKeywords.some((keyword) => text.includes(keyword))
+  const domainHit = domainKeywords.some((keyword) => text.includes(keyword))
+
+  if (topicKeywords.length === 0) return domain === "general" ? true : domainHit
+  return topicHit || domainHit
+}
+
+function validateQuestionFit(questions, topic) {
+  const domain = detectTopicDomain(topic)
+  const matches = questions.filter((question) => questionMatchesTopic(question, topic, domain)).length
+  const matchRatio = questions.length ? matches / questions.length : 0
+  return {
+    domain,
+    matches,
+    matchRatio,
+    isValid: domain === "general" ? matchRatio >= 0.35 : matchRatio >= 0.6,
+  }
+}
+
+function sanitizeCategory(rawCategory, topic) {
+  const domain = detectTopicDomain(topic || rawCategory)
+  const fallbackLabel = DOMAIN_LABELS[domain] || "Quiz"
+  const cleaned = String(rawCategory || "").trim()
+
+  if (!cleaned) return fallbackLabel
+  if (cleaned.length > 28) return fallbackLabel
+  if (cleaned.toLowerCase() === String(topic || "").trim().toLowerCase()) return fallbackLabel
+  if (cleaned.toLowerCase().startsWith("stel vragen")) return fallbackLabel
+  return cleaned
+}
+
 function buildFallbackQuestions({ topic, questionCount }) {
   const normalizedTopic = String(topic || "").toLowerCase()
+  const metenEnMatenBase = [
+    ["Hoeveel centimeter is 1 meter?", ["10", "50", "100", "1000"], 2, "1 meter is 100 centimeter."],
+    ["Wat is langer?", ["1 meter", "50 centimeter", "beide even lang", "dat weet je niet"], 0, "1 meter is langer dan 50 centimeter."],
+    ["Waarmee meet je de lengte van een tafel?", ["Thermometer", "Liniaal of meetlint", "Weegschaal", "Klok"], 1, "Een liniaal of meetlint gebruik je om lengte te meten."],
+    ["Hoeveel liter is een halve liter en nog een halve liter samen?", ["1 liter", "2 liter", "0,5 liter", "1,5 liter"], 0, "Een halve liter plus een halve liter is 1 liter."],
+    ["Wat gebruik je om gewicht te meten?", ["Klok", "Weegschaal", "Kaart", "Rekenmachine"], 1, "Gewicht meet je met een weegschaal."],
+    ["Hoeveel minuten zitten er in een kwartier?", ["10", "15", "20", "25"], 1, "Een kwartier is 15 minuten."],
+    ["Wat is zwaarder?", ["1 kilo", "500 gram", "even zwaar", "niet te vergelijken"], 0, "1 kilo is zwaarder dan 500 gram."],
+    ["Hoeveel milliliter is 1 liter?", ["100", "250", "500", "1000"], 3, "1 liter is 1000 milliliter."],
+  ]
   const rekenenBase = [
     ["Welke breuk is gelijk aan 50%?", ["1/4", "1/2", "2/3", "3/4"], 1, "50% is hetzelfde als 1/2."],
     ["Hoeveel is 25% van 80?", ["10", "20", "25", "40"], 1, "25% van 80 is 20."],
@@ -527,7 +639,8 @@ function buildFallbackQuestions({ topic, questionCount }) {
   ]
 
   const selectedBase =
-    topicIncludes(normalizedTopic, /(rekenen|wiskunde|breuk|procent|getal|meten|geld|tijd)/) ? rekenenBase :
+    topicIncludes(normalizedTopic, /(meten en maten|meten|maten|lengte|gewicht|inhoud|liter|milliliter|centimeter|meter|kilo|gram|tijd meten)/) ? metenEnMatenBase :
+    topicIncludes(normalizedTopic, /(rekenen|wiskunde|breuk|procent|getal|geld|tijd)/) ? rekenenBase :
     topicIncludes(normalizedTopic, /(taal|spelling|woordenschat|nederlands|engels|grammatica|lezen)/) ? taalBase :
     topicIncludes(normalizedTopic, /(aardrijkskunde|kaart|land|wereld|europa|geografie)/) ? aardrijkskundeBase :
     topicIncludes(normalizedTopic, /(geschiedenis|romeinen|middeleeuwen|oorlog|histor)/) ? geschiedenisBase :
@@ -545,7 +658,7 @@ function buildFallbackQuestions({ topic, questionCount }) {
       options,
       correctIndex,
       explanation,
-      category: String(topic || "Quiz"),
+      category: DOMAIN_LABELS[detectTopicDomain(topic)] || "Quiz",
       imagePrompt: `engaging classroom poster about ${topic || "general knowledge"}, educational quiz illustration, vibrant lighting`,
       imageAlt: `Illustratie bij ${topic || "de quiz"}`,
     }
@@ -613,8 +726,15 @@ Formaat:
 
   const result = await model.generateContent(prompt)
   const parsed = JSON.parse(extractJsonArray(result.response.text()))
-  const normalized = normalizeQuestions(parsed)
+  const normalized = normalizeQuestions(parsed).map((question) => ({
+    ...question,
+    category: sanitizeCategory(question.category, topic),
+  }))
   if (normalized.length === 0) throw new Error("AI output kon niet worden omgezet naar geldige vragen.")
+  const fitCheck = validateQuestionFit(normalized, topic)
+  if (!fitCheck.isValid) {
+    throw new Error(`AI-vragen sloten te weinig aan op het onderwerp (${fitCheck.matches}/${normalized.length} passend).`)
+  }
   return rebalanceQuestions(normalized)
 }
 
