@@ -87,6 +87,14 @@ function isIslamicTopic(prompt, category) {
 function pickVisualTheme(prompt, category) {
   const source = `${prompt} ${category}`.toLowerCase()
 
+  if (/(euro|prijs|korting|geld|koop|winkel|betaal|kost)/.test(source)) {
+    return {
+      gradient: ["#0f172a", "#134e4a", "#f59e0b"],
+      accent: "#fde68a",
+      icon: "price-tag",
+      label: "Prijs en korting",
+    }
+  }
   if (/(breuk|procent|reken|wiskund|math|getal)/.test(source)) {
     return {
       gradient: ["#13293d", "#005f73", "#ee9b00"],
@@ -143,6 +151,12 @@ function buildIconMarkup(icon, accent) {
   <circle cx="930" cy="288" r="120" fill="#ffffff12" stroke="${accent}" stroke-width="8"/>
   <path d="M930 288 L930 168 A120 120 0 0 1 1034 348 Z" fill="${accent}" opacity="0.95"/>
   <circle cx="930" cy="288" r="52" fill="#0a1524"/>`
+    case "price-tag":
+      return `
+  <path d="M820 210h170l88 88-176 176-126-126z" fill="#ffffff16" stroke="${accent}" stroke-width="8" stroke-linejoin="round"/>
+  <circle cx="925" cy="265" r="18" fill="${accent}"/>
+  <text x="845" y="380" fill="${accent}" font-size="118" font-family="Arial, Helvetica, sans-serif" font-weight="800">%</text>
+  <text x="960" y="400" fill="#ffffff" font-size="110" font-family="Arial, Helvetica, sans-serif" font-weight="800">€</text>`
     case "globe":
       return `
   <circle cx="930" cy="288" r="124" fill="#ffffff10" stroke="${accent}" stroke-width="8"/>
@@ -178,7 +192,7 @@ function buildIconMarkup(icon, accent) {
 
 function buildQuestionSvg({ prompt, category }) {
   const theme = pickVisualTheme(prompt, category)
-  const lines = wrapSvgText(prompt, 28, 3)
+  const lines = wrapSvgText(prompt, 30, 2)
   const safeCategory = escapeSvgText(isIslamicTopic(prompt, category) ? "Islamitische kennis" : theme.label, 40)
 
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -200,16 +214,16 @@ function buildQuestionSvg({ prompt, category }) {
   <rect x="72" y="72" width="1056" height="576" rx="34" fill="url(#card)" stroke="#ffffff20"/>
   <rect x="116" y="116" width="228" height="58" rx="29" fill="#ffffff10"/>
   <text x="148" y="153" fill="${theme.accent}" font-size="30" font-family="Arial, Helvetica, sans-serif" font-weight="700">${safeCategory}</text>
-  <text x="118" y="236" fill="#ffffff" font-size="54" font-family="Arial, Helvetica, sans-serif" font-weight="800">Illustratie bij de vraag</text>
+  <text x="118" y="228" fill="#ffffff" font-size="38" font-family="Arial, Helvetica, sans-serif" font-weight="800">Visuele hint</text>
   ${lines
     .map(
       ({ line, index }) =>
-        `<text x="118" y="${320 + index * 56}" fill="#dcecff" font-size="38" font-family="Arial, Helvetica, sans-serif" font-weight="600">${line}</text>`
+        `<text x="118" y="${292 + index * 46}" fill="#dcecff" font-size="30" font-family="Arial, Helvetica, sans-serif" font-weight="600">${line}</text>`
     )
     .join("\n  ")}
-  <rect x="118" y="476" width="268" height="104" rx="28" fill="#ffffff10"/>
-  <rect x="410" y="476" width="204" height="104" rx="28" fill="#ffffff0d"/>
-  <rect x="638" y="476" width="168" height="104" rx="28" fill="#ffffff08"/>
+  <rect x="118" y="470" width="184" height="84" rx="24" fill="#ffffff10"/>
+  <rect x="324" y="470" width="132" height="84" rx="24" fill="#ffffff0d"/>
+  <rect x="478" y="470" width="118" height="84" rx="24" fill="#ffffff08"/>
   ${buildIconMarkup(theme.icon, theme.accent)}
 </svg>`
 }
