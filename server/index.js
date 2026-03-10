@@ -48,11 +48,21 @@ const genAI = apiKey ? new GoogleGenerativeAI(apiKey) : null
 
 const TEAM_COLORS = ["#ff8c42", "#3dd6d0", "#8f7cff", "#ff5d8f"]
 const DEFAULT_TEAMS = ["Team Zon", "Team Oceaan"]
+const QUESTION_BATCH_SIZE = 50
+const QUESTION_POOL_LOW_WATERMARK = 10
+const QUESTION_GENERATION_TIMEOUT_MS = 40000
 
 const hostSockets = new Set()
 let players = []
 let teams = createTeams(DEFAULT_TEAMS)
 let questions = []
+let questionPool = []
+let questionPoolMeta = {
+  topicKey: "",
+  audience: "",
+  generatedAt: null,
+}
+let questionPoolPromise = null
 let currentQuestionIndex = -1
 let answeredPlayers = new Set()
 let roomCode = generateRoomCode()
@@ -60,8 +70,17 @@ let gameMeta = {
   topic: "",
   audience: "vmbo",
   questionCount: 12,
+  questionDurationSec: 20,
+  questionStartedAt: null,
   status: "idle",
   generatedAt: null,
+}
+
+function stampQuestionStart() {
+  gameMeta = {
+    ...gameMeta,
+    questionStartedAt: new Date().toISOString(),
+  }
 }
 
 function generateRoomCode() {
@@ -132,6 +151,13 @@ function getCurrentQuestion() {
   return currentQuestionIndex >= 0 ? questions[currentQuestionIndex] ?? null : null
 }
 
+function normalizeTopicKey(topic) {
+  return String(topic ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+}
+
 function extractJsonArray(text) {
   const cleaned = text.replace(/```json|```/gi, "").trim()
   const start = cleaned.indexOf("[")
@@ -144,33 +170,115 @@ function extractJsonArray(text) {
   return cleaned.slice(start, end + 1)
 }
 
-function normalizeQuestions(rawQuestions) {
+function repairJsonArrayText(jsonText) {
+  return jsonText
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/,\s*([}\]])/g, "$1")
+}
+
+function parseQuestionsFromAiText(text) {
+  const extracted = extractJsonArray(text)
+
+  try {
+    return JSON.parse(extracted)
+  } catch (parseError) {
+    const repaired = repairJsonArrayText(extracted)
+
+    if (repaired !== extracted) {
+      try {
+        console.warn("AI JSON was ongeldig, lokale repair-pass toegepast.")
+        return JSON.parse(repaired)
+      } catch {
+        // Fall through to the original error below.
+      }
+    }
+
+    const message = parseError instanceof Error ? parseError.message : "Onbekende JSON-fout"
+    throw new Error(`AI antwoord bevat ongeldige JSON: ${message}`)
+  }
+}
+
+function normalizeQuestion(question, index, batchId) {
+  const prompt = String(question?.prompt ?? question?.question ?? question?.vraag ?? "").trim()
+  const rawOptions = Array.isArray(question?.options)
+    ? question.options
+    : Array.isArray(question?.answers)
+      ? question.answers
+      : Array.isArray(question?.antwoordopties)
+        ? question.antwoordopties
+        : []
+  const options = rawOptions.map((option) => String(option).trim()).filter(Boolean).slice(0, 4)
+
+  let correctIndex = Number(
+    question?.correctIndex ?? question?.answerIndex ?? question?.correctAnswerIndex ?? question?.juisteIndex
+  )
+
+  if (!Number.isInteger(correctIndex) && typeof question?.correctAnswer === "string") {
+    const normalizedCorrectAnswer = question.correctAnswer.trim().toLowerCase()
+    correctIndex = options.findIndex((option) => option.toLowerCase() === normalizedCorrectAnswer)
+  }
+
+  const normalized = {
+    id: `q-${batchId}-${index + 1}`,
+    prompt,
+    options,
+    correctIndex,
+    explanation: String(question?.explanation ?? question?.uitleg ?? "").trim(),
+    category: String(question?.category ?? question?.onderwerp ?? "").trim() || "Quiz",
+    imagePrompt: String(question?.imagePrompt ?? question?.visualPrompt ?? "").trim(),
+    imageAlt: String(question?.imageAlt ?? "").trim(),
+  }
+
+  if (!normalized.prompt) {
+    return { ok: false, reason: "ontbrekende prompt" }
+  }
+
+  if (normalized.options.length < 4) {
+    return { ok: false, reason: "minder dan 4 antwoordopties" }
+  }
+
+  if (!Number.isInteger(normalized.correctIndex) || normalized.correctIndex < 0 || normalized.correctIndex >= 4) {
+    return { ok: false, reason: "ongeldige correctIndex" }
+  }
+
+  return { ok: true, question: normalized }
+}
+
+function normalizeQuestions(rawQuestions, { minimumCount = 1 } = {}) {
   if (!Array.isArray(rawQuestions) || rawQuestions.length === 0) {
     throw new Error("AI gaf geen bruikbare vragen terug.")
   }
 
-  return rawQuestions
-    .map((question, index) => ({
-      id: `q-${index + 1}`,
-      prompt: String(question?.prompt ?? "").trim(),
-      options: Array.isArray(question?.options)
-        ? question.options.map((option) => String(option).trim()).slice(0, 4)
-        : [],
-      correctIndex: Number(question?.correctIndex),
-      explanation: String(question?.explanation ?? "").trim(),
-      category: String(question?.category ?? "").trim() || "Quiz",
-      imagePrompt: String(question?.imagePrompt ?? "").trim(),
-      imageAlt: String(question?.imageAlt ?? "").trim(),
-    }))
-    .filter(
-      (question) =>
-        question.prompt &&
-        question.options.length === 4 &&
-        question.options.every(Boolean) &&
-        Number.isInteger(question.correctIndex) &&
-        question.correctIndex >= 0 &&
-        question.correctIndex < 4
+  const batchId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+  const acceptedQuestions = []
+  const rejectionReasons = new Map()
+
+  rawQuestions.forEach((question, index) => {
+    const normalized = normalizeQuestion(question, index, batchId)
+
+    if (!normalized.ok) {
+      rejectionReasons.set(normalized.reason, (rejectionReasons.get(normalized.reason) ?? 0) + 1)
+      return
+    }
+
+    acceptedQuestions.push(normalized.question)
+  })
+
+  if (rejectionReasons.size > 0) {
+    console.warn(
+      "AI-validatie: vragen afgekeurd",
+      Object.fromEntries(rejectionReasons.entries())
     )
+  }
+
+  if (acceptedQuestions.length < minimumCount) {
+    throw new Error(
+      `AI gaf te weinig geldige vragen terug (${acceptedQuestions.length}/${minimumCount}).`
+    )
+  }
+
+  return acceptedQuestions
 }
 
 function shuffleArray(items) {
@@ -517,7 +625,15 @@ async function withTimeout(promise, ms) {
   }
 }
 
-async function generateQuestions({ topic, audience, questionCount }) {
+function getQuestionPoolCacheKey(topic, audience) {
+  return `${normalizeTopicKey(topic)}::${normalizeTopicKey(audience || "vmbo")}`
+}
+
+function clonePoolQuestionsForRound(poolQuestions, requestedCount) {
+  return poolQuestions.splice(0, requestedCount)
+}
+
+async function generateQuestions({ topic, audience, minimumCount = QUESTION_POOL_LOW_WATERMARK }) {
   if (!genAI) {
     throw new Error("GEMINI_API_KEY ontbreekt in de serveromgeving.")
   }
@@ -526,21 +642,21 @@ async function generateQuestions({ topic, audience, questionCount }) {
     throw new Error("Voer eerst een onderwerp of thema in.")
   }
 
-  const safeQuestionCount = Math.max(6, Math.min(24, Number(questionCount) || 12))
   const targetAudience = audience?.trim() || "vmbo"
   const model = genAI.getGenerativeModel({ model: modelName })
 
   const prompt = `
-Maak precies ${safeQuestionCount} quizvragen in het Nederlands voor ${targetAudience}.
+Maak precies ${QUESTION_BATCH_SIZE} quizvragen in het Nederlands voor ${targetAudience}.
 
 Thema of onderwerp:
 ${topic.trim()}
 
 Belangrijke regels:
-- Dit onderwerp mag elk domein zijn: schoolvakken, algemene kennis, geschiedenis, aardrijkskunde, talen, wetenschap, cultuur, sport of islamitische kennis.
-- Bij religieuze of culturele onderwerpen: werk respectvol, feitelijk en zonder spot.
-- Formuleer levendige maar duidelijke meerkeuzevragen.
+- Dit onderwerp mag elk domein zijn: schoolvakken, algemene kennis, geschiedenis, aardrijkskunde, talen, wetenschap, cultuur, sport of religieuze kennis.
+- Werk respectvol, feitelijk en zonder spot.
+- Formuleer levendige maar duidelijke meerkeuzevragen voor VMBO-niveau.
 - Elke vraag moet 4 antwoordopties hebben.
+- Laat de vragen echt passen bij het onderwerp. Gebruik geen algemene standaardvragen die niet direct aansluiten.
 - Voeg per vraag een korte uitleg toe waarom het juiste antwoord klopt.
 - Voeg per vraag ook een "imagePrompt" toe in het Engels, bedoeld voor een illustratieve AI-afbeelding die bij de vraag past.
 - Voeg per vraag een korte "imageAlt" in het Nederlands toe.
@@ -562,16 +678,114 @@ JSON-formaat:
 ]
 `
 
-  const result = await model.generateContent(prompt)
-  const text = result.response.text()
-  const parsed = JSON.parse(extractJsonArray(text))
-  const normalized = normalizeQuestions(parsed)
+  try {
+    const result = await model.generateContent(prompt)
+    const text = result.response.text()
+    const parsed = parseQuestionsFromAiText(text)
+    const normalized = normalizeQuestions(parsed, { minimumCount })
 
-  if (normalized.length === 0) {
-    throw new Error("AI output kon niet worden omgezet naar geldige vragen.")
+    console.log(`AI batch ontvangen (${normalized.length} geldige vragen, model ${modelName}).`)
+    return rebalanceQuestions(normalized)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Onbekende AI-fout"
+    console.error("AI batchgeneratie mislukt:", message)
+    throw new Error(message)
+  }
+}
+
+async function refillQuestionPool({ topic, audience, minimumCount }) {
+  const poolKey = getQuestionPoolCacheKey(topic, audience)
+  const currentPoolKey = getQuestionPoolCacheKey(questionPoolMeta.topicKey, questionPoolMeta.audience)
+
+  if (questionPoolPromise?.key === poolKey) {
+    console.log("Vraagpool: bestaande AI-generatie wordt hergebruikt.")
+    return questionPoolPromise.promise
   }
 
-  return rebalanceQuestions(normalized)
+  const generationPromise = withTimeout(
+    generateQuestions({ topic, audience, minimumCount }),
+    QUESTION_GENERATION_TIMEOUT_MS
+  )
+    .then((generatedQuestions) => {
+      questionPool = [...generatedQuestions]
+      questionPoolMeta = {
+        topicKey: normalizeTopicKey(topic),
+        audience: audience?.trim() || "vmbo",
+        generatedAt: new Date().toISOString(),
+      }
+
+      console.log(
+        `Vraagpool vernieuwd: ${questionPool.length} vragen voor "${questionPoolMeta.topicKey}" (${questionPoolMeta.audience}).`
+      )
+
+      return questionPool
+    })
+    .catch((error) => {
+      if (currentPoolKey !== poolKey) {
+        questionPool = []
+        questionPoolMeta = {
+          topicKey: "",
+          audience: "",
+          generatedAt: null,
+        }
+      }
+
+      throw error
+    })
+
+  questionPoolPromise = {
+    key: poolKey,
+    promise: generationPromise,
+  }
+
+  try {
+    return await generationPromise
+  } finally {
+    if (questionPoolPromise?.promise === generationPromise) {
+      questionPoolPromise = null
+    }
+  }
+}
+
+async function ensureQuestionPool({ topic, audience, questionCount }) {
+  const normalizedTopicKey = normalizeTopicKey(topic)
+  const normalizedAudience = String(audience?.trim() || "vmbo")
+  const sameTopic =
+    questionPoolMeta.topicKey === normalizedTopicKey &&
+    normalizeTopicKey(questionPoolMeta.audience) === normalizeTopicKey(normalizedAudience)
+  const requiredCount = Math.max(6, Math.min(24, Number(questionCount) || 12))
+  const needsRefill =
+    !sameTopic ||
+    questionPool.length < requiredCount ||
+    questionPool.length < QUESTION_POOL_LOW_WATERMARK
+
+  if (needsRefill) {
+    console.log("Vraagpool refill nodig", {
+      sameTopic,
+      available: questionPool.length,
+      requiredCount,
+      topic: normalizedTopicKey,
+      audience: normalizedAudience,
+    })
+
+    await refillQuestionPool({
+      topic,
+      audience: normalizedAudience,
+      minimumCount: requiredCount,
+    })
+  } else {
+    console.log(
+      `Vraagpool hergebruikt: ${questionPool.length} vragen beschikbaar voor "${normalizedTopicKey}".`
+    )
+  }
+
+  if (questionPool.length < requiredCount) {
+    throw new Error(
+      `Vraagpool bevat te weinig vragen (${questionPool.length}/${requiredCount}) voor deze ronde.`
+    )
+  }
+
+  return clonePoolQuestionsForRound(questionPool, requiredCount)
 }
 
 app.get("/api/question-image", async (req, res) => {
@@ -673,13 +887,19 @@ io.on("connection", (socket) => {
     broadcastState()
   })
 
-  socket.on("host:generate", async ({ topic, audience, questionCount, teamNames }) => {
+  socket.on("host:generate", async ({ topic, audience, questionCount, teamNames, questionDurationSec }) => {
     if (!requireHost(socket)) return
 
+    const cleanTopic = String(topic ?? "").trim()
+    const cleanAudience = String(audience?.trim() || "vmbo")
+    const safeQuestionCount = Math.max(6, Math.min(24, Number(questionCount) || 12))
+    const safeDuration = Math.max(8, Math.min(60, Number(questionDurationSec) || 20))
+
     console.log("host:generate ontvangen", {
-      topic,
-      audience,
-      questionCount,
+      topic: cleanTopic,
+      audience: cleanAudience,
+      questionCount: safeQuestionCount,
+      questionDurationSec: safeDuration,
       teamCount: Array.isArray(teamNames) ? teamNames.length : 0,
     })
 
@@ -695,11 +915,23 @@ io.on("connection", (socket) => {
       socket.emit("host:room:update", { roomCode })
 
       try {
-        questions = await withTimeout(generateQuestions({ topic, audience, questionCount }), 25000)
+        questions = await ensureQuestionPool({
+          topic: cleanTopic,
+          audience: cleanAudience,
+          questionCount: safeQuestionCount,
+        })
+
+        console.log(
+          `Ronde geladen: ${questions.length} vragen actief, ${questionPool.length} vragen blijven in de pool.`
+        )
       } catch (aiError) {
         const fallbackMessage = aiError instanceof Error ? aiError.message : "AI-fout"
         console.error("AI-generatie mislukt, fallback geactiveerd:", fallbackMessage)
-        questions = buildFallbackQuestions({ topic, audience, questionCount })
+        questions = buildFallbackQuestions({
+          topic: cleanTopic,
+          audience: cleanAudience,
+          questionCount: safeQuestionCount,
+        })
         socket.emit("host:error", {
           message: `AI-generatie lukte niet direct. Er is een reservequiz gestart. Details: ${fallbackMessage}`,
         })
@@ -708,9 +940,11 @@ io.on("connection", (socket) => {
       currentQuestionIndex = 0
       answeredPlayers = new Set()
       gameMeta = {
-        topic: topic.trim(),
-        audience: audience?.trim() || "vmbo",
+        topic: cleanTopic,
+        audience: cleanAudience,
         questionCount: questions.length,
+        questionDurationSec: safeDuration,
+        questionStartedAt: new Date().toISOString(),
         status: "live",
         generatedAt: new Date().toISOString(),
       }
@@ -731,13 +965,18 @@ io.on("connection", (socket) => {
     if (currentQuestionIndex + 1 >= questions.length) {
       currentQuestionIndex = -1
       answeredPlayers = new Set()
-      gameMeta = { ...gameMeta, status: questions.length ? "finished" : "idle" }
+      gameMeta = {
+        ...gameMeta,
+        status: questions.length ? "finished" : "idle",
+        questionStartedAt: null,
+      }
       broadcastState()
       return
     }
 
     currentQuestionIndex += 1
     answeredPlayers = new Set()
+    stampQuestionStart()
     broadcastState()
   })
 
@@ -753,6 +992,8 @@ io.on("connection", (socket) => {
       topic: "",
       audience: "vmbo",
       questionCount: 12,
+      questionDurationSec: 20,
+      questionStartedAt: null,
       status: "idle",
       generatedAt: null,
     }
