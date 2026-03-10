@@ -713,7 +713,7 @@ function playTone(frequency, duration, type = "sine") {
 
 function QuestionVisual({ question }) {
   const [hasImageError, setHasImageError] = useState(false)
-  const imageUrl = buildQuestionImageUrl(question.imagePrompt || question.prompt)
+  const imageUrl = buildQuestionImageUrl(question.imagePrompt || question.prompt, question.category)
 
   useEffect(() => {
     setHasImageError(false)
@@ -868,9 +868,10 @@ function RosterBoard({ players, teams, compact = false }) {
   )
 }
 
-function buildQuestionImageUrl(prompt) {
+function buildQuestionImageUrl(prompt, category) {
   const searchParams = new URLSearchParams({
     prompt,
+    category: category || "",
   })
 
   return `/api/question-image?${searchParams.toString()}`

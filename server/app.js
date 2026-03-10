@@ -51,33 +51,166 @@ function generateRoomCode() {
   return code
 }
 
-function buildFallbackSvg(prompt) {
-  const safePrompt = String(prompt || "Lesson Battle")
-    .slice(0, 90)
+function escapeSvgText(value, maxLength = 160) {
+  return String(value || "")
+    .slice(0, maxLength)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
+}
+
+function wrapSvgText(value, maxChars = 26, maxLines = 3) {
+  const words = String(value || "").trim().split(/\s+/).filter(Boolean)
+  const lines = []
+  let current = ""
+
+  for (const word of words) {
+    const next = current ? `${current} ${word}` : word
+    if (next.length <= maxChars) {
+      current = next
+      continue
+    }
+    if (current) lines.push(current)
+    current = word
+    if (lines.length === maxLines - 1) break
+  }
+
+  if (lines.length < maxLines && current) lines.push(current)
+  return lines.slice(0, maxLines).map((line, index) => ({ line: escapeSvgText(line, 60), index }))
+}
+
+function isIslamicTopic(prompt, category) {
+  return /(islam|koran|moskee|profeet|ramadan|hadith|dua|salah|gebed)/.test(`${prompt} ${category}`.toLowerCase())
+}
+
+function pickVisualTheme(prompt, category) {
+  const source = `${prompt} ${category}`.toLowerCase()
+
+  if (/(breuk|procent|reken|wiskund|math|getal)/.test(source)) {
+    return {
+      gradient: ["#13293d", "#005f73", "#ee9b00"],
+      accent: "#ffd166",
+      icon: "pie",
+      label: "Rekenen",
+    }
+  }
+  if (/(aardrijkskunde|kaart|land|wereld|europa|planeet|geografie)/.test(source)) {
+    return {
+      gradient: ["#0b132b", "#1c2541", "#5bc0be"],
+      accent: "#9bf6ff",
+      icon: "globe",
+      label: "Aardrijkskunde",
+    }
+  }
+  if (/(geschiedenis|vroeger|romein|middeleeuw|oorlog|histor)/.test(source)) {
+    return {
+      gradient: ["#2d1e2f", "#5a3d2b", "#d98e04"],
+      accent: "#ffd08a",
+      icon: "column",
+      label: "Geschiedenis",
+    }
+  }
+  if (/(islam|koran|moskee|profeet|ramadan)/.test(source)) {
+    return {
+      gradient: ["#081c15", "#1b4332", "#2d6a4f"],
+      accent: "#d8f3dc",
+      icon: "crescent",
+      label: "Islamitische kennis",
+    }
+  }
+  if (/(engels|woord|taal|spelling|nederlands|grammatica)/.test(source)) {
+    return {
+      gradient: ["#1d3557", "#457b9d", "#a8dadc"],
+      accent: "#f1faee",
+      icon: "letters",
+      label: "Taal",
+    }
+  }
+
+  return {
+    gradient: ["#10223b", "#0d3b66", "#ff7a59"],
+    accent: "#ffd49e",
+    icon: "spark",
+    label: escapeSvgText(category || "Quiz", 40) || "Quiz",
+  }
+}
+
+function buildIconMarkup(icon, accent) {
+  switch (icon) {
+    case "pie":
+      return `
+  <circle cx="930" cy="288" r="120" fill="#ffffff12" stroke="${accent}" stroke-width="8"/>
+  <path d="M930 288 L930 168 A120 120 0 0 1 1034 348 Z" fill="${accent}" opacity="0.95"/>
+  <circle cx="930" cy="288" r="52" fill="#0a1524"/>`
+    case "globe":
+      return `
+  <circle cx="930" cy="288" r="124" fill="#ffffff10" stroke="${accent}" stroke-width="8"/>
+  <ellipse cx="930" cy="288" rx="76" ry="124" fill="none" stroke="${accent}" stroke-width="6" opacity="0.75"/>
+  <ellipse cx="930" cy="288" rx="124" ry="52" fill="none" stroke="${accent}" stroke-width="6" opacity="0.75"/>
+  <path d="M808 288h244M930 164v248" stroke="${accent}" stroke-width="6" opacity="0.7"/>`
+    case "column":
+      return `
+  <rect x="830" y="180" width="200" height="40" rx="12" fill="${accent}" opacity="0.92"/>
+  <rect x="850" y="220" width="36" height="180" rx="10" fill="#ffffffd9"/>
+  <rect x="912" y="220" width="36" height="180" rx="10" fill="#ffffffd9"/>
+  <rect x="974" y="220" width="36" height="180" rx="10" fill="#ffffffd9"/>
+  <rect x="820" y="400" width="220" height="34" rx="12" fill="${accent}" opacity="0.88"/>`
+    case "crescent":
+      return `
+  <circle cx="930" cy="272" r="118" fill="${accent}" opacity="0.92"/>
+  <circle cx="968" cy="252" r="108" fill="#0b1f17"/>
+  <circle cx="1018" cy="340" r="14" fill="${accent}"/>
+  <circle cx="995" cy="372" r="10" fill="${accent}" opacity="0.8"/>
+  <circle cx="1042" cy="302" r="8" fill="${accent}" opacity="0.7"/>`
+    case "letters":
+      return `
+  <rect x="806" y="154" width="248" height="268" rx="32" fill="#ffffff12" stroke="${accent}" stroke-width="6"/>
+  <text x="850" y="262" fill="${accent}" font-size="110" font-family="Arial, Helvetica, sans-serif" font-weight="800">A</text>
+  <text x="948" y="332" fill="#ffffff" font-size="120" font-family="Arial, Helvetica, sans-serif" font-weight="800">B</text>
+  <text x="870" y="404" fill="${accent}" font-size="84" font-family="Arial, Helvetica, sans-serif" font-weight="700">C</text>`
+    default:
+      return `
+  <circle cx="930" cy="288" r="120" fill="#ffffff10"/>
+  <path d="M930 178l27 72 78 4-61 49 21 76-65-43-65 43 21-76-61-49 78-4z" fill="${accent}" opacity="0.95"/>`
+  }
+}
+
+function buildQuestionSvg({ prompt, category }) {
+  const theme = pickVisualTheme(prompt, category)
+  const lines = wrapSvgText(prompt, 28, 3)
+  const safeCategory = escapeSvgText(isIslamicTopic(prompt, category) ? "Islamitische kennis" : theme.label, 40)
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720">
   <defs>
     <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
-      <stop offset="0%" stop-color="#10223b"/>
-      <stop offset="50%" stop-color="#0d3b66"/>
-      <stop offset="100%" stop-color="#ff7a59"/>
+      <stop offset="0%" stop-color="${theme.gradient[0]}"/>
+      <stop offset="52%" stop-color="${theme.gradient[1]}"/>
+      <stop offset="100%" stop-color="${theme.gradient[2]}"/>
+    </linearGradient>
+    <linearGradient id="card" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#07111fdc"/>
+      <stop offset="100%" stop-color="#0d1728a6"/>
     </linearGradient>
   </defs>
   <rect width="1200" height="720" rx="36" fill="url(#bg)"/>
-  <circle cx="930" cy="160" r="110" fill="#ffffff12"/>
-  <circle cx="220" cy="580" r="150" fill="#ffffff10"/>
-  <rect x="90" y="90" width="1020" height="540" rx="28" fill="#07111fcc" stroke="#ffffff22"/>
-  <text x="120" y="180" fill="#ffd49e" font-size="30" font-family="Arial, Helvetica, sans-serif" font-weight="700">Lesson Battle Visual</text>
-  <text x="120" y="270" fill="#ffffff" font-size="50" font-family="Arial, Helvetica, sans-serif" font-weight="700">Illustratie bij de vraag</text>
-  <text x="120" y="360" fill="#d8e8ff" font-size="34" font-family="Arial, Helvetica, sans-serif">${safePrompt}</text>
-  <rect x="120" y="430" width="260" height="120" rx="20" fill="#ffffff10"/>
-  <rect x="410" y="430" width="320" height="120" rx="20" fill="#ffffff0d"/>
-  <rect x="760" y="430" width="230" height="120" rx="20" fill="#ffffff08"/>
+  <circle cx="210" cy="610" r="158" fill="#ffffff10"/>
+  <circle cx="1080" cy="120" r="96" fill="#ffffff12"/>
+  <rect x="72" y="72" width="1056" height="576" rx="34" fill="url(#card)" stroke="#ffffff20"/>
+  <rect x="116" y="116" width="228" height="58" rx="29" fill="#ffffff10"/>
+  <text x="148" y="153" fill="${theme.accent}" font-size="30" font-family="Arial, Helvetica, sans-serif" font-weight="700">${safeCategory}</text>
+  <text x="118" y="236" fill="#ffffff" font-size="54" font-family="Arial, Helvetica, sans-serif" font-weight="800">Illustratie bij de vraag</text>
+  ${lines
+    .map(
+      ({ line, index }) =>
+        `<text x="118" y="${320 + index * 56}" fill="#dcecff" font-size="38" font-family="Arial, Helvetica, sans-serif" font-weight="600">${line}</text>`
+    )
+    .join("\n  ")}
+  <rect x="118" y="476" width="268" height="104" rx="28" fill="#ffffff10"/>
+  <rect x="410" y="476" width="204" height="104" rx="28" fill="#ffffff0d"/>
+  <rect x="638" y="476" width="168" height="104" rx="28" fill="#ffffff08"/>
+  ${buildIconMarkup(theme.icon, theme.accent)}
 </svg>`
 }
 
@@ -382,6 +515,7 @@ Regels:
 - 4 antwoordopties per vraag.
 - Korte uitleg per vraag.
 - Voeg "category", "imagePrompt" en "imageAlt" toe.
+- Bij islamitische kennis: geen gezichten, personen, profeten of levende wezens afbeelden; kies abstracte, objectgerichte of symbolische visuals.
 - Geen markdown, alleen geldige JSON.
 
 Formaat:
@@ -407,49 +541,14 @@ Formaat:
 
 app.get("/api/question-image", async (req, res) => {
   const prompt = String(req.query.prompt ?? "").trim()
+  const category = String(req.query.category ?? "").trim()
   if (!prompt) {
     res.status(400).json({ error: "prompt is verplicht" })
     return
   }
-
-  const searchParams = new URLSearchParams({ width: "1200", height: "720", model: "flux", nologo: "true", enhance: "true" })
-  const imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?${searchParams.toString()}`
-
-  try {
-    const response = await fetchWithTimeout(imageUrl, { headers: { Accept: "image/*" } }, 3500)
-    if (!response.ok) throw new Error(`Afbeelding ophalen mislukt met status ${response.status}`)
-    const contentType = response.headers.get("content-type") || ""
-    if (!contentType.startsWith("image/")) throw new Error("Onverwacht content-type voor afbeelding")
-    const isSvgLike = contentType.includes("svg") || contentType.includes("xml")
-
-    if (isSvgLike) {
-      const svgText = await response.text()
-      const lowerSvg = svgText.toLowerCase()
-      const looksBroken =
-        lowerSvg.includes("temporarily not available") ||
-        lowerSvg.includes("failed to generate") ||
-        lowerSvg.includes("error") ||
-        lowerSvg.includes("blocked") ||
-        lowerSvg.includes("quota")
-
-      if (looksBroken) throw new Error("Externe afbeeldingsdienst gaf een fout-SVG terug")
-
-      res.setHeader("Content-Type", contentType)
-      res.setHeader("Cache-Control", "public, max-age=1800")
-      res.status(200).send(svgText)
-      return
-    }
-
-    const arrayBuffer = await response.arrayBuffer()
-    res.setHeader("Content-Type", contentType)
-    res.setHeader("Cache-Control", "public, max-age=3600")
-    res.send(Buffer.from(arrayBuffer))
-  } catch (error) {
-    console.error("Fout bij afbeelding proxy:", error instanceof Error ? error.message : "Onbekende image-fout")
-    res.setHeader("Content-Type", "image/svg+xml; charset=utf-8")
-    res.setHeader("Cache-Control", "public, max-age=300")
-    res.status(200).send(buildFallbackSvg(prompt))
-  }
+  res.setHeader("Content-Type", "image/svg+xml; charset=utf-8")
+  res.setHeader("Cache-Control", "public, max-age=3600")
+  res.status(200).send(buildQuestionSvg({ prompt, category }))
 })
 
 if (fs.existsSync(clientDistPath)) {
