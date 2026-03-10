@@ -52,7 +52,7 @@ function generateRoomCode() {
 
 function buildFallbackSvg(prompt) {
   const safePrompt = String(prompt || "Lesson Battle")
-    .slice(0, 160)
+    .slice(0, 90)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
@@ -60,12 +60,23 @@ function buildFallbackSvg(prompt) {
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720">
-  <defs><linearGradient id="bg" x1="0" x2="1" y1="0" y2="1"><stop offset="0%" stop-color="#10223b"/><stop offset="50%" stop-color="#0d3b66"/><stop offset="100%" stop-color="#ff7a59"/></linearGradient></defs>
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#10223b"/>
+      <stop offset="50%" stop-color="#0d3b66"/>
+      <stop offset="100%" stop-color="#ff7a59"/>
+    </linearGradient>
+  </defs>
   <rect width="1200" height="720" rx="36" fill="url(#bg)"/>
+  <circle cx="930" cy="160" r="110" fill="#ffffff12"/>
+  <circle cx="220" cy="580" r="150" fill="#ffffff10"/>
   <rect x="90" y="90" width="1020" height="540" rx="28" fill="#07111fcc" stroke="#ffffff22"/>
-  <text x="120" y="190" fill="#ffd49e" font-size="30" font-family="Arial, Helvetica, sans-serif" font-weight="700">Lesson Battle Visual</text>
-  <text x="120" y="270" fill="#ffffff" font-size="48" font-family="Arial, Helvetica, sans-serif" font-weight="700">AI-afbeelding tijdelijk niet beschikbaar</text>
-  <foreignObject x="120" y="320" width="920" height="220"><div xmlns="http://www.w3.org/1999/xhtml" style="font-family: Arial, Helvetica, sans-serif; color: #e7f1ff; font-size: 34px; line-height: 1.35;">${safePrompt}</div></foreignObject>
+  <text x="120" y="180" fill="#ffd49e" font-size="30" font-family="Arial, Helvetica, sans-serif" font-weight="700">Lesson Battle Visual</text>
+  <text x="120" y="270" fill="#ffffff" font-size="50" font-family="Arial, Helvetica, sans-serif" font-weight="700">Illustratie bij de vraag</text>
+  <text x="120" y="360" fill="#d8e8ff" font-size="34" font-family="Arial, Helvetica, sans-serif">${safePrompt}</text>
+  <rect x="120" y="430" width="260" height="120" rx="20" fill="#ffffff10"/>
+  <rect x="410" y="430" width="320" height="120" rx="20" fill="#ffffff0d"/>
+  <rect x="760" y="430" width="230" height="120" rx="20" fill="#ffffff08"/>
 </svg>`
 }
 
@@ -321,6 +332,10 @@ async function withTimeout(promise, ms) {
   }
 }
 
+async function fetchWithTimeout(url, options, ms) {
+  return withTimeout(fetch(url, options), ms)
+}
+
 async function generateQuestions({ topic, audience, questionCount }) {
   if (!genAI) throw new Error("GEMINI_API_KEY ontbreekt in de serveromgeving.")
   if (!topic?.trim()) throw new Error("Voer eerst een onderwerp of thema in.")
@@ -372,10 +387,12 @@ app.get("/api/question-image", async (req, res) => {
   const imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?${searchParams.toString()}`
 
   try {
-    const response = await fetch(imageUrl, { headers: { Accept: "image/*" } })
+    const response = await fetchWithTimeout(imageUrl, { headers: { Accept: "image/*" } }, 3500)
     if (!response.ok) throw new Error(`Afbeelding ophalen mislukt met status ${response.status}`)
+    const contentType = response.headers.get("content-type") || ""
+    if (!contentType.startsWith("image/")) throw new Error("Onverwacht content-type voor afbeelding")
     const arrayBuffer = await response.arrayBuffer()
-    res.setHeader("Content-Type", response.headers.get("content-type") || "image/jpeg")
+    res.setHeader("Content-Type", contentType)
     res.setHeader("Cache-Control", "public, max-age=3600")
     res.send(Buffer.from(arrayBuffer))
   } catch (error) {
@@ -412,6 +429,21 @@ io.on("connection", (socket) => {
     socket.emit("host:room:update", { roomCode: room.code })
     socket.emit("host:generate:success", { count: room.questions.length })
     emitStateToSocket(socket, room)
+  })
+
+  socket.on("player:lookup-room", ({ roomCode }) => {
+    const room = rooms.get(String(roomCode ?? "").trim().toUpperCase())
+    if (!room) {
+      socket.emit("player:room:preview", { valid: false })
+      return
+    }
+
+    socket.emit("player:room:preview", {
+      valid: true,
+      roomCode: room.code,
+      teams: room.teams,
+      status: room.game.status,
+    })
   })
 
   socket.on("host:configure", ({ teamNames }) => {

@@ -69,6 +69,7 @@ function HostPage() {
   const [topic, setTopic] = useState("Brede quiz over schoolvakken, algemene kennis en islamitische kennis")
   const [audience, setAudience] = useState("vmbo")
   const [questionCount, setQuestionCount] = useState(12)
+  const [questionDurationSec, setQuestionDurationSec] = useState(20)
   const [teamNamesInput, setTeamNamesInput] = useState("Team Zon\nTeam Oceaan")
   const [status, setStatus] = useState("Kies onderwerp, stel teams in en start de battle.")
   const [loginForm, setLoginForm] = useState({ username: "", password: "" })
@@ -107,6 +108,38 @@ function HostPage() {
     }
   }, [])
 
+  const timeLeft = useQuestionCountdown(game)
+  const [presenterMode, setPresenterMode] = useState(false)
+
+  const toggleFullscreen = async () => {
+    if (!document.fullscreenElement) {
+      await document.documentElement.requestFullscreen()
+      setPresenterMode(true)
+      return
+    }
+
+    await document.exitFullscreen()
+    setPresenterMode(false)
+  }
+
+  useEffect(() => {
+    if (!hostSession.authenticated || game.status !== "live" || !game.question || timeLeft !== 0) {
+      return
+    }
+
+    const timeout = window.setTimeout(() => {
+      socket.emit("host:next")
+    }, 900)
+
+    return () => window.clearTimeout(timeout)
+  }, [game.question?.id, game.status, hostSession.authenticated, timeLeft])
+
+  useEffect(() => {
+    const syncFullscreen = () => setPresenterMode(Boolean(document.fullscreenElement))
+    document.addEventListener("fullscreenchange", syncFullscreen)
+    return () => document.removeEventListener("fullscreenchange", syncFullscreen)
+  }, [])
+
   const preparedTeamNames = useMemo(
     () =>
       teamNamesInput
@@ -133,6 +166,7 @@ function HostPage() {
       topic,
       audience,
       questionCount,
+      questionDurationSec,
       teamNames: preparedTeamNames,
     })
   }
@@ -162,6 +196,9 @@ function HostPage() {
             <strong>{game.totalQuestions || questionCount}</strong>
             <span>Vragen in ronde</span>
           </div>
+          <button className="button-secondary present-button" onClick={toggleFullscreen} type="button">
+            {presenterMode ? "Verlaat fullscreen" : "Presentatiemodus"}
+          </button>
         </div>
       </section>
 
@@ -219,6 +256,11 @@ function HostPage() {
             </button>
           </div>
 
+          <div className="lobby-banner">
+            <span>Leerlingen gaan naar /join en gebruiken code</span>
+            <strong>{hostSession.roomCode || "-----"}</strong>
+          </div>
+
           <label className="field">
             <span>Onderwerp of mix</span>
             <textarea
@@ -257,6 +299,16 @@ function HostPage() {
                 max="24"
                 value={questionCount}
                 onChange={(event) => setQuestionCount(Number(event.target.value))}
+              />
+            </label>
+            <label className="field">
+              <span>Tijd per vraag (sec)</span>
+              <input
+                type="number"
+                min="8"
+                max="60"
+                value={questionDurationSec}
+                onChange={(event) => setQuestionDurationSec(Number(event.target.value))}
               />
             </label>
           </div>
@@ -305,24 +357,26 @@ function HostPage() {
         <div className="glass question-stage">
           <div className="section-head">
             <h2>Live vraag</h2>
-            <span className="pill">
+            <div className="pill-row">
+              <span className="pill timer-pill">{game.status === "live" ? `${timeLeft}s` : "Klaar"}</span>
+              <span className="pill">
               {game.status === "live"
                 ? `Vraag ${game.currentQuestionIndex + 1} / ${game.totalQuestions}`
                 : game.status === "finished"
                   ? "Ronde klaar"
                   : "Nog niet gestart"}
-            </span>
+              </span>
+            </div>
           </div>
+
+          <ProgressBar current={game.currentQuestionIndex + 1} total={game.totalQuestions} timeLeft={timeLeft} duration={game.questionDurationSec} />
 
           {game.question ? (
             <QuestionCard question={game.question} />
           ) : game.status === "finished" ? (
             <ResultsCard teams={teams} leaderboard={leaderboard} />
           ) : (
-            <div className="empty-state">
-              <h3>Start een ronde</h3>
-              <p>Na het genereren verschijnt hier direct de huidige vraag met visual en antwoordopties.</p>
-            </div>
+            <LobbyCard roomCode={hostSession.roomCode} teams={teams} players={players} />
           )}
         </div>
       </section>
@@ -340,16 +394,21 @@ function PlayerPage() {
   const [name, setName] = useState("")
   const [teamId, setTeamId] = useState("")
   const [roomCode, setRoomCode] = useState("")
+  const [roomPreview, setRoomPreview] = useState({ valid: false, teams: [] })
   const [joined, setJoined] = useState(false)
   const [result, setResult] = useState(null)
   const [chosenAnswer, setChosenAnswer] = useState(null)
   const [status, setStatus] = useState("Kies je team en doe mee.")
+  const timeLeft = useQuestionCountdown(game)
+
+  useSoundEffects(result, game.status)
 
   useEffect(() => {
-    if (!teamId && teams[0]?.id) {
-      setTeamId(teams[0].id)
+    const sourceTeams = roomPreview.valid ? roomPreview.teams : teams
+    if (!teamId && sourceTeams[0]?.id) {
+      setTeamId(sourceTeams[0].id)
     }
-  }, [teamId, teams])
+  }, [roomPreview, teamId, teams])
 
   useEffect(() => {
     const onJoined = () => {
@@ -357,6 +416,17 @@ function PlayerPage() {
       setStatus("Je bent binnen. Wacht op de vraag of geef meteen antwoord.")
     }
     const onPlayerError = ({ message }) => setStatus(message)
+    const onRoomPreview = (payload) => {
+      setRoomPreview(payload)
+      if (payload.valid) {
+        setStatus(`Room ${payload.roomCode} gevonden.`)
+        if (payload.teams?.[0]?.id) {
+          setTeamId((current) => current || payload.teams[0].id)
+        }
+      } else if (roomCode.length >= 5) {
+        setStatus("Deze spelcode bestaat niet.")
+      }
+    }
     const onAnswerResult = (payload) => {
       setResult(payload)
       setStatus(payload.correct ? "Goed antwoord. Je team pakt punten." : "Helaas, niet goed.")
@@ -364,14 +434,25 @@ function PlayerPage() {
 
     socket.on("player:joined", onJoined)
     socket.on("player:error", onPlayerError)
+    socket.on("player:room:preview", onRoomPreview)
     socket.on("player:answer:result", onAnswerResult)
 
     return () => {
       socket.off("player:joined", onJoined)
       socket.off("player:error", onPlayerError)
+      socket.off("player:room:preview", onRoomPreview)
       socket.off("player:answer:result", onAnswerResult)
     }
-  }, [])
+  }, [roomCode.length])
+
+  useEffect(() => {
+    if (roomCode.trim().length < 5) {
+      setRoomPreview({ valid: false, teams: [] })
+      return
+    }
+
+    socket.emit("player:lookup-room", { roomCode: roomCode.trim().toUpperCase() })
+  }, [roomCode])
 
   useEffect(() => {
     setResult(null)
@@ -382,7 +463,8 @@ function PlayerPage() {
     socket.emit("player:join", { name, teamId, roomCode })
   }
 
-  const selectedTeam = teams.find((team) => team.id === teamId)
+  const availableTeams = roomPreview.valid ? roomPreview.teams : teams
+  const selectedTeam = availableTeams.find((team) => team.id === teamId)
 
   return (
     <main className="page-shell player-shell">
@@ -400,7 +482,7 @@ function PlayerPage() {
           <label className="field">
             <span>Kies je team</span>
             <select value={teamId} onChange={(event) => setTeamId(event.target.value)}>
-              {teams.map((team) => (
+              {availableTeams.map((team) => (
                 <option key={team.id} value={team.id}>
                   {team.name}
                 </option>
@@ -417,7 +499,7 @@ function PlayerPage() {
             />
           </label>
 
-          <button className="button-primary" onClick={join} type="button">
+          <button className="button-primary" disabled={!roomPreview.valid} onClick={join} type="button">
             {joined ? "Team bijwerken" : "Meedoen"}
           </button>
 
@@ -431,13 +513,17 @@ function PlayerPage() {
         <div className="glass battle-card">
           <div className="section-head">
             <h2>Huidige vraag</h2>
-            <span className="pill">
-              {game.status === "live" ? `Vraag ${game.currentQuestionIndex + 1}` : "Wachten"}
-            </span>
+            <div className="pill-row">
+              <span className="pill timer-pill">{game.status === "live" ? `${timeLeft}s` : "Wachten"}</span>
+              <span className="pill">
+                {game.status === "live" ? `Vraag ${game.currentQuestionIndex + 1}` : "Wachten"}
+              </span>
+            </div>
           </div>
 
           {game.question ? (
             <>
+              <ProgressBar current={game.currentQuestionIndex + 1} total={game.totalQuestions} timeLeft={timeLeft} duration={game.questionDurationSec} />
               <QuestionCard question={game.question} compact={false} showOptions={false} />
               <div className="answer-grid">
                 {game.question.options.map((option, index) => {
@@ -511,6 +597,65 @@ function QuestionCard({ question, compact = false, showOptions = true }) {
   )
 }
 
+function useQuestionCountdown(game) {
+  const [timeLeft, setTimeLeft] = useState(game.questionDurationSec || 20)
+
+  useEffect(() => {
+    if (game.status !== "live" || !game.questionStartedAt) {
+      setTimeLeft(game.questionDurationSec || 20)
+      return
+    }
+
+    const update = () => {
+      const endTime = new Date(game.questionStartedAt).getTime() + (game.questionDurationSec || 20) * 1000
+      const next = Math.max(0, Math.ceil((endTime - Date.now()) / 1000))
+      setTimeLeft(next)
+    }
+
+    update()
+    const interval = window.setInterval(update, 250)
+    return () => window.clearInterval(interval)
+  }, [game.question?.id, game.questionDurationSec, game.questionStartedAt, game.status])
+
+  return timeLeft
+}
+
+function useSoundEffects(result, status) {
+  useEffect(() => {
+    if (!result) return
+
+    playTone(result.correct ? 880 : 240, result.correct ? 0.12 : 0.18, result.correct ? "triangle" : "sawtooth")
+  }, [result])
+
+  useEffect(() => {
+    if (status !== "finished") return
+    playTone(660, 0.12, "triangle")
+    window.setTimeout(() => playTone(880, 0.16, "triangle"), 140)
+  }, [status])
+}
+
+function playTone(frequency, duration, type = "sine") {
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext
+  if (!AudioContextClass) return
+
+  const context = new AudioContextClass()
+  const oscillator = context.createOscillator()
+  const gainNode = context.createGain()
+
+  oscillator.type = type
+  oscillator.frequency.value = frequency
+  gainNode.gain.value = 0.0001
+  oscillator.connect(gainNode)
+  gainNode.connect(context.destination)
+
+  const now = context.currentTime
+  gainNode.gain.exponentialRampToValueAtTime(0.04, now + 0.01)
+  gainNode.gain.exponentialRampToValueAtTime(0.0001, now + duration)
+  oscillator.start(now)
+  oscillator.stop(now + duration + 0.02)
+  oscillator.onended = () => context.close()
+}
+
 function QuestionVisual({ question }) {
   const [hasImageError, setHasImageError] = useState(false)
   const imageUrl = buildQuestionImageUrl(question.imagePrompt || question.prompt)
@@ -540,7 +685,8 @@ function QuestionVisual({ question }) {
 }
 
 function ResultsCard({ teams, leaderboard }) {
-  const winningTeam = [...teams].sort((left, right) => right.score - left.score)[0]
+  const sortedTeams = [...teams].sort((left, right) => right.score - left.score)
+  const winningTeam = sortedTeams[0]
   const topPlayer = leaderboard[0]
 
   return (
@@ -551,13 +697,59 @@ function ResultsCard({ teams, leaderboard }) {
         {winningTeam ? `Eindsaldo: ${winningTeam.score} punten.` : "Bekijk hieronder de eindstand."}
         {topPlayer ? ` Topspeler: ${topPlayer.name} met ${topPlayer.score} punten.` : ""}
       </p>
+      <div className="podium">
+        {sortedTeams.slice(0, 3).map((team, index) => (
+          <div className={`podium-step place-${index + 1}`} key={team.id} style={{ "--team-accent": team.color }}>
+            <span className="podium-rank">#{index + 1}</span>
+            <strong>{team.name}</strong>
+            <b>{team.score}</b>
+          </div>
+        ))}
+      </div>
       <div className="results-grid">
-        {teams.map((team) => (
+        {sortedTeams.map((team) => (
           <div className="result-tile" key={team.id} style={{ "--team-accent": team.color }}>
             <span>{team.name}</span>
             <strong>{team.score}</strong>
           </div>
         ))}
+      </div>
+    </div>
+  )
+}
+
+function ProgressBar({ current, total, timeLeft, duration }) {
+  const progress = total ? Math.max(0, Math.min(100, (current / total) * 100)) : 0
+  const timeProgress = duration ? Math.max(0, Math.min(100, (timeLeft / duration) * 100)) : 100
+
+  return (
+    <div className="progress-stack">
+      <div className="progress-track">
+        <div className="progress-fill" style={{ width: `${progress}%` }} />
+      </div>
+      <div className="progress-track timer-track">
+        <div className="progress-fill timer-fill" style={{ width: `${timeProgress}%` }} />
+      </div>
+    </div>
+  )
+}
+
+function LobbyCard({ roomCode, teams, players }) {
+  return (
+    <div className="lobby-card">
+      <span className="eyebrow">Klaslobby</span>
+      <h3>Pak je telefoon en join de battle</h3>
+      <div className="lobby-code">{roomCode || "-----"}</div>
+      <p>Open <strong>/join</strong>, voer de code in en kies een team. Zodra de docent start, verschijnen de vragen hier live.</p>
+      <div className="lobby-stats">
+        <div className="result-tile">
+          <span>Teams</span>
+          <strong>{teams.length}</strong>
+        </div>
+        <div className="result-tile">
+          <span>Spelers online</span>
+          <strong>{players.length}</strong>
+        </div>
       </div>
     </div>
   )
