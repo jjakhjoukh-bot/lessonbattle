@@ -156,18 +156,6 @@ function HostPage() {
   }
 
   useEffect(() => {
-    if (!hostSession.authenticated || game.status !== "live" || !game.question || timeLeft !== 0) {
-      return
-    }
-
-    const timeout = window.setTimeout(() => {
-      socket.emit("host:next")
-    }, 900)
-
-    return () => window.clearTimeout(timeout)
-  }, [game.question?.id, game.status, hostSession.authenticated, timeLeft])
-
-  useEffect(() => {
     const syncFullscreen = () => setPresenterMode(Boolean(document.fullscreenElement))
     document.addEventListener("fullscreenchange", syncFullscreen)
     return () => document.removeEventListener("fullscreenchange", syncFullscreen)
