@@ -1,7 +1,7 @@
 {
   "type": "module",
   "scripts": {
-    "server": "node server/index.js",
+    "server": "node server/app.js",
     "build": "npm --prefix client install && npm --prefix client run build"
   },
   "dependencies": {
