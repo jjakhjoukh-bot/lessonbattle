@@ -258,6 +258,7 @@ function createRoom(hostSocketId) {
       questionDurationSec: 20,
       questionStartedAt: null,
       status: "idle",
+      source: "idle",
       generatedAt: null,
     },
   }
@@ -358,6 +359,7 @@ function emitStateToSocket(socket, room) {
           questionDurationSec: 20,
           questionStartedAt: null,
           status: "idle",
+          source: "idle",
           generatedAt: null,
           currentQuestionIndex: -1,
           totalQuestions: 0,
@@ -474,6 +476,7 @@ function topicIncludes(topic, pattern) {
 function detectTopicDomain(topic) {
   const normalizedTopic = String(topic || "").toLowerCase()
 
+  if (topicIncludes(normalizedTopic, /(klokkijken|klok|tijd aflezen|hele uren|halve uren|kwartier|kwartieren|minuten|digitale klok|analoge klok|rekenen met tijd)/)) return "tijd"
   if (topicIncludes(normalizedTopic, /(meten en maten|meten|maten|lengte|gewicht|inhoud|liter|milliliter|centimeter|meter|kilo|gram)/)) return "meten"
   if (topicIncludes(normalizedTopic, /(rekenen|wiskunde|breuk|procent|getal|optellen|aftrekken|delen|vermenigvuldigen)/)) return "rekenen"
   if (topicIncludes(normalizedTopic, /(taal|spelling|woordenschat|nederlands|engels|grammatica|lezen|schrijven)/)) return "taal"
@@ -486,6 +489,7 @@ function detectTopicDomain(topic) {
 }
 
 const DOMAIN_LABELS = {
+  tijd: "Tijd en klokkijken",
   meten: "Meten en maten",
   rekenen: "Rekenen",
   taal: "Taal",
@@ -498,6 +502,7 @@ const DOMAIN_LABELS = {
 }
 
 const DOMAIN_KEYWORDS = {
+  tijd: ["klok", "tijd", "kwartier", "minuten", "uur", "half", "digitale", "analoge"],
   meten: ["meter", "centimeter", "milliliter", "liter", "gram", "kilo", "lengte", "gewicht", "inhoud", "meten", "tijd"],
   rekenen: ["som", "getal", "breuk", "procent", "keer", "delen", "optellen", "aftrekken", "rekenen", "waarde"],
   taal: ["woord", "zin", "spelling", "betekent", "taal", "engels", "nederlands", "grammatica", "lezen"],
@@ -575,6 +580,16 @@ function sanitizeCategory(rawCategory, topic) {
 
 function buildFallbackQuestions({ topic, questionCount }) {
   const normalizedTopic = String(topic || "").toLowerCase()
+  const tijdBase = [
+    ["Hoe laat is het een kwartier na 3?", ["03:15", "03:30", "03:45", "04:15"], 0, "Een kwartier na 3 is 03:15."],
+    ["Hoeveel minuten zitten er in een uur?", ["30", "45", "60", "100"], 2, "Een uur heeft 60 minuten."],
+    ["Wat betekent half 8?", ["07:30", "08:30", "07:00", "08:00"], 0, "Half 8 betekent 07:30."],
+    ["Hoeveel kwartieren zitten er in een uur?", ["2", "3", "4", "6"], 2, "Een uur bestaat uit 4 kwartieren."],
+    ["Welke tijd hoort bij 10 minuten voor 9?", ["08:50", "09:10", "08:10", "09:50"], 0, "10 minuten voor 9 is 08:50."],
+    ["Hoe laat is het 20 minuten na 14:00?", ["14:10", "14:20", "14:30", "15:20"], 1, "20 minuten na 14:00 is 14:20."],
+    ["Hoeveel minuten is een half uur?", ["15", "20", "30", "45"], 2, "Een half uur is 30 minuten."],
+    ["Wat is eerder?", ["09:45", "10:15", "even laat", "niet te vergelijken"], 0, "09:45 is eerder dan 10:15."],
+  ]
   const metenEnMatenBase = [
     ["Hoeveel centimeter is 1 meter?", ["10", "50", "100", "1000"], 2, "1 meter is 100 centimeter."],
     ["Wat is langer?", ["1 meter", "50 centimeter", "beide even lang", "dat weet je niet"], 0, "1 meter is langer dan 50 centimeter."],
@@ -639,6 +654,7 @@ function buildFallbackQuestions({ topic, questionCount }) {
   ]
 
   const selectedBase =
+    topicIncludes(normalizedTopic, /(klokkijken|klok|tijd aflezen|hele uren|halve uren|kwartier|kwartieren|minuten|digitale klok|analoge klok|rekenen met tijd)/) ? tijdBase :
     topicIncludes(normalizedTopic, /(meten en maten|meten|maten|lengte|gewicht|inhoud|liter|milliliter|centimeter|meter|kilo|gram|tijd meten)/) ? metenEnMatenBase :
     topicIncludes(normalizedTopic, /(rekenen|wiskunde|breuk|procent|getal|geld|tijd)/) ? rekenenBase :
     topicIncludes(normalizedTopic, /(taal|spelling|woordenschat|nederlands|engels|grammatica|lezen)/) ? taalBase :
@@ -840,9 +856,23 @@ io.on("connection", (socket) => {
     try {
       room.questions = await withTimeout(generateQuestions({ topic, audience, questionCount }), 25000)
     } catch (aiError) {
-      const fallbackMessage = aiError instanceof Error ? aiError.message : "AI-fout"
-      room.questions = buildFallbackQuestions({ topic, questionCount })
-      socket.emit("host:error", { message: `AI-generatie lukte niet direct. Er is een reservequiz gestart. Details: ${fallbackMessage}` })
+      const errorMessage = aiError instanceof Error ? aiError.message : "AI-fout"
+      room.questions = []
+      room.currentQuestionIndex = -1
+      room.answeredPlayers = new Set()
+      room.game = {
+        topic: String(topic ?? "").trim(),
+        audience: audience?.trim() || "vmbo",
+        questionCount: Number(questionCount) || 12,
+        questionDurationSec: safeDuration,
+        questionStartedAt: null,
+        status: "idle",
+        source: "idle",
+        generatedAt: null,
+      }
+      emitStateToRoom(room)
+      socket.emit("host:error", { message: `AI kon geen passende vragen maken. De ronde is niet gestart. Details: ${errorMessage}` })
+      return
     }
 
     room.currentQuestionIndex = 0
@@ -854,6 +884,7 @@ io.on("connection", (socket) => {
       questionDurationSec: safeDuration,
       questionStartedAt: new Date().toISOString(),
       status: "live",
+      source: "ai",
       generatedAt: new Date().toISOString(),
     }
 
@@ -894,6 +925,7 @@ io.on("connection", (socket) => {
       questionDurationSec: 20,
       questionStartedAt: null,
       status: "idle",
+      source: "idle",
       generatedAt: null,
     }
     emitStateToRoom(room)
