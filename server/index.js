@@ -311,31 +311,194 @@ function broadcastState() {
   io.emit("game:update", payload.game)
 }
 
-function buildFallbackQuestions({ topic, audience, questionCount }) {
+function buildFractionPercentFallbackQuestions() {
+  return [
+    {
+      prompt: "Welke breuk is gelijk aan 50%?",
+      options: ["1/4", "1/2", "2/3", "3/4"],
+      correctIndex: 1,
+      explanation: "50% betekent 50 van de 100, en dat is hetzelfde als 1/2.",
+    },
+    {
+      prompt: "Wat is 25% van 80?",
+      options: ["10", "20", "25", "40"],
+      correctIndex: 1,
+      explanation: "25% is een kwart. Een kwart van 80 is 20.",
+    },
+    {
+      prompt: "Welke breuk hoort bij 75%?",
+      options: ["1/3", "2/3", "3/4", "4/5"],
+      correctIndex: 2,
+      explanation: "75% = 75/100 = 3/4.",
+    },
+    {
+      prompt: "Wat is 10% van 230?",
+      options: ["2,3", "23", "32", "46"],
+      correctIndex: 1,
+      explanation: "10% is delen door 10. 230 gedeeld door 10 is 23.",
+    },
+    {
+      prompt: "Welke breuk is het grootst?",
+      options: ["1/2", "2/5", "3/8", "4/9"],
+      correctIndex: 0,
+      explanation: "1/2 = 0,5 en dat is groter dan 0,4, 0,375 en ongeveer 0,44.",
+    },
+    {
+      prompt: "Een trui kost eerst 60 euro en daarna 20% minder. Wat is de nieuwe prijs?",
+      options: ["48 euro", "50 euro", "52 euro", "54 euro"],
+      correctIndex: 0,
+      explanation: "20% van 60 is 12. 60 - 12 = 48 euro.",
+    },
+    {
+      prompt: "Welke breuk is gelijk aan 0,2?",
+      options: ["1/2", "1/4", "1/5", "2/5"],
+      correctIndex: 2,
+      explanation: "1/5 = 0,2.",
+    },
+    {
+      prompt: "Wat is 40% van 150?",
+      options: ["45", "50", "60", "75"],
+      correctIndex: 2,
+      explanation: "10% van 150 is 15, dus 40% is 4 x 15 = 60.",
+    },
+    {
+      prompt: "Welke procent hoort bij 3/5?",
+      options: ["30%", "40%", "50%", "60%"],
+      correctIndex: 3,
+      explanation: "3/5 = 0,6 = 60%.",
+    },
+    {
+      prompt: "Een pizza is in 8 gelijke stukken verdeeld. Je eet 2 stukken op. Welk percentage is dat?",
+      options: ["20%", "25%", "30%", "40%"],
+      correctIndex: 1,
+      explanation: "2 van de 8 stukken is 2/8 = 1/4 = 25%.",
+    },
+    {
+      prompt: "Wat is 5% van 200?",
+      options: ["5", "10", "15", "20"],
+      correctIndex: 1,
+      explanation: "10% van 200 is 20, dus 5% is de helft daarvan: 10.",
+    },
+    {
+      prompt: "Welke breuk is gelijk aan 20%?",
+      options: ["1/3", "1/4", "1/5", "2/5"],
+      correctIndex: 2,
+      explanation: "20% = 20/100 = 1/5.",
+    },
+  ]
+}
+
+function buildGeographyFallbackQuestions() {
+  return [
+    { prompt: "Welke hoofdstad hoort bij Frankrijk?", options: ["Madrid", "Parijs", "Rome", "Berlijn"], correctIndex: 1, explanation: "Parijs is de hoofdstad van Frankrijk." },
+    { prompt: "Op welk werelddeel ligt Egypte grotendeels?", options: ["Azië", "Europa", "Afrika", "Zuid-Amerika"], correctIndex: 2, explanation: "Egypte ligt grotendeels in Afrika." },
+    { prompt: "Hoe noem je een kaart die vooral hoogteverschillen laat zien?", options: ["Klimaatkaart", "Topografische kaart", "Bevolkingskaart", "Themakaart"], correctIndex: 1, explanation: "Een topografische kaart laat onder meer reliëf en hoogte zien." },
+    { prompt: "Wat is een delta?", options: ["Een gebergte", "Een woestijn", "Een gebied waar een rivier zich splitst bij zee", "Een groot meer"], correctIndex: 2, explanation: "Bij een delta splitst een rivier zich in meerdere armen richting zee." },
+    { prompt: "Welke lijn verdeelt de aarde in een noordelijk en zuidelijk halfrond?", options: ["Kreeftskeerkring", "Evenaar", "Nulmeridiaan", "Poolcirkel"], correctIndex: 1, explanation: "De evenaar verdeelt de aarde in twee halfronden." },
+    { prompt: "Wat betekent bevolkingsdichtheid?", options: ["Het aantal geboorten per jaar", "Het aantal inwoners per km²", "Het aantal steden in een land", "De gemiddelde leeftijd"], correctIndex: 1, explanation: "Bevolkingsdichtheid is het aantal inwoners per vierkante kilometer." },
+  ]
+}
+
+function buildHistoryFallbackQuestions() {
+  return [
+    { prompt: "In welke periode leefden ridders en kastelen vooral?", options: ["Middeleeuwen", "Oudheid", "Prehistorie", "Tijd van ontdekkers"], correctIndex: 0, explanation: "Ridders en kastelen horen vooral bij de middeleeuwen." },
+    { prompt: "Wie was de eerste president van de Verenigde Staten?", options: ["Abraham Lincoln", "George Washington", "Thomas Jefferson", "John Adams"], correctIndex: 1, explanation: "George Washington was de eerste president." },
+    { prompt: "Wat was de industriële revolutie?", options: ["Een oorlog tussen landen", "Een tijd van veel machinegebruik en fabrieken", "Een religieuze hervorming", "Een ontdekkingsreis"], correctIndex: 1, explanation: "De industriële revolutie draaide om machines, fabrieken en grote veranderingen in werk." },
+    { prompt: "Waarvoor werd de Berlijnse Muur een symbool?", options: ["De Gouden Eeuw", "De Koude Oorlog", "De middeleeuwen", "De Romeinse tijd"], correctIndex: 1, explanation: "De Berlijnse Muur werd een belangrijk symbool van de Koude Oorlog." },
+    { prompt: "Welke beschaving bouwde piramides?", options: ["De Grieken", "De Romeinen", "De Egyptenaren", "De Vikingen"], correctIndex: 2, explanation: "De Egyptenaren bouwden de bekende piramides." },
+    { prompt: "Wat betekent chronologisch werken?", options: ["Van belangrijkste naar minst belangrijke", "Van vroeger naar later in de tijd", "Van dichtbij naar ver weg", "Van makkelijk naar moeilijk"], correctIndex: 1, explanation: "Chronologisch betekent op tijdsvolgorde." },
+  ]
+}
+
+function buildBiologyFallbackQuestions() {
+  return [
+    { prompt: "Welk orgaan pompt bloed door je lichaam?", options: ["Long", "Lever", "Hart", "Maag"], correctIndex: 2, explanation: "Het hart pompt bloed door het lichaam." },
+    { prompt: "Wat hebben planten nodig voor fotosynthese?", options: ["Zonlicht, water en koolstofdioxide", "Alleen water", "Alleen zuurstof", "Zout en zand"], correctIndex: 0, explanation: "Voor fotosynthese gebruiken planten zonlicht, water en koolstofdioxide." },
+    { prompt: "Welk deel van een cel bevat meestal het erfelijk materiaal?", options: ["Celwand", "Celkern", "Bladgroenkorrel", "Vacuole"], correctIndex: 1, explanation: "De celkern bevat meestal het DNA." },
+    { prompt: "Hoe noem je dieren die planten eten?", options: ["Roofdieren", "Omnivoren", "Herbivoren", "Carnivoren"], correctIndex: 2, explanation: "Herbivoren zijn planteneters." },
+    { prompt: "Waar vindt gaswisseling vooral plaats in je longen?", options: ["In de luchtpijp", "In de longblaasjes", "In de ribben", "In de keel"], correctIndex: 1, explanation: "Gaswisseling gebeurt vooral in de longblaasjes." },
+    { prompt: "Wat is de functie van wortels bij een plant?", options: ["Licht opnemen", "Water en mineralen opnemen", "Zaden verspreiden", "Bloemen maken"], correctIndex: 1, explanation: "Wortels nemen water en mineralen uit de bodem op." },
+  ]
+}
+
+function buildEnglishFallbackQuestions() {
+  return [
+    { prompt: "Wat betekent het Engelse woord 'library'?", options: ["Boek", "School", "Bibliotheek", "Klaslokaal"], correctIndex: 2, explanation: "'Library' betekent bibliotheek." },
+    { prompt: "Welke zin is grammaticaal correct?", options: ["He go to school every day.", "He goes to school every day.", "He going to school every day.", "He gone to school every day."], correctIndex: 1, explanation: "Bij 'he' hoort in de tegenwoordige tijd meestal een werkwoord met -s." },
+    { prompt: "Wat is de vertaling van 'because'?", options: ["Maar", "Omdat", "Daarna", "Misschien"], correctIndex: 1, explanation: "'Because' betekent 'omdat'." },
+    { prompt: "Welke vorm is de verleden tijd van 'go'?", options: ["Goed", "Went", "Gone", "Going"], correctIndex: 1, explanation: "De verleden tijd van 'go' is 'went'." },
+    { prompt: "Wat betekent 'weather'?", options: ["Tijd", "Klimaat", "Weer", "Seizoen"], correctIndex: 2, explanation: "'Weather' betekent 'weer'." },
+    { prompt: "Welke zin betekent 'Ik heb een nieuwe fiets'?", options: ["I am a new bike.", "I have a new bike.", "I has a new bike.", "I be a new bike."], correctIndex: 1, explanation: "'I have a new bike' is de juiste vertaling." },
+  ]
+}
+
+function buildDutchFallbackQuestions() {
+  return [
+    { prompt: "Welk woord is juist gespeld?", options: ["gebeurt", "gebeurdt", "gebuurt", "gebeurd"], correctIndex: 0, explanation: "'Gebeurt' is de juiste spelling in deze vorm." },
+    { prompt: "Wat is een zelfstandig naamwoord?", options: ["Een woord dat een persoon, dier of ding noemt", "Een woord dat een handeling aangeeft", "Een woord dat een eigenschap noemt", "Een woord dat een voegwoord is"], correctIndex: 0, explanation: "Een zelfstandig naamwoord noemt een persoon, dier, plant of ding." },
+    { prompt: "Welke zin bevat een bijvoeglijk naamwoord?", options: ["De hond rent.", "Het grote huis staat daar.", "Wij lopen naar school.", "Zij zingen hard."], correctIndex: 1, explanation: "'Grote' zegt iets over het huis en is een bijvoeglijk naamwoord." },
+    { prompt: "Wat is het onderwerp in de zin 'De leerling leest een boek'?", options: ["boek", "leest", "de leerling", "een"], correctIndex: 2, explanation: "De leerling doet de handeling en is dus het onderwerp." },
+    { prompt: "Welke leestekens gebruik je meestal bij een vraag?", options: ["Punt", "Komma", "Vraagteken", "Dubbele punt"], correctIndex: 2, explanation: "Bij een vraag gebruik je meestal een vraagteken." },
+    { prompt: "Wat is een synoniem?", options: ["Een woord met dezelfde betekenis", "Een woord met de tegenovergestelde betekenis", "Een werkwoordsvorm", "Een naamwoordelijk gezegde"], correctIndex: 0, explanation: "Een synoniem heeft ongeveer dezelfde betekenis." },
+  ]
+}
+
+function buildIslamFallbackQuestions() {
+  return [
+    { prompt: "Hoe heet het heilige boek van de islam?", options: ["Bijbel", "Thora", "Koran", "Psalmen"], correctIndex: 2, explanation: "De Koran is het heilige boek van de islam." },
+    { prompt: "Hoe vaak bidden moslims gewoonlijk per dag?", options: ["3 keer", "4 keer", "5 keer", "6 keer"], correctIndex: 2, explanation: "De vijf dagelijkse gebeden horen bij de islamitische praktijk." },
+    { prompt: "Wat is de naam van de vastenmaand in de islam?", options: ["Hadj", "Ramadan", "Eid", "Zakat"], correctIndex: 1, explanation: "Ramadan is de maand waarin veel moslims vasten." },
+    { prompt: "Wat betekent zakat het best?", options: ["Bedevaart", "Liefdadigheid/aalmoes", "Vasten verbreken", "Vrijdaggebed"], correctIndex: 1, explanation: "Zakat is een vorm van verplichte liefdadigheid." },
+    { prompt: "Naar welke stad gaan moslims voor de hadj?", options: ["Medina", "Jeruzalem", "Mekka", "Caïro"], correctIndex: 2, explanation: "De hadj is de bedevaart naar Mekka." },
+    { prompt: "Wat is een moskee?", options: ["Een schoolvak", "Een feestdag", "Een gebedshuis", "Een kledingstuk"], correctIndex: 2, explanation: "Een moskee is een gebedshuis." },
+  ]
+}
+
+function buildGeneralKnowledgeFallbackQuestions() {
+  return [
+    { prompt: "Wat is de grootste planeet van ons zonnestelsel?", options: ["Mars", "Aarde", "Jupiter", "Venus"], correctIndex: 2, explanation: "Jupiter is de grootste planeet van ons zonnestelsel." },
+    { prompt: "Welke kleur krijg je door rood en geel te mengen?", options: ["Groen", "Oranje", "Paars", "Blauw"], correctIndex: 1, explanation: "Rood en geel samen geven oranje." },
+    { prompt: "Hoeveel minuten zitten er in een uur?", options: ["30", "45", "60", "100"], correctIndex: 2, explanation: "Een uur heeft 60 minuten." },
+    { prompt: "Welk dier staat bekend als het snelste landdier?", options: ["Leeuw", "Cheetah", "Paard", "Hert"], correctIndex: 1, explanation: "De cheetah is het snelste landdier." },
+    { prompt: "In welk seizoen vallen de bladeren meestal van de bomen?", options: ["Lente", "Zomer", "Herfst", "Winter"], correctIndex: 2, explanation: "In de herfst verliezen veel bomen hun bladeren." },
+    { prompt: "Welke oceaan ligt tussen Europa en Noord-Amerika?", options: ["Stille Oceaan", "Atlantische Oceaan", "Indische Oceaan", "Noordelijke IJszee"], correctIndex: 1, explanation: "Tussen Europa en Noord-Amerika ligt de Atlantische Oceaan." },
+  ]
+}
+
+function buildGeneralFallbackQuestions(topic) {
+  const cleanTopic = String(topic || "algemene kennis").trim()
+  const lowerTopic = cleanTopic.toLowerCase()
+
+  if (lowerTopic.includes("aardrijks")) return buildGeographyFallbackQuestions()
+  if (lowerTopic.includes("geschiedenis")) return buildHistoryFallbackQuestions()
+  if (lowerTopic.includes("biologie") || lowerTopic.includes("menselijk lichaam")) return buildBiologyFallbackQuestions()
+  if (lowerTopic.includes("engels")) return buildEnglishFallbackQuestions()
+  if (lowerTopic.includes("nederlands") || lowerTopic.includes("spelling") || lowerTopic.includes("taal")) return buildDutchFallbackQuestions()
+  if (lowerTopic.includes("islam")) return buildIslamFallbackQuestions()
+  if (lowerTopic.includes("algemene kennis")) return buildGeneralKnowledgeFallbackQuestions()
+
+  return buildGeneralKnowledgeFallbackQuestions()
+}
+
+function buildFallbackQuestions({ topic, questionCount }) {
   const safeQuestionCount = Math.max(6, Math.min(24, Number(questionCount) || 12))
   const cleanTopic = String(topic || "algemene kennis").trim()
-  const category = cleanTopic.length > 40 ? "Gemixte quiz" : cleanTopic
+  const lowerTopic = cleanTopic.toLowerCase()
+  const baseQuestions =
+    lowerTopic.includes("breuk") || lowerTopic.includes("procent")
+      ? buildFractionPercentFallbackQuestions()
+      : buildGeneralFallbackQuestions(cleanTopic)
 
-  return Array.from({ length: safeQuestionCount }, (_, index) => {
-    const number = index + 1
-    const options = [
-      `${cleanTopic} basisbegrip ${number}`,
-      `${cleanTopic} voorbeeld ${number}`,
-      `${cleanTopic} kernidee ${number}`,
-      `${cleanTopic} toepassing ${number}`,
-    ]
-
-    return {
-      id: `fallback-${number}`,
-      prompt: `Welke optie past het best bij vraag ${number} over ${cleanTopic} voor ${audience || "leerlingen"}?`,
-      options,
-      correctIndex: number % 4,
-      explanation: `Dit is een reservevraag omdat de AI-service niet direct antwoord gaf. Je kunt de ronde wel gewoon spelen.`,
-      category,
-      imagePrompt: `vibrant educational poster about ${cleanTopic}, classroom quiz, cinematic lighting, engaging students`,
-      imageAlt: `Illustratie bij ${cleanTopic}`,
-    }
-  })
+  return baseQuestions.slice(0, safeQuestionCount).map((question, index) => ({
+    id: `fallback-${index + 1}`,
+    category: cleanTopic.length > 40 ? "Gemixte quiz" : cleanTopic || "Quiz",
+    imagePrompt:
+      lowerTopic.includes("breuk") || lowerTopic.includes("procent")
+        ? "students solving fractions and percentages on a bright classroom board, colorful educational illustration"
+        : `engaging classroom poster about ${cleanTopic}, educational quiz illustration, vibrant lighting`,
+    imageAlt: `Illustratie bij ${cleanTopic || "de quiz"}`,
+    ...question,
+  }))
 }
 
 async function withTimeout(promise, ms) {
