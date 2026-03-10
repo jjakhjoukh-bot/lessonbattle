@@ -1,0 +1,14 @@
+{
+  "type": "module",
+  "scripts": {
+    "server": "node server/index.js",
+    "build": "npm --prefix client run build"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "express": "^5.2.1",
+    "openai": "^6.27.0",
+    "socket.io": "^4.8.3",
+    "socket.io-client": "^4.8.3"
+  }
+}

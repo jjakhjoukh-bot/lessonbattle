@@ -1,0 +1,47 @@
+import { useState } from "react";
+
+function Join() {
+
+  const [name, setName] = useState("")
+  const [code, setCode] = useState("")
+
+  const joinGame = () => {
+    alert(name + " joined game " + code)
+  }
+
+  return (
+    <div style={{
+      fontFamily:"sans-serif",
+      padding:"40px",
+      background:"#111827",
+      color:"white",
+      minHeight:"100vh"
+    }}>
+
+      <h1>Join Lesson Battle</h1>
+
+      <input
+        placeholder="Naam"
+        value={name}
+        onChange={(e)=>setName(e.target.value)}
+      />
+
+      <br/><br/>
+
+      <input
+        placeholder="Spelcode"
+        value={code}
+        onChange={(e)=>setCode(e.target.value)}
+      />
+
+      <br/><br/>
+
+      <button onClick={joinGame}>
+        Join game
+      </button>
+
+    </div>
+  )
+}
+
+export default Join
