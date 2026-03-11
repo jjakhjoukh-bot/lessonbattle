@@ -1,5 +1,6 @@
 import express from "express"
 import fs from "fs"
+import Groq from "groq-sdk"
 import http from "http"
 import path from "path"
 import { Server } from "socket.io"
@@ -41,10 +42,13 @@ const io = new Server(server, {
 
 const apiKey = process.env.GEMINI_API_KEY
 const modelName = process.env.GEMINI_MODEL || "gemini-2.5-flash"
+const groqApiKey = process.env.GROQ_API_KEY
+const groqModel = process.env.GROQ_MODEL || "llama3-70b-8192"
 const port = Number(process.env.PORT || 3001)
 const teacherUsername = process.env.TEACHER_USERNAME || "docent"
 const teacherPassword = process.env.TEACHER_PASSWORD || "les1234"
 const genAI = apiKey ? new GoogleGenerativeAI(apiKey) : null
+const groq = groqApiKey ? new Groq({ apiKey: groqApiKey }) : null
 
 const TEAM_COLORS = ["#ff8c42", "#3dd6d0", "#8f7cff", "#ff5d8f"]
 const DEFAULT_TEAMS = ["Team Zon", "Team Oceaan"]
@@ -620,32 +624,9 @@ async function withTimeout(promise, ms) {
   }
 }
 
-function getQuestionPoolCacheKey(topic, audience) {
-  return `${normalizeTopicKey(topic)}::${normalizeTopicKey(audience || "vmbo")}`
-}
-
-function getTopicCacheEntry(topic, audience) {
-  return questionsPerTopic[getQuestionPoolCacheKey(topic, audience)] ?? null
-}
-
-function cloneCachedQuestionsForRound(cacheEntry, requestedCount) {
-  return cacheEntry.questions.splice(0, requestedCount)
-}
-
-async function generateQuestions({ topic, audience, minimumCount = QUESTION_POOL_LOW_WATERMARK }) {
-  if (!genAI) {
-    throw new Error("GEMINI_API_KEY ontbreekt in de serveromgeving.")
-  }
-
-  if (!topic?.trim()) {
-    throw new Error("Voer eerst een onderwerp of thema in.")
-  }
-
-  const targetAudience = audience?.trim() || "vmbo"
-  const model = genAI.getGenerativeModel({ model: modelName })
-
-  const prompt = `
-Maak precies ${QUESTION_BATCH_SIZE} quizvragen in het Nederlands voor ${targetAudience}.
+function buildQuestionPrompt({ topic, audience, questionCount }) {
+  return `
+Maak precies ${questionCount} quizvragen in het Nederlands voor ${audience}.
 
 Thema of onderwerp:
 ${topic.trim()}
@@ -676,20 +657,123 @@ JSON-formaat:
   }
 ]
 `
+}
 
-  try {
-    const result = await model.generateContent(prompt)
-    const text = result.response.text()
-    const parsed = parseQuestionsFromAiText(text)
-    const normalized = normalizeQuestions(parsed, { minimumCount })
+function getQuestionPoolCacheKey(topic, audience) {
+  return `${normalizeTopicKey(topic)}::${normalizeTopicKey(audience || "vmbo")}`
+}
 
-    console.log(`AI batch ontvangen (${normalized.length} geldige vragen, model ${modelName}).`)
-    return rebalanceQuestions(normalized)
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Onbekende AI-fout"
-    console.error("AI batchgeneratie mislukt:", message)
-    throw new Error(message)
+function getTopicCacheEntry(topic, audience) {
+  return questionsPerTopic[getQuestionPoolCacheKey(topic, audience)] ?? null
+}
+
+function cloneCachedQuestionsForRound(cacheEntry, requestedCount) {
+  return cacheEntry.questions.splice(0, requestedCount)
+}
+
+async function generateQuestionsWithGemini(topic, audience, minimumCount = QUESTION_POOL_LOW_WATERMARK) {
+  if (!genAI) {
+    throw new Error("GEMINI_API_KEY ontbreekt in de serveromgeving.")
   }
+
+  const model = genAI.getGenerativeModel({ model: modelName })
+  const prompt = buildQuestionPrompt({
+    topic,
+    audience,
+    questionCount: QUESTION_BATCH_SIZE,
+  })
+
+  const result = await model.generateContent(prompt)
+  const text = result.response.text()
+  const parsed = parseQuestionsFromAiText(text)
+  const normalized = normalizeQuestions(parsed, { minimumCount })
+
+  console.log(`Gemini batch ontvangen (${normalized.length} geldige vragen, model ${modelName}).`)
+  return rebalanceQuestions(normalized)
+}
+
+async function generateQuestionsWithGroq(topic, audience, minimumCount = QUESTION_POOL_LOW_WATERMARK) {
+  if (!groq) {
+    throw new Error("GROQ_API_KEY ontbreekt in de serveromgeving.")
+  }
+
+  const prompt = buildQuestionPrompt({
+    topic,
+    audience,
+    questionCount: QUESTION_BATCH_SIZE,
+  })
+
+  const completion = await groq.chat.completions.create({
+    model: groqModel,
+    temperature: 0.3,
+    messages: [
+      {
+        role: "system",
+        content: "Je maakt quizvragen in helder Nederlands. Antwoord uitsluitend met geldige JSON.",
+      },
+      {
+        role: "user",
+        content: prompt,
+      },
+    ],
+  })
+
+  const text = completion.choices?.[0]?.message?.content || ""
+  const parsed = parseQuestionsFromAiText(text)
+  const normalized = normalizeQuestions(parsed, { minimumCount })
+
+  console.log(`Groq batch ontvangen (${normalized.length} geldige vragen, model ${groqModel}).`)
+  return rebalanceQuestions(normalized)
+}
+
+async function generateQuestions({ topic, audience, minimumCount = QUESTION_POOL_LOW_WATERMARK }) {
+  if (!topic?.trim()) {
+    throw new Error("Voer eerst een onderwerp of thema in.")
+  }
+
+  if (!genAI && !groq) {
+    throw new Error("Geen AI-provider geconfigureerd op de server.")
+  }
+
+  const targetAudience = audience?.trim() || "vmbo"
+  const providers = [
+    ...(genAI
+      ? [
+          {
+            name: "gemini",
+            run: () => generateQuestionsWithGemini(topic, targetAudience, minimumCount),
+          },
+        ]
+      : []),
+    ...(groq
+      ? [
+          {
+            name: "groq",
+            run: () => generateQuestionsWithGroq(topic, targetAudience, minimumCount),
+          },
+        ]
+      : []),
+  ]
+
+  const providerErrors = []
+
+  for (let index = 0; index < providers.length; index += 1) {
+    const provider = providers[index]
+
+    try {
+      if (index > 0) {
+        console.warn(`AI-provider ${providers[index - 1].name} faalde. Fallback naar ${provider.name}.`)
+      }
+
+      return await provider.run()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Onbekende AI-fout"
+      providerErrors.push(`${provider.name}: ${message}`)
+      console.error(`AI batchgeneratie mislukt via ${provider.name}:`, message)
+    }
+  }
+
+  throw new Error(providerErrors.join(" | "))
 }
 
 async function refillQuestionPool({ topic, audience, minimumCount }) {

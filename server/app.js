@@ -1,5 +1,6 @@
 import express from "express"
 import fs from "fs"
+import Groq from "groq-sdk"
 import http from "http"
 import OpenAI from "openai"
 import path from "path"
@@ -32,12 +33,15 @@ const io = new Server(server, { cors: { origin: "*" } })
 
 const apiKey = process.env.GEMINI_API_KEY
 const modelName = process.env.GEMINI_MODEL || "gemini-2.5-flash"
+const groqApiKey = process.env.GROQ_API_KEY
+const groqModel = process.env.GROQ_MODEL || "llama3-70b-8192"
 const openAIApiKey = process.env.OPENAI_API_KEY
 const openAIModel = process.env.OPENAI_MODEL || "gpt-4.1-mini"
 const port = Number(process.env.PORT || 3001)
 const teacherUsername = process.env.TEACHER_USERNAME || "docent"
 const teacherPassword = process.env.TEACHER_PASSWORD || "les1234"
 const genAI = apiKey ? new GoogleGenerativeAI(apiKey) : null
+const groq = groqApiKey ? new Groq({ apiKey: groqApiKey }) : null
 const openAI = openAIApiKey ? new OpenAI({ apiKey: openAIApiKey }) : null
 
 const TEAM_COLORS = ["#ff8c42", "#3dd6d0", "#8f7cff", "#ff5d8f"]
@@ -785,8 +789,29 @@ async function requestOpenAIText(prompt) {
   return response.output_text || ""
 }
 
+async function requestGroqText(prompt) {
+  if (!groq) throw new Error("Groq is niet geconfigureerd.")
+  const completion = await groq.chat.completions.create({
+    model: groqModel,
+    temperature: 0.3,
+    messages: [
+      {
+        role: "system",
+        content: "Je maakt quizvragen in helder Nederlands. Antwoord uitsluitend met geldige JSON.",
+      },
+      {
+        role: "user",
+        content: prompt,
+      },
+    ],
+  })
+
+  return completion.choices?.[0]?.message?.content || ""
+}
+
 async function requestProviderText(provider, prompt, timeoutMs) {
   if (provider === "gemini") return withTimeout(requestGeminiText(prompt), timeoutMs)
+  if (provider === "groq") return withTimeout(requestGroqText(prompt), timeoutMs)
   if (provider === "openai") return withTimeout(requestOpenAIText(prompt), timeoutMs)
   throw new Error(`Onbekende AI-provider: ${provider}`)
 }
@@ -881,6 +906,18 @@ async function generateQuestionsWithProvider(provider, { topic, audience, questi
   throw lastError ?? new Error(`${provider} kon geen bruikbare vragen genereren.`)
 }
 
+async function generateQuestionsWithGemini(topic, audience, questionCount) {
+  return generateQuestionsWithProvider("gemini", { topic, audience, questionCount })
+}
+
+async function generateQuestionsWithGroq(topic, audience, questionCount) {
+  return generateQuestionsWithProvider("groq", { topic, audience, questionCount })
+}
+
+async function generateQuestionsWithOpenAI(topic, audience, questionCount) {
+  return generateQuestionsWithProvider("openai", { topic, audience, questionCount })
+}
+
 function formatGenerationError(error) {
   const rawMessage =
     error instanceof Error
@@ -893,12 +930,12 @@ function formatGenerationError(error) {
     const retryMatch = rawMessage.match(/retry(?:\s+in)?\s+(\d+(?:\.\d+)?)s/i) || rawMessage.match(/"retryDelay":"(\d+)s"/i)
     const retrySeconds = retryMatch?.[1] ? Math.max(1, Math.ceil(Number(retryMatch[1]))) : null
     return retrySeconds
-      ? `AI-limiet bereikt bij Gemini. Probeer over ${retrySeconds} seconden opnieuw.`
-      : "AI-limiet bereikt bij Gemini. Probeer het over een paar minuten opnieuw."
+      ? `AI-limiet bereikt bij een AI-provider. Probeer over ${retrySeconds} seconden opnieuw.`
+      : "AI-limiet bereikt bij een AI-provider. Probeer het over een paar minuten opnieuw."
   }
 
-  if (/GEMINI_API_KEY ontbreekt/i.test(rawMessage)) {
-    return "De AI-sleutel ontbreekt op de server."
+  if (/GEMINI_API_KEY ontbreekt|Groq is niet geconfigureerd|OpenAI is niet geconfigureerd/i.test(rawMessage)) {
+    return "Een AI-provider is niet goed geconfigureerd op de server."
   }
 
   if (/geen passende vragen/i.test(rawMessage)) {
@@ -913,27 +950,28 @@ function formatGenerationError(error) {
 }
 
 async function generateQuestions({ topic, audience, questionCount }) {
-  if (!genAI && !openAI) throw new Error("Er is geen AI-provider geconfigureerd op de server.")
+  if (!genAI && !groq && !openAI) throw new Error("Er is geen AI-provider geconfigureerd op de server.")
   if (!topic?.trim()) throw new Error("Voer eerst een onderwerp of thema in.")
 
   const safeQuestionCount = Math.max(6, Math.min(24, Number(questionCount) || 12))
   const targetAudience = audience?.trim() || "vmbo"
   const attempts = [
-    ...(genAI ? ["gemini"] : []),
-    ...(openAI ? ["openai"] : []),
+    ...(genAI ? [{ name: "gemini", run: () => generateQuestionsWithGemini(topic, targetAudience, safeQuestionCount) }] : []),
+    ...(groq ? [{ name: "groq", run: () => generateQuestionsWithGroq(topic, targetAudience, safeQuestionCount) }] : []),
+    ...(openAI ? [{ name: "openai", run: () => generateQuestionsWithOpenAI(topic, targetAudience, safeQuestionCount) }] : []),
   ]
 
   const errors = []
-  for (const provider of attempts) {
+  for (let index = 0; index < attempts.length; index += 1) {
+    const provider = attempts[index]
     try {
-      return await generateQuestionsWithProvider(provider, {
-        topic,
-        audience: targetAudience,
-        questionCount: safeQuestionCount,
-      })
+      if (index > 0) {
+        console.warn(`[AI] ${attempts[index - 1].name} gefaald, probeer ${provider.name} fallback.`)
+      }
+      return await provider.run()
     } catch (providerError) {
-      errors.push(`${provider}: ${providerError instanceof Error ? providerError.message : "onbekende fout"}`)
-      console.warn(`[AI] provider ${provider} definitief afgekeurd`)
+      errors.push(`${provider.name}: ${providerError instanceof Error ? providerError.message : "onbekende fout"}`)
+      console.warn(`[AI] provider ${provider.name} definitief afgekeurd`)
     }
   }
 
