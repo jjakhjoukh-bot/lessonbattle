@@ -25,10 +25,15 @@ function useQuizState() {
     topic: "",
     audience: "vmbo",
     questionCount: 12,
+    questionDurationSec: 20,
     status: "idle",
+    mode: "battle",
     currentQuestionIndex: -1,
     totalQuestions: 0,
+    currentPhaseIndex: -1,
+    totalPhases: 0,
     question: null,
+    lesson: null,
   })
 
   useEffect(() => {
@@ -59,13 +64,17 @@ function useQuizState() {
 
 function HostPage() {
   const { players, teams, leaderboard, game } = useQuizState()
+  const [sessionMode, setSessionMode] = useState("battle")
   const [topic, setTopic] = useState("")
   const [audience, setAudience] = useState("vmbo")
   const [questionCount, setQuestionCount] = useState(12)
   const [questionDurationSec, setQuestionDurationSec] = useState(20)
+  const [lessonModel, setLessonModel] = useState("edi")
+  const [lessonDurationMinutes, setLessonDurationMinutes] = useState(45)
   const [teamNamesInput, setTeamNamesInput] = useState("Team Zon\nTeam Oceaan")
   const [status, setStatus] = useState("Vul het onderwerp in, stel de teams in en start de ronde.")
   const [hostInsights, setHostInsights] = useState(null)
+  const [lessonLibrary, setLessonLibrary] = useState([])
   const [loginForm, setLoginForm] = useState({ username: "", password: "" })
   const [hostSession, setHostSession] = useState(() => {
     try {
@@ -82,11 +91,18 @@ function HostPage() {
     }
   })
 
+  const activeMode = game.mode === "lesson" ? "lesson" : sessionMode
+
   useEffect(() => {
     if (teams.length > 0) {
       setTeamNamesInput(teams.map((team) => team.name).join("\n"))
     }
   }, [teams])
+
+  useEffect(() => {
+    if (game.lessonModel) setLessonModel(game.lessonModel)
+    if (game.lessonDurationMinutes) setLessonDurationMinutes(game.lessonDurationMinutes)
+  }, [game.lessonDurationMinutes, game.lessonModel])
 
   useEffect(() => {
     const onLoginSuccess = ({ username, roomCode }) => {
@@ -101,6 +117,8 @@ function HostPage() {
       setHostSession((current) => ({ ...current, roomCode }))
     }
     const onStarted = ({ message }) => setStatus(message)
+    const onLessonStarted = ({ message }) => setStatus(message)
+    const onLibraryUpdate = ({ lessons }) => setLessonLibrary(Array.isArray(lessons) ? lessons : [])
     const onInsights = (payload) => {
       setHostInsights(payload)
       if (payload?.allAnswered && payload.totalPlayers > 0) {
@@ -117,23 +135,45 @@ function HostPage() {
       setStatus(
         `${count} AI-vragen klaar${providerLabel ? ` via ${providerLabel}` : ""}. De ronde is live.`
       )
+    const onLessonSuccess = ({ count, providerLabel, lessonModel: nextLessonModel }) =>
+      setStatus(
+        `${count} lesstappen klaar${providerLabel ? ` via ${providerLabel}` : ""}. ${String(nextLessonModel || "Lesmodus").toUpperCase()} is live.`
+      )
+    const onSaveLessonSuccess = ({ title }) => setStatus(`Les opgeslagen in de bibliotheek: ${title}.`)
+    const onLoadLessonSuccess = ({ title }) => {
+      setSessionMode("lesson")
+      setStatus(`Les geladen uit de bibliotheek: ${title}.`)
+    }
+    const onDeleteLessonSuccess = () => setStatus("Les verwijderd uit de bibliotheek.")
 
     socket.on("host:login:success", onLoginSuccess)
     socket.on("host:configure:success", onConfigureSuccess)
     socket.on("host:room:update", onRoomUpdate)
     socket.on("host:generate:started", onStarted)
+    socket.on("host:generate-lesson:started", onLessonStarted)
+    socket.on("host:lesson-library:update", onLibraryUpdate)
     socket.on("host:question:insights", onInsights)
     socket.on("host:error", onError)
     socket.on("host:generate:success", onSuccess)
+    socket.on("host:generate-lesson:success", onLessonSuccess)
+    socket.on("host:save-lesson:success", onSaveLessonSuccess)
+    socket.on("host:load-lesson:success", onLoadLessonSuccess)
+    socket.on("host:delete-lesson:success", onDeleteLessonSuccess)
 
     return () => {
       socket.off("host:login:success", onLoginSuccess)
       socket.off("host:configure:success", onConfigureSuccess)
       socket.off("host:room:update", onRoomUpdate)
       socket.off("host:generate:started", onStarted)
+      socket.off("host:generate-lesson:started", onLessonStarted)
+      socket.off("host:lesson-library:update", onLibraryUpdate)
       socket.off("host:question:insights", onInsights)
       socket.off("host:error", onError)
       socket.off("host:generate:success", onSuccess)
+      socket.off("host:generate-lesson:success", onLessonSuccess)
+      socket.off("host:save-lesson:success", onSaveLessonSuccess)
+      socket.off("host:load-lesson:success", onLoadLessonSuccess)
+      socket.off("host:delete-lesson:success", onDeleteLessonSuccess)
     }
   }, [])
 
@@ -216,15 +256,50 @@ function HostPage() {
     })
   }
 
+  const generateLesson = () => {
+    setStatus("AI bouwt de lesopzet op...")
+    socket.emit("host:generate-lesson", {
+      topic,
+      audience,
+      lessonModel,
+      durationMinutes: lessonDurationMinutes,
+      teamNames: preparedTeamNames,
+    })
+  }
+
+  const goToNextStep = () => {
+    if (game.mode === "lesson" || activeMode === "lesson") {
+      socket.emit("host:lesson-next")
+      return
+    }
+    socket.emit("host:next")
+  }
+
+  const saveCurrentLesson = () => {
+    setStatus("Les wordt opgeslagen in de bibliotheek...")
+    socket.emit("host:save-lesson")
+  }
+
+  const loadLessonFromLibrary = (lessonId) => {
+    setStatus("Les wordt geladen uit de bibliotheek...")
+    socket.emit("host:load-lesson", { lessonId })
+  }
+
+  const deleteLessonFromLibrary = (lessonId) => {
+    setStatus("Les wordt verwijderd uit de bibliotheek...")
+    socket.emit("host:delete-lesson", { lessonId })
+  }
+
   return (
     <main className="page-shell host-shell">
       <section className="hero-card">
         <div className="hero-copy">
           <span className="eyebrow">Lesson Battle Live</span>
-          <h1>Maak van elk onderwerp een energieke teamquiz.</h1>
+          <h1>Bouw van elk onderwerp een live quiz of complete les.</h1>
           <p>
-            Deze versie kan brede thema&apos;s aan. Typ zelf het onderwerp, niveau en de gewenste
-            focus; de vragen, visuals en teamscores worden daarna live opgebouwd.
+            Gebruik Battle voor tempo en competitie, of Lesmodus voor een interactieve lesopzet
+            met lesdoel, fasen en actieve leerlingmomenten. Jij kiest de vorm; de sessie wordt
+            daarna live opgebouwd voor docent en deelnemers.
           </p>
         </div>
         <div className="hero-panel glass">
@@ -237,8 +312,8 @@ function HostPage() {
             <span>Verbonden spelers</span>
           </div>
           <div className="hero-stat">
-            <strong>{game.totalQuestions || questionCount}</strong>
-            <span>Vragen in ronde</span>
+            <strong>{game.mode === "lesson" ? game.totalPhases || 0 : game.totalQuestions || questionCount}</strong>
+            <span>{game.mode === "lesson" ? "Lesfasen live" : "Vragen in ronde"}</span>
           </div>
           <button className="button-secondary present-button" onClick={toggleFullscreen} type="button">
             {presenterMode ? "Verlaat fullscreen" : "Presentatiemodus"}
@@ -282,7 +357,7 @@ function HostPage() {
       <section className="host-grid">
         <div className="glass control-card">
           <div className="section-head">
-            <h2>Quizinstellingen</h2>
+            <h2>Sessie-instellingen</h2>
             <span className="pill">{status}</span>
           </div>
 
@@ -305,13 +380,34 @@ function HostPage() {
             <strong>{hostSession.roomCode || "-----"}</strong>
           </div>
 
+          <div className="mode-switch">
+            <button
+              className={`mode-chip ${activeMode === "battle" ? "is-active" : ""}`}
+              onClick={() => setSessionMode("battle")}
+              type="button"
+            >
+              Battle
+            </button>
+            <button
+              className={`mode-chip ${activeMode === "lesson" ? "is-active" : ""}`}
+              onClick={() => setSessionMode("lesson")}
+              type="button"
+            >
+              Lesmodus
+            </button>
+          </div>
+
           <label className="field">
             <span>Onderwerp</span>
             <textarea
               rows="4"
               value={topic}
               onChange={(event) => setTopic(event.target.value)}
-              placeholder="Bijv. economie vmbo leerjaar 3 over verzekeringen en sparen"
+              placeholder={
+                activeMode === "lesson"
+                  ? "Bijv. procenten rekenen met korting voor vmbo basis, 45 minuten, veel interactie"
+                  : "Bijv. economie vmbo leerjaar 3 over verzekeringen en sparen"
+              }
             />
           </label>
 
@@ -327,26 +423,52 @@ function HostPage() {
               </select>
             </label>
 
-            <label className="field">
-              <span>Aantal vragen</span>
-              <input
-                type="number"
-                min="6"
-                max="24"
-                value={questionCount}
-                onChange={(event) => setQuestionCount(Number(event.target.value))}
-              />
-            </label>
-            <label className="field">
-              <span>Tijd per vraag (sec)</span>
-              <input
-                type="number"
-                min="8"
-                max="60"
-                value={questionDurationSec}
-                onChange={(event) => setQuestionDurationSec(Number(event.target.value))}
-              />
-            </label>
+            {activeMode === "lesson" ? (
+              <>
+                <label className="field">
+                  <span>Lesmodel</span>
+                  <select value={lessonModel} onChange={(event) => setLessonModel(event.target.value)}>
+                    <option value="edi">EDI</option>
+                    <option value="directe instructie">Directe instructie</option>
+                    <option value="formatief handelen">Formatief handelen</option>
+                    <option value="activerende didactiek">Activerende didactiek</option>
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Lesduur (min)</span>
+                  <input
+                    type="number"
+                    min="20"
+                    max="90"
+                    value={lessonDurationMinutes}
+                    onChange={(event) => setLessonDurationMinutes(Number(event.target.value))}
+                  />
+                </label>
+              </>
+            ) : (
+              <>
+                <label className="field">
+                  <span>Aantal vragen</span>
+                  <input
+                    type="number"
+                    min="6"
+                    max="24"
+                    value={questionCount}
+                    onChange={(event) => setQuestionCount(Number(event.target.value))}
+                  />
+                </label>
+                <label className="field">
+                  <span>Tijd per vraag (sec)</span>
+                  <input
+                    type="number"
+                    min="8"
+                    max="60"
+                    value={questionDurationSec}
+                    onChange={(event) => setQuestionDurationSec(Number(event.target.value))}
+                  />
+                </label>
+              </>
+            )}
           </div>
 
           <label className="field">
@@ -359,6 +481,13 @@ function HostPage() {
             />
           </label>
 
+          {activeMode === "lesson" ? (
+            <LessonSummaryCard
+              lesson={game.lesson}
+              onSave={game.lesson?.phases?.length ? saveCurrentLesson : null}
+            />
+          ) : null}
+
           <div className="action-row">
             <button
               className="button-secondary"
@@ -368,16 +497,25 @@ function HostPage() {
             >
               Teams opslaan
             </button>
-            <button className="button-primary" disabled={!hostSession.authenticated} onClick={generate} type="button">
-              Ronde starten
+            <button
+              className="button-primary"
+              disabled={!hostSession.authenticated}
+              onClick={activeMode === "lesson" ? generateLesson : generate}
+              type="button"
+            >
+              {activeMode === "lesson" ? "Les opbouwen" : "Ronde starten"}
             </button>
             <button
               className="button-secondary"
               disabled={!hostSession.authenticated}
-              onClick={() => socket.emit("host:next")}
+              onClick={goToNextStep}
               type="button"
             >
-              {hostInsights?.canAdvance ? "Volgende vraag (iedereen klaar)" : "Volgende vraag"}
+              {game.mode === "lesson"
+                ? "Volgende lesstap"
+                : hostInsights?.canAdvance
+                  ? "Volgende vraag (iedereen klaar)"
+                  : "Volgende vraag"}
             </button>
             <button
               className="button-ghost"
@@ -392,22 +530,49 @@ function HostPage() {
 
         <div className="glass question-stage">
           <div className="section-head">
-            <h2>Live vraag</h2>
+            <h2>{game.mode === "lesson" ? "Live les" : "Live vraag"}</h2>
             <div className="pill-row">
-              <span className="pill timer-pill">{game.status === "live" ? `${timeLeft}s` : "Klaar"}</span>
+              <span className="pill timer-pill">
+                {game.mode === "lesson"
+                  ? game.lesson?.currentPhase
+                    ? `${game.lesson.currentPhase.minutes} min`
+                    : "Les"
+                  : game.status === "live"
+                    ? `${timeLeft}s`
+                    : "Klaar"}
+              </span>
               <span className="pill">
-              {game.status === "live"
-                ? `Vraag ${game.currentQuestionIndex + 1} / ${game.totalQuestions}`
-                : game.status === "finished"
-                  ? "Ronde klaar"
-                  : "Nog niet gestart"}
+                {game.mode === "lesson"
+                  ? game.status === "live"
+                    ? `Fase ${game.currentPhaseIndex + 1} / ${game.totalPhases}`
+                    : game.status === "finished"
+                      ? "Les afgerond"
+                      : "Nog niet gestart"
+                  : game.status === "live"
+                    ? `Vraag ${game.currentQuestionIndex + 1} / ${game.totalQuestions}`
+                    : game.status === "finished"
+                      ? "Ronde klaar"
+                      : "Nog niet gestart"}
               </span>
             </div>
           </div>
 
-          <ProgressBar current={game.currentQuestionIndex + 1} total={game.totalQuestions} timeLeft={timeLeft} duration={game.questionDurationSec} />
+          {game.mode === "lesson" ? (
+            <LessonProgress lesson={game.lesson} />
+          ) : (
+            <ProgressBar
+              current={game.currentQuestionIndex + 1}
+              total={game.totalQuestions}
+              timeLeft={timeLeft}
+              duration={game.questionDurationSec}
+            />
+          )}
 
-          {game.question ? (
+          {game.mode === "lesson" && game.lesson?.currentPhase ? (
+            <LessonStageCard lesson={game.lesson} hostView />
+          ) : game.mode === "lesson" && game.status === "finished" ? (
+            <LessonCompleteCard lesson={game.lesson} />
+          ) : game.question ? (
             <>
               <QuestionCard question={game.question} />
               <HostInsightsCard insights={hostInsights} />
@@ -428,6 +593,15 @@ function HostPage() {
           teams={teams}
         />
       </section>
+
+      {hostSession.authenticated ? (
+        <LessonLibrarySection
+          activeLessonId={game.lesson?.libraryId || null}
+          lessons={lessonLibrary}
+          onDelete={deleteLessonFromLibrary}
+          onLoad={loadLessonFromLibrary}
+        />
+      ) : null}
     </main>
   )
 }
@@ -569,7 +743,7 @@ function PlayerPage() {
       <section className="player-layout">
         <div className="glass join-card">
           <span className="eyebrow">Deelnemen</span>
-          <h1>Sluit aan bij de quiz</h1>
+          <h1>Sluit aan bij de sessie</h1>
           <p className="muted">{status}</p>
 
           <label className="field">
@@ -610,16 +784,35 @@ function PlayerPage() {
 
         <div className="glass battle-card">
           <div className="section-head">
-            <h2>Huidige vraag</h2>
+            <h2>{game.mode === "lesson" ? "Huidige lesstap" : "Huidige vraag"}</h2>
             <div className="pill-row">
-              <span className="pill timer-pill">{game.status === "live" ? `${timeLeft}s` : "Wachten"}</span>
+              <span className="pill timer-pill">
+                {game.mode === "lesson"
+                  ? game.lesson?.currentPhase
+                    ? `${game.lesson.currentPhase.minutes} min`
+                    : "Wachten"
+                  : game.status === "live"
+                    ? `${timeLeft}s`
+                    : "Wachten"}
+              </span>
               <span className="pill">
-                {game.status === "live" ? `Vraag ${game.currentQuestionIndex + 1}` : "Wachten"}
+                {game.mode === "lesson"
+                  ? game.status === "live"
+                    ? `Fase ${game.currentPhaseIndex + 1}`
+                    : "Wachten"
+                  : game.status === "live"
+                    ? `Vraag ${game.currentQuestionIndex + 1}`
+                    : "Wachten"}
               </span>
             </div>
           </div>
 
-          {game.question ? (
+          {game.mode === "lesson" && game.lesson?.currentPhase ? (
+            <>
+              <LessonProgress lesson={game.lesson} />
+              <LessonStageCard lesson={game.lesson} />
+            </>
+          ) : game.question ? (
             <>
               <ProgressBar current={game.currentQuestionIndex + 1} total={game.totalQuestions} timeLeft={timeLeft} duration={game.questionDurationSec} />
               <QuestionCard question={game.question} compact={false} showOptions={false} />
@@ -653,11 +846,16 @@ function PlayerPage() {
               ) : null}
             </>
           ) : game.status === "finished" ? (
+            game.mode === "lesson" ? <LessonCompleteCard lesson={game.lesson} /> :
             <ResultsCard teams={teams} leaderboard={leaderboard} />
           ) : (
             <div className="empty-state">
-              <h3>De ronde start zo</h3>
-              <p>Zodra de beheerder de ronde start, verschijnt de vraag hier automatisch.</p>
+              <h3>{game.mode === "lesson" ? "De les start zo" : "De ronde start zo"}</h3>
+              <p>
+                {game.mode === "lesson"
+                  ? "Zodra de beheerder de les start, verschijnt de huidige lesstap hier automatisch."
+                  : "Zodra de beheerder de ronde start, verschijnt de vraag hier automatisch."}
+              </p>
             </div>
           )}
         </div>
@@ -692,6 +890,187 @@ function QuestionCard({ question, compact = false, showOptions = true }) {
         ) : null}
       </div>
     </article>
+  )
+}
+
+function LessonSummaryCard({ lesson, onSave }) {
+  if (!lesson) return null
+
+  return (
+    <section className="lesson-summary">
+      <div className="section-head">
+        <h3>Lesopzet</h3>
+        <span className="pill">
+          {lesson.model} · {lesson.durationMinutes} min
+        </span>
+      </div>
+      <p className="lesson-goal">{lesson.lessonGoal}</p>
+      <div className="lesson-summary-grid">
+        <div className="lesson-box">
+          <strong>Succescriteria</strong>
+          <ul>
+            {lesson.successCriteria.map((criterion) => (
+              <li key={criterion}>{criterion}</li>
+            ))}
+          </ul>
+        </div>
+        <div className="lesson-box">
+          <strong>Benodigdheden</strong>
+          <ul>
+            {(lesson.materials.length ? lesson.materials : ["Geen extra materialen opgegeven"]).map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+        </div>
+      </div>
+      <div className="lesson-summary-actions">
+        <span className="pill">
+          {lesson.libraryId ? "Opgeslagen in bibliotheek" : "Nog niet opgeslagen"}
+        </span>
+        {onSave ? (
+          <button className="button-secondary" onClick={onSave} type="button">
+            {lesson.libraryId ? "Werk les op in bibliotheek" : "Sla op in bibliotheek"}
+          </button>
+        ) : null}
+      </div>
+    </section>
+  )
+}
+
+function LessonProgress({ lesson }) {
+  if (!lesson) return null
+
+  const current = lesson.currentPhaseIndex >= 0 ? lesson.currentPhaseIndex + 1 : 0
+  const total = lesson.totalPhases || lesson.phases?.length || 0
+  const progress = total ? Math.max(0, Math.min(100, (current / total) * 100)) : 0
+
+  return (
+    <div className="progress-stack">
+      <div className="progress-track lesson-track">
+        <div className="progress-fill lesson-fill" style={{ width: `${progress}%` }} />
+      </div>
+    </div>
+  )
+}
+
+function LessonStageCard({ lesson, hostView = false }) {
+  if (!lesson?.currentPhase) return null
+
+  const phase = lesson.currentPhase
+
+  return (
+    <article className="lesson-stage-card">
+      <div className="lesson-stage-head">
+        <div>
+          <span className="category-badge">{lesson.model}</span>
+          <h3>{lesson.title}</h3>
+          <p className="muted">{lesson.lessonGoal}</p>
+        </div>
+        <div className="lesson-minutes">{phase.minutes} min</div>
+      </div>
+
+      <div className="lesson-phase-strip">
+        {lesson.phases.map((item, index) => (
+          <div className={`lesson-phase-chip ${index === lesson.currentPhaseIndex ? "is-current" : ""}`} key={item.id}>
+            <span>{index + 1}</span>
+            <strong>{item.title}</strong>
+          </div>
+        ))}
+      </div>
+
+      <div className="lesson-callout">
+        <span>Huidige fase</span>
+        <strong>{phase.title}</strong>
+        <p>{phase.goal}</p>
+      </div>
+
+      <div className="lesson-stage-grid">
+        {hostView ? (
+          <div className="lesson-box">
+            <strong>Docentregie</strong>
+            <p>{phase.teacherScript}</p>
+          </div>
+        ) : null}
+        <div className="lesson-box">
+          <strong>Leerlingen doen nu</strong>
+          <p>{phase.studentActivity}</p>
+        </div>
+        <div className="lesson-box">
+          <strong>Interactieve opdracht</strong>
+          <p>{phase.interactivePrompt}</p>
+        </div>
+        <div className="lesson-box">
+          <strong>Begrip checken</strong>
+          <p>{phase.checkForUnderstanding}</p>
+        </div>
+      </div>
+    </article>
+  )
+}
+
+function LessonCompleteCard({ lesson }) {
+  return (
+    <div className="results-card">
+      <span className="eyebrow">Les afgerond</span>
+      <h3>{lesson?.title || "De les is afgerond"}</h3>
+      <p>{lesson?.lessonGoal || "De sessie is afgerond. Je kunt een nieuwe les of battle starten."}</p>
+      {lesson?.successCriteria?.length ? (
+        <div className="lesson-box">
+          <strong>Afsluiten met deze check</strong>
+          <ul>
+            {lesson.successCriteria.map((criterion) => (
+              <li key={criterion}>{criterion}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function LessonLibrarySection({ lessons, activeLessonId, onLoad, onDelete }) {
+  return (
+    <section className="glass board-card lesson-library-section">
+      <div className="section-head">
+        <h2>Lesbibliotheek</h2>
+        <span className="pill">{lessons.length} opgeslagen</span>
+      </div>
+
+      {lessons.length ? (
+        <div className="lesson-library-grid">
+          {lessons.map((lesson) => (
+            <article className={`lesson-library-card ${lesson.id === activeLessonId ? "is-active" : ""}`} key={lesson.id}>
+              <div className="lesson-library-head">
+                <div>
+                  <span className="eyebrow">{lesson.model}</span>
+                  <h3>{lesson.title}</h3>
+                </div>
+                <span className="pill">{lesson.durationMinutes} min</span>
+              </div>
+              <p>{lesson.lessonGoal}</p>
+              <div className="lesson-library-meta">
+                <span>{lesson.topic || "Algemeen thema"}</span>
+                <span>{lesson.audience}</span>
+                <span>{lesson.phaseCount} fasen</span>
+              </div>
+              <div className="lesson-library-actions">
+                <button className="button-secondary" onClick={() => onLoad(lesson.id)} type="button">
+                  Open les
+                </button>
+                <button className="button-ghost" onClick={() => onDelete(lesson.id)} type="button">
+                  Verwijder
+                </button>
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <div className="empty-state compact-empty">
+          <h3>Nog geen lessen opgeslagen</h3>
+          <p>Genereer eerst een les in Lesmodus en sla die daarna op in de bibliotheek.</p>
+        </div>
+      )}
+    </section>
   )
 }
 

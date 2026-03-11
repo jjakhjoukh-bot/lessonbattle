@@ -212,6 +212,29 @@
   margin-top: 16px;
 }
 
+.mode-switch {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(0, 180px));
+  gap: 10px;
+  margin: 18px 0 8px;
+}
+
+.mode-chip {
+  border: 0;
+  border-radius: 999px;
+  padding: 12px 16px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #d9ebff;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.mode-chip.is-active {
+  background: linear-gradient(135deg, rgba(255, 157, 67, 0.24), rgba(69, 104, 255, 0.28));
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
 .single-action {
   grid-template-columns: 1fr;
 }
@@ -272,6 +295,10 @@
 
 .timer-track .timer-fill {
   background: linear-gradient(90deg, #33d6cc, #4e7dff);
+}
+
+.lesson-track .lesson-fill {
+  background: linear-gradient(90deg, #f7b267, #49b6ff);
 }
 
 .host-meta-bar {
@@ -606,6 +633,189 @@
   margin-top: 4px;
 }
 
+.lesson-summary,
+.lesson-stage-card {
+  display: grid;
+  gap: 16px;
+  margin-top: 18px;
+  padding: 18px;
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.lesson-summary-grid,
+.lesson-stage-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.lesson-box {
+  padding: 16px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.lesson-box strong {
+  display: block;
+  margin-bottom: 8px;
+}
+
+.lesson-box p,
+.lesson-goal {
+  margin: 0;
+  color: var(--muted);
+}
+
+.lesson-box ul {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+}
+
+.lesson-summary-actions,
+.lesson-library-actions,
+.lesson-library-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.lesson-stage-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  align-items: flex-start;
+}
+
+.lesson-stage-head h3 {
+  margin: 10px 0 8px;
+  font-family: "Avenir Next Condensed", "Trebuchet MS", sans-serif;
+  font-size: clamp(1.8rem, 2vw, 2.4rem);
+}
+
+.lesson-minutes {
+  min-width: 84px;
+  padding: 12px 14px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.08);
+  text-align: center;
+  font-weight: 800;
+  color: #ffd79b;
+}
+
+.lesson-phase-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 10px;
+}
+
+.lesson-phase-chip {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.04);
+  opacity: 0.72;
+}
+
+.lesson-phase-chip span {
+  color: #9dc7ff;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.lesson-phase-chip strong {
+  font-size: 0.98rem;
+}
+
+.lesson-phase-chip.is-current {
+  opacity: 1;
+  background: linear-gradient(135deg, rgba(255, 157, 67, 0.18), rgba(69, 104, 255, 0.18));
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.lesson-callout {
+  padding: 18px;
+  border-radius: 20px;
+  background: linear-gradient(140deg, rgba(255, 157, 67, 0.12), rgba(43, 192, 255, 0.12));
+}
+
+.lesson-callout span {
+  display: block;
+  color: #ffcf95;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.lesson-callout strong {
+  display: block;
+  margin-top: 8px;
+  font-size: 1.25rem;
+}
+
+.lesson-callout p {
+  margin: 8px 0 0;
+  color: #d6e7fb;
+}
+
+.lesson-library-section {
+  margin-top: 22px;
+}
+
+.lesson-library-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.lesson-library-card {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.lesson-library-card.is-active {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+  background: linear-gradient(145deg, rgba(255, 157, 67, 0.12), rgba(69, 104, 255, 0.1));
+}
+
+.lesson-library-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+.lesson-library-head h3 {
+  margin: 10px 0 0;
+  font-family: "Avenir Next Condensed", "Trebuchet MS", sans-serif;
+}
+
+.lesson-library-card p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.lesson-library-meta span {
+  display: inline-flex;
+  padding: 7px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #d8ecff;
+  font-size: 0.88rem;
+}
+
+.compact-empty {
+  min-height: 180px;
+}
+
 .empty-state {
   min-height: 280px;
   display: grid;
@@ -754,6 +964,8 @@
     grid-template-columns: 1fr;
   }
 
+  .lesson-summary-grid,
+  .lesson-stage-grid,
   .action-row {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -779,7 +991,10 @@
   .action-row,
   .answer-grid,
   .host-meta-bar,
-  .lobby-stats {
+  .lobby-stats,
+  .mode-switch,
+  .lesson-summary-grid,
+  .lesson-stage-grid {
     grid-template-columns: 1fr;
   }
 
@@ -793,5 +1008,10 @@
   .side-column {
     padding: 18px;
     border-radius: 22px;
+  }
+
+  .lesson-stage-head {
+    grid-template-columns: 1fr;
+    display: grid;
   }
 }

@@ -13,6 +13,8 @@ const __dirname = path.dirname(__filename)
 const projectRoot = path.join(__dirname, "..")
 const envPath = path.join(projectRoot, ".env")
 const clientDistPath = path.join(projectRoot, "client", "dist")
+const sharedDataPath = path.join(projectRoot, "shared")
+const lessonLibraryPath = path.join(sharedDataPath, "lesson-library.json")
 
 if (fs.existsSync(envPath)) {
   const envLines = fs.readFileSync(envPath, "utf8").split(/\r?\n/)
@@ -53,6 +55,42 @@ const AI_ROUND_GENERATION_TIMEOUT_MS = 120000
 const hostSocketIds = new Set()
 const socketToRoom = new Map()
 const rooms = new Map()
+
+function generateEntityId(prefix = "item") {
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+function createIdleGameState() {
+  return {
+    topic: "",
+    audience: "vmbo",
+    questionCount: 12,
+    questionDurationSec: 20,
+    questionStartedAt: null,
+    status: "idle",
+    source: "idle",
+    providerLabel: null,
+    generatedAt: null,
+    mode: "battle",
+    lessonModel: "edi",
+    lessonDurationMinutes: 45,
+  }
+}
+
+function createEmptyLessonState() {
+  return {
+    libraryId: null,
+    title: "",
+    model: "EDI",
+    audience: "vmbo",
+    durationMinutes: 45,
+    lessonGoal: "",
+    successCriteria: [],
+    materials: [],
+    phases: [],
+    currentPhaseIndex: -1,
+  }
+}
 
 function generateRoomCode() {
   let code = ""
@@ -262,18 +300,9 @@ function createRoom(hostSocketId) {
     currentQuestionIndex: -1,
     answeredPlayers: new Set(),
     playerAnswers: new Map(),
+    lesson: createEmptyLessonState(),
     closingTimeout: null,
-    game: {
-      topic: "",
-      audience: "vmbo",
-      questionCount: 12,
-      questionDurationSec: 20,
-      questionStartedAt: null,
-      status: "idle",
-      source: "idle",
-      providerLabel: null,
-      generatedAt: null,
-    },
+    game: createIdleGameState(),
   }
   rooms.set(roomCode, room)
   socketToRoom.set(hostSocketId, roomCode)
@@ -299,6 +328,11 @@ function currentQuestion(room) {
   return room.currentQuestionIndex >= 0 ? room.questions[room.currentQuestionIndex] ?? null : null
 }
 
+function currentLessonPhase(room) {
+  const index = room.lesson?.currentPhaseIndex ?? -1
+  return index >= 0 ? room.lesson?.phases?.[index] ?? null : null
+}
+
 function sanitizeQuestion(question) {
   if (!question) return null
   return {
@@ -309,6 +343,32 @@ function sanitizeQuestion(question) {
     category: question.category,
     imagePrompt: question.imagePrompt,
     imageAlt: question.imageAlt || question.prompt,
+  }
+}
+
+function sanitizeLesson(lesson) {
+  if (!lesson || !Array.isArray(lesson.phases) || lesson.phases.length === 0) return null
+  const currentPhase =
+    lesson.currentPhaseIndex >= 0 ? lesson.phases[lesson.currentPhaseIndex] ?? null : null
+
+  return {
+    libraryId: lesson.libraryId || null,
+    title: lesson.title,
+    model: lesson.model,
+    audience: lesson.audience,
+    durationMinutes: lesson.durationMinutes,
+    lessonGoal: lesson.lessonGoal,
+    successCriteria: lesson.successCriteria,
+    materials: lesson.materials,
+    currentPhaseIndex: lesson.currentPhaseIndex,
+    totalPhases: lesson.phases.length,
+    currentPhase,
+    phases: lesson.phases.map((phase) => ({
+      id: phase.id,
+      title: phase.title,
+      goal: phase.goal,
+      minutes: phase.minutes,
+    })),
   }
 }
 
@@ -343,17 +403,121 @@ function buildStatePayload(room) {
       ...room.game,
       currentQuestionIndex: room.currentQuestionIndex,
       totalQuestions: room.questions.length,
+      currentPhaseIndex: room.lesson?.currentPhaseIndex ?? -1,
+      totalPhases: room.lesson?.phases?.length ?? 0,
       roomCodeActive: true,
       answeredCount,
       totalPlayers,
       allAnswered: totalPlayers > 0 && answeredCount >= totalPlayers,
       question: sanitizeQuestion(currentQuestion(room)),
+      lesson: sanitizeLesson(room.lesson),
     },
+  }
+}
+
+function normalizeLessonLibraryEntry(rawEntry) {
+  if (!rawEntry || typeof rawEntry !== "object") return null
+  const entryId = String(rawEntry.id ?? generateEntityId("lesson"))
+
+  const normalizedLesson = normalizeLessonPlan(rawEntry.lesson, {
+    topic: String(rawEntry.topic ?? "").trim() || "algemeen thema",
+    audience: String(rawEntry.audience ?? "vmbo").trim() || "vmbo",
+    lessonModel: String(rawEntry.model ?? "edi").trim() || "edi",
+    durationMinutes: Number(rawEntry.durationMinutes) || 45,
+  })
+
+  return {
+    id: entryId,
+    topic: String(rawEntry.topic ?? "").trim(),
+    title: String(rawEntry.title ?? normalizedLesson.title).trim() || normalizedLesson.title,
+    audience: String(rawEntry.audience ?? normalizedLesson.audience).trim() || normalizedLesson.audience,
+    model: String(rawEntry.model ?? normalizedLesson.model).trim() || normalizedLesson.model,
+    durationMinutes: Number(rawEntry.durationMinutes) || normalizedLesson.durationMinutes,
+    lessonGoal: String(rawEntry.lessonGoal ?? normalizedLesson.lessonGoal).trim() || normalizedLesson.lessonGoal,
+    successCriteria: normalizedLesson.successCriteria,
+    materials: normalizedLesson.materials,
+    lesson: {
+      ...normalizedLesson,
+      libraryId: entryId,
+      currentPhaseIndex: -1,
+    },
+    source: String(rawEntry.source ?? "library").trim() || "library",
+    providerLabel: String(rawEntry.providerLabel ?? "Lesbibliotheek").trim() || "Lesbibliotheek",
+    createdAt: String(rawEntry.createdAt ?? new Date().toISOString()),
+    updatedAt: String(rawEntry.updatedAt ?? new Date().toISOString()),
+  }
+}
+
+function ensureLessonLibraryDir() {
+  fs.mkdirSync(sharedDataPath, { recursive: true })
+}
+
+function loadLessonLibrary() {
+  try {
+    ensureLessonLibraryDir()
+    if (!fs.existsSync(lessonLibraryPath)) return []
+    const parsed = JSON.parse(fs.readFileSync(lessonLibraryPath, "utf8"))
+    if (!Array.isArray(parsed)) return []
+    return parsed.map(normalizeLessonLibraryEntry).filter(Boolean)
+  } catch (error) {
+    console.error("Kon lesbibliotheek niet laden:", error instanceof Error ? error.message : error)
+    return []
+  }
+}
+
+let lessonLibrary = loadLessonLibrary()
+
+function persistLessonLibrary() {
+  try {
+    ensureLessonLibraryDir()
+    fs.writeFileSync(lessonLibraryPath, JSON.stringify(lessonLibrary, null, 2), "utf8")
+  } catch (error) {
+    console.error("Kon lesbibliotheek niet opslaan:", error instanceof Error ? error.message : error)
+    throw new Error("Opslaan van de lesbibliotheek is mislukt.")
+  }
+}
+
+function lessonLibrarySummaries() {
+  return [...lessonLibrary]
+    .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime())
+    .map((entry) => ({
+      id: entry.id,
+      topic: entry.topic,
+      title: entry.title,
+      audience: entry.audience,
+      model: entry.model,
+      durationMinutes: entry.durationMinutes,
+      lessonGoal: entry.lessonGoal,
+      phaseCount: entry.lesson.phases.length,
+      updatedAt: entry.updatedAt,
+      providerLabel: entry.providerLabel,
+    }))
+}
+
+function emitLessonLibraryToSocket(socket) {
+  socket.emit("host:lesson-library:update", { lessons: lessonLibrarySummaries() })
+}
+
+function emitLessonLibraryToHosts() {
+  for (const socketId of hostSocketIds) {
+    io.to(socketId).emit("host:lesson-library:update", { lessons: lessonLibrarySummaries() })
+  }
+}
+
+function cloneLessonForRoom(lesson, libraryId = null) {
+  return {
+    ...createEmptyLessonState(),
+    ...lesson,
+    libraryId,
+    successCriteria: [...(lesson.successCriteria || [])],
+    materials: [...(lesson.materials || [])],
+    phases: (lesson.phases || []).map((phase) => ({ ...phase })),
   }
 }
 
 function buildHostInsights(room) {
   const question = currentQuestion(room)
+  if (!question) return null
   const answeredCount = room.answeredPlayers.size
   const totalPlayers = room.players.length
   const allAnswered = totalPlayers > 0 && answeredCount >= totalPlayers
@@ -417,13 +581,19 @@ function emitStateToSocket(socket, room) {
           status: "idle",
           source: "idle",
           providerLabel: null,
-          generatedAt: null,
-          currentQuestionIndex: -1,
-          totalQuestions: 0,
-          roomCodeActive: false,
-          question: null,
-        },
-      }
+      generatedAt: null,
+      mode: "battle",
+      lessonModel: "edi",
+      lessonDurationMinutes: 45,
+      currentQuestionIndex: -1,
+      totalQuestions: 0,
+      currentPhaseIndex: -1,
+      totalPhases: 0,
+      roomCodeActive: false,
+      question: null,
+      lesson: null,
+    },
+  }
   socket.emit("state:init", payload)
 }
 
@@ -462,6 +632,14 @@ function extractJsonArray(text) {
   const start = cleaned.indexOf("[")
   const end = cleaned.lastIndexOf("]")
   if (start === -1 || end === -1 || end <= start) throw new Error("AI antwoord bevat geen geldige JSON-array.")
+  return cleaned.slice(start, end + 1)
+}
+
+function extractJsonObject(text) {
+  const cleaned = text.replace(/```json|```/gi, "").trim()
+  const start = cleaned.indexOf("{")
+  const end = cleaned.lastIndexOf("}")
+  if (start === -1 || end === -1 || end <= start) throw new Error("AI antwoord bevat geen geldig JSON-object.")
   return cleaned.slice(start, end + 1)
 }
 
@@ -797,6 +975,56 @@ Formaat:
 `
 }
 
+function buildLessonPrompt({ topic, audience, lessonModel, durationMinutes, extraRules = "" }) {
+  return `
+Maak een complete interactieve lesopzet in het Nederlands.
+
+Onderwerp:
+${topic.trim()}
+
+Doelgroep:
+${audience}
+
+Lesmodel:
+${lessonModel}
+
+Lesduur:
+${durationMinutes} minuten
+
+Regels:
+- Maak een bruikbare les voor een docent, geen algemene uitleg.
+- De les moet direct inzetbaar zijn in een groep.
+- Werk het onderwerp concreet uit en blijf dicht bij de invoer van de docent.
+- Zorg voor afwisseling tussen uitleg, begeleide oefening, interactie en controle van begrip.
+- Verwerk minimaal 5 en maximaal 7 lesfasen.
+- Elke fase heeft: title, goal, teacherScript, studentActivity, interactivePrompt, checkForUnderstanding, minutes.
+- De totale tijd moet ongeveer ${durationMinutes} minuten zijn.
+- Gebruik duidelijke, professionele taal.
+- Geen markdown, alleen geldige JSON.
+${extraRules}
+
+Formaat:
+{
+  "title": "korte lestitel",
+  "model": "${lessonModel}",
+  "lessonGoal": "wat leren leerlingen in deze les",
+  "successCriteria": ["criterium 1", "criterium 2", "criterium 3"],
+  "materials": ["materiaal 1", "materiaal 2"],
+  "phases": [
+    {
+      "title": "fase",
+      "goal": "doel van de fase",
+      "teacherScript": "wat de docent zegt of doet",
+      "studentActivity": "wat leerlingen doen",
+      "interactivePrompt": "korte actieve opdracht of vraag",
+      "checkForUnderstanding": "hoe de docent begrip checkt",
+      "minutes": 5
+    }
+  ]
+}
+`
+}
+
 function buildRepairPrompt({ topic, audience, questionCount, brokenOutput, previousIssue }) {
   return `
 Zet de onderstaande AI-output om naar exact geldige JSON voor een quiz.
@@ -815,6 +1043,31 @@ Regels:
 - options moet exact 4 items hebben.
 - correctIndex moet 0, 1, 2 of 3 zijn.
 - Verbeter waar nodig de inhoud zodat de vragen echt over het onderwerp gaan.
+- Geen markdown en geen extra tekst.
+
+Te herstellen output:
+${String(brokenOutput || "").slice(0, 12000)}
+`
+}
+
+function buildLessonRepairPrompt({ topic, audience, lessonModel, durationMinutes, brokenOutput, previousIssue }) {
+  return `
+Zet de onderstaande AI-output om naar exact geldige JSON voor een lesopzet.
+
+Onderwerp: ${topic.trim()}
+Doelgroep: ${audience}
+Lesmodel: ${lessonModel}
+Lesduur: ${durationMinutes} minuten
+
+Probleem dat hersteld moet worden:
+${previousIssue}
+
+Regels:
+- Geef alleen één JSON-object terug.
+- Gebruik de velden: title, model, lessonGoal, successCriteria, materials, phases.
+- phases moet een array zijn met 5 tot 7 objecten.
+- Elke fase moet bevatten: title, goal, teacherScript, studentActivity, interactivePrompt, checkForUnderstanding, minutes.
+- Houd de les inhoudelijk passend bij het onderwerp.
 - Geen markdown en geen extra tekst.
 
 Te herstellen output:
@@ -886,6 +1139,76 @@ function normalizeQuestionsForTopic(rawQuestions, topic) {
 function parseQuestionsFromText(text, topic) {
   const parsed = JSON.parse(extractJsonArray(text))
   return normalizeQuestionsForTopic(parsed, topic)
+}
+
+function normalizeLessonPhaseMinutes(phases, durationMinutes) {
+  const safeDuration = Math.max(20, Math.min(90, Number(durationMinutes) || 45))
+  const sourceMinutes = phases.map((phase) => Math.max(3, Number(phase.minutes) || Math.round(safeDuration / phases.length)))
+  const sourceTotal = sourceMinutes.reduce((sum, value) => sum + value, 0) || phases.length
+  let remaining = safeDuration
+
+  return phases.map((phase, index) => {
+    if (index === phases.length - 1) {
+      return { ...phase, minutes: Math.max(3, remaining) }
+    }
+
+    const phasesLeft = phases.length - index - 1
+    const minRemaining = phasesLeft * 3
+    const scaled = Math.round((sourceMinutes[index] / sourceTotal) * safeDuration)
+    const minutes = Math.max(3, Math.min(safeDuration - minRemaining, scaled || 3))
+    remaining -= minutes
+    return { ...phase, minutes }
+  })
+}
+
+function normalizeLessonPlan(rawPlan, { topic, audience, lessonModel, durationMinutes }) {
+  if (!rawPlan || typeof rawPlan !== "object" || Array.isArray(rawPlan)) {
+    throw new Error("AI gaf geen bruikbaar lesplan terug.")
+  }
+
+  const rawPhases = Array.isArray(rawPlan.phases) ? rawPlan.phases : []
+  const phases = rawPhases
+    .map((phase, index) => ({
+      id: `lesson-phase-${index + 1}`,
+      title: String(phase?.title ?? "").trim(),
+      goal: String(phase?.goal ?? "").trim(),
+      teacherScript: String(phase?.teacherScript ?? "").trim(),
+      studentActivity: String(phase?.studentActivity ?? "").trim(),
+      interactivePrompt: String(phase?.interactivePrompt ?? "").trim(),
+      checkForUnderstanding: String(phase?.checkForUnderstanding ?? "").trim(),
+      minutes: Number(phase?.minutes) || 0,
+    }))
+    .filter((phase) => phase.title && phase.goal && phase.studentActivity)
+
+  if (phases.length < 4) {
+    throw new Error("AI gaf te weinig bruikbare lesfasen terug.")
+  }
+
+  const safeDuration = Math.max(20, Math.min(90, Number(durationMinutes) || 45))
+  const normalizedPhases = normalizeLessonPhaseMinutes(phases.slice(0, 7), safeDuration)
+
+  return {
+    title: String(rawPlan.title ?? "").trim() || `Les over ${topic.trim()}`,
+    model: String(rawPlan.model ?? lessonModel ?? "EDI").trim() || "EDI",
+    audience: String(rawPlan.audience ?? audience ?? "vmbo").trim() || "vmbo",
+    durationMinutes: safeDuration,
+    lessonGoal: String(rawPlan.lessonGoal ?? "").trim() || `Leerlingen werken aan ${topic.trim()}.`,
+    successCriteria: (Array.isArray(rawPlan.successCriteria) ? rawPlan.successCriteria : [])
+      .map((item) => String(item).trim())
+      .filter(Boolean)
+      .slice(0, 5),
+    materials: (Array.isArray(rawPlan.materials) ? rawPlan.materials : [])
+      .map((item) => String(item).trim())
+      .filter(Boolean)
+      .slice(0, 6),
+    phases: normalizedPhases,
+    currentPhaseIndex: -1,
+  }
+}
+
+function parseLessonPlanFromText(text, options) {
+  const parsed = JSON.parse(extractJsonObject(text))
+  return normalizeLessonPlan(parsed, options)
 }
 
 function retryDelaySecondsFromError(error) {
@@ -962,6 +1285,66 @@ async function generateQuestionsWithProvider(provider, { topic, audience, questi
   throw lastError ?? new Error(`${provider} kon geen bruikbare vragen genereren.`)
 }
 
+async function generateLessonPlanWithProvider(provider, { topic, audience, lessonModel, durationMinutes }) {
+  const providerTimeoutMs = AI_PROVIDER_REQUEST_TIMEOUT_MS
+  let lastError = null
+
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const extraRules =
+      attempt === 1
+        ? ""
+        : "\n- Vorige poging was niet bruikbaar. Wees concreter, onderwerpstrouwer en geef alleen exact geldige JSON terug."
+
+    try {
+      console.info(`[AI] ${provider} lesson attempt ${attempt} gestart voor onderwerp: ${topic}`)
+      const rawText = await requestProviderText(
+        provider,
+        buildLessonPrompt({ topic, audience, lessonModel, durationMinutes, extraRules }),
+        providerTimeoutMs
+      )
+
+      try {
+        const lessonPlan = parseLessonPlanFromText(rawText, { topic, audience, lessonModel, durationMinutes })
+        console.info(`[AI] ${provider} lesson attempt ${attempt} geaccepteerd met ${lessonPlan.phases.length} lesfasen`)
+        return lessonPlan
+      } catch (parseError) {
+        lastError = parseError
+        console.warn(`[AI] ${provider} lesson attempt ${attempt} afgekeurd: ${parseError instanceof Error ? parseError.message : "onbekende parsefout"}`)
+
+        try {
+          const repairedText = await requestProviderText(
+            provider,
+            buildLessonRepairPrompt({
+              topic,
+              audience,
+              lessonModel,
+              durationMinutes,
+              brokenOutput: rawText,
+              previousIssue: parseError instanceof Error ? parseError.message : "output was ongeldig",
+            }),
+            AI_PROVIDER_REPAIR_TIMEOUT_MS
+          )
+          const repairedPlan = parseLessonPlanFromText(repairedText, { topic, audience, lessonModel, durationMinutes })
+          console.info(`[AI] ${provider} lesson repair-pass geslaagd`)
+          return repairedPlan
+        } catch (repairError) {
+          lastError = repairError
+          console.warn(`[AI] ${provider} lesson repair-pass mislukt: ${repairError instanceof Error ? repairError.message : "onbekende repairfout"}`)
+        }
+      }
+    } catch (providerError) {
+      lastError = providerError
+      console.warn(`[AI] ${provider} lesson attempt ${attempt} request-fout: ${providerError instanceof Error ? providerError.message : "onbekende providerfout"}`)
+      const retrySeconds = retryDelaySecondsFromError(providerError)
+      if (retrySeconds && retrySeconds <= 5 && attempt < 2) {
+        await sleep(retrySeconds * 1000)
+      }
+    }
+  }
+
+  throw lastError ?? new Error(`${provider} kon geen bruikbaar lesplan genereren.`)
+}
+
 async function generateQuestionsWithGemini(topic, audience, questionCount) {
   return generateQuestionsWithProvider("gemini", { topic, audience, questionCount })
 }
@@ -972,6 +1355,41 @@ async function generateQuestionsWithGroq(topic, audience, questionCount) {
 
 async function generateQuestionsWithOpenAI(topic, audience, questionCount) {
   return generateQuestionsWithProvider("openai", { topic, audience, questionCount })
+}
+
+async function generateLessonPlan({ topic, audience, lessonModel, durationMinutes }) {
+  if (!genAI && !groq && !openAI) throw new Error("Er is geen AI-provider geconfigureerd op de server.")
+  if (!topic?.trim()) throw new Error("Voer eerst een onderwerp of thema in.")
+
+  const safeDuration = Math.max(20, Math.min(90, Number(durationMinutes) || 45))
+  const targetAudience = audience?.trim() || "vmbo"
+  const targetModel = String(lessonModel ?? "edi").trim() || "edi"
+  const attempts = [
+    ...(genAI ? [{ name: "gemini", run: () => generateLessonPlanWithProvider("gemini", { topic, audience: targetAudience, lessonModel: targetModel, durationMinutes: safeDuration }) }] : []),
+    ...(groq ? [{ name: "groq", run: () => generateLessonPlanWithProvider("groq", { topic, audience: targetAudience, lessonModel: targetModel, durationMinutes: safeDuration }) }] : []),
+    ...(openAI ? [{ name: "openai", run: () => generateLessonPlanWithProvider("openai", { topic, audience: targetAudience, lessonModel: targetModel, durationMinutes: safeDuration }) }] : []),
+  ]
+
+  const errors = []
+  for (let index = 0; index < attempts.length; index += 1) {
+    const provider = attempts[index]
+    try {
+      if (index > 0) {
+        console.warn(`[AI] ${attempts[index - 1].name} lesgeneratie gefaald, probeer ${provider.name} fallback.`)
+      }
+      const lesson = await provider.run()
+      return {
+        lesson,
+        provider: provider.name,
+        providerLabel: formatProviderLabel(provider.name),
+      }
+    } catch (providerError) {
+      errors.push(`${provider.name}: ${providerError instanceof Error ? providerError.message : "onbekende fout"}`)
+      console.warn(`[AI] lesprovider ${provider.name} definitief afgekeurd`)
+    }
+  }
+
+  throw new Error(errors.join(" | "))
 }
 
 function formatGenerationError(error) {
@@ -1081,13 +1499,29 @@ io.on("connection", (socket) => {
     claimRoomForHost(room, socket.id)
     socket.emit("host:login:success", { username: teacherUsername, roomCode: room.code })
     socket.emit("host:room:update", { roomCode: room.code })
-    socket.emit("host:generate:success", {
-      count: room.questions.length,
-      provider: room.game.source || null,
-      providerLabel: room.game.providerLabel || null,
-    })
+    if (room.game.mode === "lesson" && room.lesson?.phases?.length) {
+      socket.emit("host:generate-lesson:success", {
+        count: room.lesson.phases.length,
+        provider: room.game.source || null,
+        providerLabel: room.game.providerLabel || null,
+        lessonModel: room.lesson.model,
+      })
+    } else {
+      socket.emit("host:generate:success", {
+        count: room.questions.length,
+        provider: room.game.source || null,
+        providerLabel: room.game.providerLabel || null,
+      })
+    }
+    emitLessonLibraryToSocket(socket)
     emitStateToRoom(room)
     emitStateToSocket(socket, room)
+  })
+
+  socket.on("host:library:list", () => {
+    const room = requireHostRoom(socket)
+    if (!room) return
+    emitLessonLibraryToSocket(socket)
   })
 
   socket.on("player:lookup-room", ({ roomCode }) => {
@@ -1102,6 +1536,7 @@ io.on("connection", (socket) => {
       roomCode: room.code,
       teams: room.teams,
       status: room.game.status,
+      mode: room.game.mode || "battle",
     })
   })
 
@@ -1134,6 +1569,10 @@ io.on("connection", (socket) => {
     room.players = []
     room.answeredPlayers = new Set()
     room.playerAnswers = new Map()
+    room.lesson = createEmptyLessonState()
+    room.questions = []
+    room.currentQuestionIndex = -1
+    room.game = createIdleGameState()
     socket.emit("host:room:update", { roomCode: room.code })
     emitStateToRoom(room)
   })
@@ -1168,16 +1607,13 @@ io.on("connection", (socket) => {
       room.currentQuestionIndex = -1
       room.answeredPlayers = new Set()
       room.playerAnswers = new Map()
+      room.lesson = createEmptyLessonState()
       room.game = {
+        ...createIdleGameState(),
         topic: String(topic ?? "").trim(),
         audience: audience?.trim() || "vmbo",
         questionCount: Number(questionCount) || 12,
         questionDurationSec: safeDuration,
-        questionStartedAt: null,
-        status: "idle",
-        source: "idle",
-        providerLabel: null,
-        generatedAt: null,
       }
       emitStateToRoom(room)
       socket.emit("host:error", { message: userMessage })
@@ -1187,7 +1623,9 @@ io.on("connection", (socket) => {
     room.currentQuestionIndex = 0
     room.answeredPlayers = new Set()
     room.playerAnswers = new Map()
+    room.lesson = createEmptyLessonState()
     room.game = {
+      ...createIdleGameState(),
       topic: String(topic ?? "").trim(),
       audience: audience?.trim() || "vmbo",
       questionCount: room.questions.length,
@@ -1197,6 +1635,7 @@ io.on("connection", (socket) => {
       source: generationResult?.provider || "ai",
       providerLabel: generationResult?.providerLabel || "AI",
       generatedAt: new Date().toISOString(),
+      mode: "battle",
     }
 
     emitStateToRoom(room)
@@ -1205,6 +1644,169 @@ io.on("connection", (socket) => {
       provider: generationResult?.provider || null,
       providerLabel: generationResult?.providerLabel || null,
     })
+  })
+
+  socket.on("host:generate-lesson", async ({ topic, audience, lessonModel, durationMinutes, teamNames }) => {
+    const room = requireHostRoom(socket)
+    if (!room) return
+
+    const safeDuration = Math.max(20, Math.min(90, Number(durationMinutes) || 45))
+    const safeLessonModel = String(lessonModel ?? "edi").trim() || "edi"
+    socket.emit("host:generate-lesson:started", { message: "AI bouwt de lesopzet..." })
+
+    if (Array.isArray(teamNames) && teamNames.length > 0) {
+      room.teams = createTeams(teamNames)
+      reassignPlayersToExistingTeams(room)
+    }
+
+    let lessonResult
+    try {
+      lessonResult = await withTimeout(
+        generateLessonPlan({ topic, audience, lessonModel: safeLessonModel, durationMinutes: safeDuration }),
+        AI_ROUND_GENERATION_TIMEOUT_MS
+      )
+      console.info(`[AI] les voor room ${room.code} gegenereerd via ${lessonResult.providerLabel}`)
+    } catch (aiError) {
+      const fullErrorMessage = aiError instanceof Error ? aiError.message : "AI-fout"
+      const userMessage = formatGenerationError(aiError)
+      console.error("AI lesgeneratie mislukt:", fullErrorMessage)
+      room.questions = []
+      room.currentQuestionIndex = -1
+      room.answeredPlayers = new Set()
+      room.playerAnswers = new Map()
+      room.lesson = createEmptyLessonState()
+      room.game = {
+        ...createIdleGameState(),
+        mode: "lesson",
+        topic: String(topic ?? "").trim(),
+        audience: audience?.trim() || "vmbo",
+        lessonModel: safeLessonModel,
+        lessonDurationMinutes: safeDuration,
+      }
+      emitStateToRoom(room)
+      socket.emit("host:error", { message: userMessage })
+      return
+    }
+
+    room.questions = []
+    room.currentQuestionIndex = -1
+    room.answeredPlayers = new Set()
+    room.playerAnswers = new Map()
+    room.lesson = {
+      ...lessonResult.lesson,
+      libraryId: null,
+      currentPhaseIndex: 0,
+    }
+    room.game = {
+      ...createIdleGameState(),
+      topic: String(topic ?? "").trim(),
+      audience: audience?.trim() || "vmbo",
+      status: "live",
+      source: lessonResult.provider || "ai",
+      providerLabel: lessonResult.providerLabel || "AI",
+      generatedAt: new Date().toISOString(),
+      mode: "lesson",
+      lessonModel: safeLessonModel,
+      lessonDurationMinutes: safeDuration,
+    }
+
+    emitStateToRoom(room)
+    socket.emit("host:generate-lesson:success", {
+      count: room.lesson.phases.length,
+      provider: lessonResult.provider || null,
+      providerLabel: lessonResult.providerLabel || null,
+      lessonModel: room.lesson.model,
+    })
+  })
+
+  socket.on("host:save-lesson", () => {
+    const room = requireHostRoom(socket)
+    if (!room) return
+    if (!room.lesson?.phases?.length) {
+      socket.emit("host:error", { message: "Er is nog geen les om op te slaan." })
+      return
+    }
+
+    const now = new Date().toISOString()
+    const entryId = room.lesson.libraryId || generateEntityId("lesson")
+    const existing = lessonLibrary.find((entry) => entry.id === entryId)
+    const entry = {
+      id: entryId,
+      topic: room.game.topic,
+      title: room.lesson.title,
+      audience: room.lesson.audience || room.game.audience,
+      model: room.lesson.model,
+      durationMinutes: room.lesson.durationMinutes,
+      lessonGoal: room.lesson.lessonGoal,
+      successCriteria: [...(room.lesson.successCriteria || [])],
+      materials: [...(room.lesson.materials || [])],
+      lesson: cloneLessonForRoom(room.lesson, entryId),
+      source: room.game.source || "ai",
+      providerLabel: room.game.providerLabel || "AI",
+      createdAt: existing?.createdAt || now,
+      updatedAt: now,
+    }
+
+    lessonLibrary = [entry, ...lessonLibrary.filter((item) => item.id !== entryId)]
+    persistLessonLibrary()
+    room.lesson = cloneLessonForRoom(room.lesson, entryId)
+    emitLessonLibraryToHosts()
+    socket.emit("host:save-lesson:success", { lessonId: entryId, title: entry.title })
+    emitStateToRoom(room)
+  })
+
+  socket.on("host:load-lesson", ({ lessonId }) => {
+    const room = requireHostRoom(socket)
+    if (!room) return
+
+    const entry = lessonLibrary.find((item) => item.id === lessonId)
+    if (!entry) {
+      socket.emit("host:error", { message: "Deze les staat niet meer in de bibliotheek." })
+      return
+    }
+
+    room.questions = []
+    room.currentQuestionIndex = -1
+    room.answeredPlayers = new Set()
+    room.playerAnswers = new Map()
+    room.lesson = {
+      ...cloneLessonForRoom(entry.lesson, entry.id),
+      currentPhaseIndex: 0,
+    }
+    room.game = {
+      ...createIdleGameState(),
+      topic: entry.topic,
+      audience: entry.audience,
+      status: "live",
+      source: "library",
+      providerLabel: "Lesbibliotheek",
+      generatedAt: new Date().toISOString(),
+      mode: "lesson",
+      lessonModel: entry.model,
+      lessonDurationMinutes: entry.durationMinutes,
+    }
+
+    socket.emit("host:load-lesson:success", { title: entry.title })
+    emitStateToRoom(room)
+  })
+
+  socket.on("host:delete-lesson", ({ lessonId }) => {
+    const room = requireHostRoom(socket)
+    if (!room) return
+
+    const exists = lessonLibrary.some((item) => item.id === lessonId)
+    if (!exists) return
+
+    lessonLibrary = lessonLibrary.filter((item) => item.id !== lessonId)
+    persistLessonLibrary()
+
+    if (room.lesson?.libraryId === lessonId) {
+      room.lesson = { ...room.lesson, libraryId: null }
+      emitStateToRoom(room)
+    }
+
+    emitLessonLibraryToHosts()
+    socket.emit("host:delete-lesson:success", { lessonId })
   })
 
   socket.on("host:next", () => {
@@ -1227,6 +1829,24 @@ io.on("connection", (socket) => {
     emitStateToRoom(room)
   })
 
+  socket.on("host:lesson-next", () => {
+    const room = requireHostRoom(socket)
+    if (!room) return
+
+    if (!room.lesson?.phases?.length) return
+
+    if (room.lesson.currentPhaseIndex + 1 >= room.lesson.phases.length) {
+      room.lesson = { ...room.lesson, currentPhaseIndex: -1 }
+      room.game = { ...room.game, status: "finished", questionStartedAt: null }
+      emitStateToRoom(room)
+      return
+    }
+
+    room.lesson = { ...room.lesson, currentPhaseIndex: room.lesson.currentPhaseIndex + 1 }
+    room.game = { ...room.game, status: "live", questionStartedAt: null }
+    emitStateToRoom(room)
+  })
+
   socket.on("host:reset", () => {
     const room = requireHostRoom(socket)
     if (!room) return
@@ -1236,17 +1856,8 @@ io.on("connection", (socket) => {
     room.currentQuestionIndex = -1
     room.answeredPlayers = new Set()
     room.playerAnswers = new Map()
-    room.game = {
-      topic: "",
-      audience: "vmbo",
-      questionCount: 12,
-      questionDurationSec: 20,
-      questionStartedAt: null,
-      status: "idle",
-      source: "idle",
-      providerLabel: null,
-      generatedAt: null,
-    }
+    room.lesson = createEmptyLessonState()
+    room.game = createIdleGameState()
     emitStateToRoom(room)
   })
 
