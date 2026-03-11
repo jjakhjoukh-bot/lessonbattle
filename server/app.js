@@ -92,6 +92,7 @@ function createEmptyLessonState() {
     activePrompt: "",
     activeExpectedAnswer: "",
     activeKeywords: [],
+    promptVersion: 0,
   }
 }
 
@@ -358,6 +359,7 @@ function withLessonPhaseContext(lesson, phaseIndex = lesson?.currentPhaseIndex ?
     activePrompt: phase?.interactivePrompt || "",
     activeExpectedAnswer: phase?.expectedAnswer || "",
     activeKeywords: [...(phase?.keywords || [])],
+    promptVersion: Date.now(),
   }
 }
 
@@ -385,6 +387,7 @@ function sanitizeLesson(lesson, viewer = "host") {
     return {
       title: lesson.title,
       model: lesson.model,
+      promptVersion: lesson.promptVersion || 0,
       currentPhaseIndex: lesson.currentPhaseIndex,
       totalPhases: lesson.phases.length,
       currentPhase: currentPhase
@@ -393,6 +396,7 @@ function sanitizeLesson(lesson, viewer = "host") {
             title: currentPhase.title,
             minutes: currentPhase.minutes,
             prompt: activePrompt,
+            promptVersion: lesson.promptVersion || 0,
           }
         : null,
     }
@@ -407,6 +411,7 @@ function sanitizeLesson(lesson, viewer = "host") {
     lessonGoal: lesson.lessonGoal,
     successCriteria: lesson.successCriteria,
     materials: lesson.materials,
+    promptVersion: lesson.promptVersion || 0,
     currentPhaseIndex: lesson.currentPhaseIndex,
     totalPhases: lesson.phases.length,
     currentPhase: currentPhase
@@ -644,6 +649,19 @@ function buildHostInsights(room) {
 function emitHostInsights(room) {
   if (!room?.hostSocketId) return
   io.to(room.hostSocketId).emit("host:question:insights", buildHostInsights(room))
+}
+
+function emitLessonPromptUpdate(room) {
+  if (room.game.mode !== "lesson") return
+  const lessonForPlayer = sanitizeLesson(room.lesson, "player")
+  const recipients = [room.hostSocketId, ...room.players.map((player) => player.id)]
+  for (const recipient of recipients) {
+    io.to(recipient).emit("lesson:prompt:update", {
+      lesson: lessonForPlayer,
+      currentPhaseIndex: room.lesson?.currentPhaseIndex ?? -1,
+      promptVersion: room.lesson?.promptVersion ?? Date.now(),
+    })
+  }
 }
 
 function emitStateToRoom(room) {
@@ -1982,9 +2000,11 @@ io.on("connection", (socket) => {
         ...(phase.keywords || []),
         String(expectedAnswer ?? "").trim() || phase.expectedAnswer || "",
       ]),
+      promptVersion: Date.now(),
     }
     room.lessonResponses = new Map()
     emitStateToRoom(room)
+    emitLessonPromptUpdate(room)
     socket.emit("host:lesson-prompt:success", { prompt: room.lesson.activePrompt })
   })
 

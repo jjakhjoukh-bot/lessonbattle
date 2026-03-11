@@ -43,12 +43,33 @@ function useQuizState() {
       setLeaderboard(payload.leaderboard ?? [])
       setGame(payload.game ?? {})
     }
+    const onLessonPromptUpdate = ({ lesson, currentPhaseIndex, promptVersion }) => {
+      setGame((current) => {
+        if (current.mode !== "lesson") return current
+        return {
+          ...current,
+          currentPhaseIndex: currentPhaseIndex ?? current.currentPhaseIndex,
+          lesson: lesson
+            ? {
+                ...(current.lesson || {}),
+                ...lesson,
+                currentPhase: {
+                  ...(current.lesson?.currentPhase || {}),
+                  ...(lesson.currentPhase || {}),
+                },
+                promptVersion: promptVersion ?? lesson.promptVersion ?? current.lesson?.promptVersion ?? 0,
+              }
+            : current.lesson,
+        }
+      })
+    }
 
     socket.on("state:init", onInit)
     socket.on("players:update", setPlayers)
     socket.on("teams:update", setTeams)
     socket.on("leaderboard:update", setLeaderboard)
     socket.on("game:update", setGame)
+    socket.on("lesson:prompt:update", onLessonPromptUpdate)
 
     return () => {
       socket.off("state:init", onInit)
@@ -56,6 +77,7 @@ function useQuizState() {
       socket.off("teams:update", setTeams)
       socket.off("leaderboard:update", setLeaderboard)
       socket.off("game:update", setGame)
+      socket.off("lesson:prompt:update", onLessonPromptUpdate)
     }
   }, [])
 
@@ -770,7 +792,7 @@ function PlayerPage() {
   useEffect(() => {
     setLessonAnswer("")
     setLessonResult(null)
-  }, [game.lesson?.currentPhase?.id, game.lesson?.currentPhase?.prompt])
+  }, [game.lesson?.currentPhase?.id, game.lesson?.currentPhase?.prompt, game.lesson?.promptVersion])
 
   useEffect(() => {
     const onConnect = () => {
