@@ -300,6 +300,7 @@ function createRoom(hostSocketId) {
     currentQuestionIndex: -1,
     answeredPlayers: new Set(),
     playerAnswers: new Map(),
+    lessonResponses: new Map(),
     lesson: createEmptyLessonState(),
     closingTimeout: null,
     game: createIdleGameState(),
@@ -368,6 +369,8 @@ function sanitizeLesson(lesson) {
       title: phase.title,
       goal: phase.goal,
       minutes: phase.minutes,
+      expectedAnswer: phase.expectedAnswer,
+      keywords: phase.keywords,
     })),
   }
 }
@@ -393,7 +396,9 @@ function reassignPlayersToExistingTeams(room) {
 
 function buildStatePayload(room) {
   syncTeamScores(room)
-  const answeredCount = room.answeredPlayers.size
+  const lessonPhase = currentLessonPhase(room)
+  const answeredCount =
+    room.game.mode === "lesson" && lessonPhase ? room.lessonResponses.size : room.answeredPlayers.size
   const totalPlayers = room.players.length
   return {
     players: room.players,
@@ -516,6 +521,39 @@ function cloneLessonForRoom(lesson, libraryId = null) {
 }
 
 function buildHostInsights(room) {
+  if (room.game.mode === "lesson") {
+    const phase = currentLessonPhase(room)
+    if (!phase) return null
+    const answeredCount = room.lessonResponses.size
+    const totalPlayers = room.players.length
+    const allAnswered = totalPlayers > 0 && answeredCount >= totalPlayers
+
+    return {
+      mode: "lesson",
+      phaseId: phase.id,
+      phaseTitle: phase.title,
+      answeredCount,
+      totalPlayers,
+      allAnswered,
+      canAdvance: allAnswered,
+      expectedAnswer: phase.expectedAnswer || "",
+      responses: room.players.map((player) => {
+        const response = room.lessonResponses.get(player.id)
+        return {
+          playerId: player.id,
+          name: player.name,
+          teamId: player.teamId,
+          teamName: room.teams.find((team) => team.id === player.teamId)?.name || "",
+          answered: Boolean(response),
+          answerText: response?.text || "",
+          isCorrect: response?.isCorrect ?? null,
+          evaluationLabel: response?.label || null,
+          feedback: response?.feedback || "",
+        }
+      }),
+    }
+  }
+
   const question = currentQuestion(room)
   if (!question) return null
   const answeredCount = room.answeredPlayers.size
@@ -523,6 +561,7 @@ function buildHostInsights(room) {
   const allAnswered = totalPlayers > 0 && answeredCount >= totalPlayers
 
   return {
+    mode: "battle",
     questionId: question?.id ?? null,
     answeredCount,
     totalPlayers,
@@ -997,7 +1036,7 @@ Regels:
 - Werk het onderwerp concreet uit en blijf dicht bij de invoer van de docent.
 - Zorg voor afwisseling tussen uitleg, begeleide oefening, interactie en controle van begrip.
 - Verwerk minimaal 5 en maximaal 7 lesfasen.
-- Elke fase heeft: title, goal, teacherScript, studentActivity, interactivePrompt, checkForUnderstanding, minutes.
+- Elke fase heeft: title, goal, teacherScript, studentActivity, interactivePrompt, checkForUnderstanding, expectedAnswer, keywords, minutes.
 - De totale tijd moet ongeveer ${durationMinutes} minuten zijn.
 - Gebruik duidelijke, professionele taal.
 - Geen markdown, alleen geldige JSON.
@@ -1018,6 +1057,8 @@ Formaat:
       "studentActivity": "wat leerlingen doen",
       "interactivePrompt": "korte actieve opdracht of vraag",
       "checkForUnderstanding": "hoe de docent begrip checkt",
+      "expectedAnswer": "kort voorbeeld van een goed antwoord van een leerling",
+      "keywords": ["woord 1", "woord 2"],
       "minutes": 5
     }
   ]
@@ -1066,7 +1107,7 @@ Regels:
 - Geef alleen één JSON-object terug.
 - Gebruik de velden: title, model, lessonGoal, successCriteria, materials, phases.
 - phases moet een array zijn met 5 tot 7 objecten.
-- Elke fase moet bevatten: title, goal, teacherScript, studentActivity, interactivePrompt, checkForUnderstanding, minutes.
+- Elke fase moet bevatten: title, goal, teacherScript, studentActivity, interactivePrompt, checkForUnderstanding, expectedAnswer, keywords, minutes.
 - Houd de les inhoudelijk passend bij het onderwerp.
 - Geen markdown en geen extra tekst.
 
@@ -1176,6 +1217,11 @@ function normalizeLessonPlan(rawPlan, { topic, audience, lessonModel, durationMi
       studentActivity: String(phase?.studentActivity ?? "").trim(),
       interactivePrompt: String(phase?.interactivePrompt ?? "").trim(),
       checkForUnderstanding: String(phase?.checkForUnderstanding ?? "").trim(),
+      expectedAnswer: String(phase?.expectedAnswer ?? "").trim(),
+      keywords: (Array.isArray(phase?.keywords) ? phase.keywords : [])
+        .map((item) => String(item).trim().toLowerCase())
+        .filter(Boolean)
+        .slice(0, 8),
       minutes: Number(phase?.minutes) || 0,
     }))
     .filter((phase) => phase.title && phase.goal && phase.studentActivity)
@@ -1209,6 +1255,74 @@ function normalizeLessonPlan(rawPlan, { topic, audience, lessonModel, durationMi
 function parseLessonPlanFromText(text, options) {
   const parsed = JSON.parse(extractJsonObject(text))
   return normalizeLessonPlan(parsed, options)
+}
+
+function tokenizeText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .split(/\s+/)
+    .map((part) => part.trim())
+    .filter((part) => part.length >= 3)
+}
+
+function uniqueTokens(values) {
+  return [...new Set(values.flatMap((value) => tokenizeText(value)))]
+}
+
+function evaluateLessonResponse(lesson, phase, responseText) {
+  const response = String(responseText || "").trim()
+  if (!response) {
+    return {
+      isCorrect: false,
+      label: "Nog niet",
+      feedback: "Nog geen antwoord ontvangen.",
+    }
+  }
+
+  const expectedTokens = uniqueTokens([
+    ...(phase.keywords || []),
+    phase.expectedAnswer,
+    phase.goal,
+    phase.checkForUnderstanding,
+  ])
+  const responseTokens = uniqueTokens([response])
+
+  if (responseTokens.length === 0 || expectedTokens.length === 0) {
+    return {
+      isCorrect: response.length >= 12,
+      label: response.length >= 12 ? "Goed" : "Bijna",
+      feedback:
+        response.length >= 12
+          ? "Er staat een inhoudelijk antwoord. Bespreek het klassikaal kort na."
+          : "Laat de leerling het antwoord iets concreter formuleren.",
+    }
+  }
+
+  const matches = responseTokens.filter((token) => expectedTokens.includes(token))
+  const ratio = matches.length / Math.max(1, Math.min(expectedTokens.length, 5))
+
+  if (ratio >= 0.5 || matches.length >= 3) {
+    return {
+      isCorrect: true,
+      label: "Goed",
+      feedback: "Dit antwoord sluit goed aan bij de kern van deze lesfase.",
+    }
+  }
+
+  if (ratio >= 0.25 || matches.length >= 1) {
+    return {
+      isCorrect: false,
+      label: "Bijna",
+      feedback: `Er zit iets goeds in. Laat de leerling nog aanvullen met: ${phase.expectedAnswer || phase.checkForUnderstanding || lesson.lessonGoal}.`,
+    }
+  }
+
+  return {
+    isCorrect: false,
+    label: "Nog niet",
+    feedback: `Dit antwoord mist nog de kern. Verwacht ongeveer: ${phase.expectedAnswer || phase.checkForUnderstanding || lesson.lessonGoal}.`,
+  }
 }
 
 function retryDelaySecondsFromError(error) {
@@ -1569,6 +1683,7 @@ io.on("connection", (socket) => {
     room.players = []
     room.answeredPlayers = new Set()
     room.playerAnswers = new Map()
+    room.lessonResponses = new Map()
     room.lesson = createEmptyLessonState()
     room.questions = []
     room.currentQuestionIndex = -1
@@ -1607,6 +1722,7 @@ io.on("connection", (socket) => {
       room.currentQuestionIndex = -1
       room.answeredPlayers = new Set()
       room.playerAnswers = new Map()
+      room.lessonResponses = new Map()
       room.lesson = createEmptyLessonState()
       room.game = {
         ...createIdleGameState(),
@@ -1623,6 +1739,7 @@ io.on("connection", (socket) => {
     room.currentQuestionIndex = 0
     room.answeredPlayers = new Set()
     room.playerAnswers = new Map()
+    room.lessonResponses = new Map()
     room.lesson = createEmptyLessonState()
     room.game = {
       ...createIdleGameState(),
@@ -1674,6 +1791,7 @@ io.on("connection", (socket) => {
       room.currentQuestionIndex = -1
       room.answeredPlayers = new Set()
       room.playerAnswers = new Map()
+      room.lessonResponses = new Map()
       room.lesson = createEmptyLessonState()
       room.game = {
         ...createIdleGameState(),
@@ -1692,6 +1810,7 @@ io.on("connection", (socket) => {
     room.currentQuestionIndex = -1
     room.answeredPlayers = new Set()
     room.playerAnswers = new Map()
+    room.lessonResponses = new Map()
     room.lesson = {
       ...lessonResult.lesson,
       libraryId: null,
@@ -1769,6 +1888,7 @@ io.on("connection", (socket) => {
     room.currentQuestionIndex = -1
     room.answeredPlayers = new Set()
     room.playerAnswers = new Map()
+    room.lessonResponses = new Map()
     room.lesson = {
       ...cloneLessonForRoom(entry.lesson, entry.id),
       currentPhaseIndex: 0,
@@ -1837,12 +1957,14 @@ io.on("connection", (socket) => {
 
     if (room.lesson.currentPhaseIndex + 1 >= room.lesson.phases.length) {
       room.lesson = { ...room.lesson, currentPhaseIndex: -1 }
+      room.lessonResponses = new Map()
       room.game = { ...room.game, status: "finished", questionStartedAt: null }
       emitStateToRoom(room)
       return
     }
 
     room.lesson = { ...room.lesson, currentPhaseIndex: room.lesson.currentPhaseIndex + 1 }
+    room.lessonResponses = new Map()
     room.game = { ...room.game, status: "live", questionStartedAt: null }
     emitStateToRoom(room)
   })
@@ -1856,6 +1978,7 @@ io.on("connection", (socket) => {
     room.currentQuestionIndex = -1
     room.answeredPlayers = new Set()
     room.playerAnswers = new Map()
+    room.lessonResponses = new Map()
     room.lesson = createEmptyLessonState()
     room.game = createIdleGameState()
     emitStateToRoom(room)
@@ -1871,6 +1994,7 @@ io.on("connection", (socket) => {
     room.players = room.players.filter((player) => player.id !== playerId)
     room.answeredPlayers.delete(playerId)
     room.playerAnswers.delete(playerId)
+    room.lessonResponses.delete(playerId)
     socketToRoom.delete(playerId)
 
     io.to(playerId).emit("player:removed", {
@@ -1905,6 +2029,7 @@ io.on("connection", (socket) => {
         previousRoom.players = previousRoom.players.filter((player) => player.id !== socket.id)
         previousRoom.answeredPlayers.delete(socket.id)
         previousRoom.playerAnswers.delete(socket.id)
+        previousRoom.lessonResponses.delete(socket.id)
         emitStateToRoom(previousRoom)
       }
     }
@@ -1953,6 +2078,37 @@ io.on("connection", (socket) => {
     emitStateToRoom(room)
   })
 
+  socket.on("player:lesson-response", ({ response }) => {
+    const room = getRoomBySocketId(socket.id)
+    if (!room || room.game.mode !== "lesson") return
+
+    const phase = currentLessonPhase(room)
+    const player = room.players.find((entry) => entry.id === socket.id)
+    if (!phase || !player) return
+
+    const text = String(response ?? "").trim()
+    if (!text) {
+      socket.emit("player:error", { message: "Typ eerst een antwoord voordat je het verstuurt." })
+      return
+    }
+
+    const evaluation = evaluateLessonResponse(room.lesson, phase, text)
+    room.lessonResponses.set(socket.id, {
+      text,
+      isCorrect: evaluation.isCorrect,
+      label: evaluation.label,
+      feedback: evaluation.feedback,
+      submittedAt: new Date().toISOString(),
+    })
+
+    socket.emit("player:lesson-response:result", {
+      isCorrect: evaluation.isCorrect,
+      label: evaluation.label,
+      feedback: evaluation.feedback,
+    })
+    emitStateToRoom(room)
+  })
+
   socket.on("disconnect", () => {
     const room = getRoomBySocketId(socket.id)
     hostSocketIds.delete(socket.id)
@@ -1968,6 +2124,7 @@ io.on("connection", (socket) => {
     room.players = room.players.filter((player) => player.id !== socket.id)
     room.answeredPlayers.delete(socket.id)
     room.playerAnswers.delete(socket.id)
+    room.lessonResponses.delete(socket.id)
     emitStateToRoom(room)
   })
 })

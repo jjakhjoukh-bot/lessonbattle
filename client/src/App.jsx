@@ -122,7 +122,11 @@ function HostPage() {
     const onInsights = (payload) => {
       setHostInsights(payload)
       if (payload?.allAnswered && payload.totalPlayers > 0) {
-        setStatus("Alle deelnemers hebben geantwoord. Je kunt naar de volgende vraag.")
+        setStatus(
+          payload.mode === "lesson"
+            ? "Alle deelnemers hebben gereageerd. Je kunt naar de volgende lesstap."
+            : "Alle deelnemers hebben geantwoord. Je kunt naar de volgende vraag."
+        )
       }
     }
     const onError = ({ message }) => {
@@ -512,7 +516,9 @@ function HostPage() {
               type="button"
             >
               {game.mode === "lesson"
-                ? "Volgende lesstap"
+                ? hostInsights?.canAdvance
+                  ? "Volgende lesstap (iedereen klaar)"
+                  : "Volgende lesstap"
                 : hostInsights?.canAdvance
                   ? "Volgende vraag (iedereen klaar)"
                   : "Volgende vraag"}
@@ -569,7 +575,10 @@ function HostPage() {
           )}
 
           {game.mode === "lesson" && game.lesson?.currentPhase ? (
-            <LessonStageCard lesson={game.lesson} hostView />
+            <>
+              <LessonStageCard lesson={game.lesson} hostView />
+              <HostInsightsCard insights={hostInsights} />
+            </>
           ) : game.mode === "lesson" && game.status === "finished" ? (
             <LessonCompleteCard lesson={game.lesson} />
           ) : game.question ? (
@@ -623,6 +632,8 @@ function PlayerPage() {
   const [joined, setJoined] = useState(Boolean(playerSession.joined))
   const [result, setResult] = useState(null)
   const [chosenAnswer, setChosenAnswer] = useState(null)
+  const [lessonAnswer, setLessonAnswer] = useState("")
+  const [lessonResult, setLessonResult] = useState(null)
   const [status, setStatus] = useState("Vul je gegevens in en sluit aan.")
   const timeLeft = useQuestionCountdown(game)
 
@@ -668,12 +679,23 @@ function PlayerPage() {
       setResult(payload)
       setStatus(payload.correct ? "Goed antwoord. Je team pakt punten." : "Niet correct. Probeer de volgende vraag.")
     }
+    const onLessonResponseResult = (payload) => {
+      setLessonResult(payload)
+      setStatus(
+        payload.isCorrect
+          ? "Je reactie is ontvangen en sluit goed aan."
+          : payload.label === "Bijna"
+            ? "Je reactie is ontvangen. Vul hem nog iets scherper aan."
+            : "Je reactie is ontvangen. Kijk nog eens naar de opdracht."
+      )
+    }
 
     socket.on("player:joined", onJoined)
     socket.on("player:error", onPlayerError)
     socket.on("player:removed", onRemoved)
     socket.on("player:room:preview", onRoomPreview)
     socket.on("player:answer:result", onAnswerResult)
+    socket.on("player:lesson-response:result", onLessonResponseResult)
 
     return () => {
       socket.off("player:joined", onJoined)
@@ -681,6 +703,7 @@ function PlayerPage() {
       socket.off("player:removed", onRemoved)
       socket.off("player:room:preview", onRoomPreview)
       socket.off("player:answer:result", onAnswerResult)
+      socket.off("player:lesson-response:result", onLessonResponseResult)
     }
   }, [roomCode.length])
 
@@ -714,7 +737,14 @@ function PlayerPage() {
   useEffect(() => {
     setResult(null)
     setChosenAnswer(null)
+    setLessonAnswer("")
+    setLessonResult(null)
   }, [game.question?.id])
+
+  useEffect(() => {
+    setLessonAnswer("")
+    setLessonResult(null)
+  }, [game.lesson?.currentPhase?.id])
 
   useEffect(() => {
     const onConnect = () => {
@@ -733,6 +763,10 @@ function PlayerPage() {
 
   const join = () => {
     socket.emit("player:join", { name: name.trim(), teamId, roomCode: roomCode.trim().toUpperCase() })
+  }
+
+  const submitLessonAnswer = () => {
+    socket.emit("player:lesson-response", { response: lessonAnswer })
   }
 
   const availableTeams = joined ? teams : roomPreview.valid ? roomPreview.teams : teams
@@ -811,6 +845,13 @@ function PlayerPage() {
             <>
               <LessonProgress lesson={game.lesson} />
               <LessonStageCard lesson={game.lesson} />
+              <LessonResponsePanel
+                answer={lessonAnswer}
+                disabled={!joined}
+                onChange={setLessonAnswer}
+                onSubmit={submitLessonAnswer}
+                result={lessonResult}
+              />
             </>
           ) : game.question ? (
             <>
@@ -963,8 +1004,8 @@ function LessonStageCard({ lesson, hostView = false }) {
       <div className="lesson-stage-head">
         <div>
           <span className="category-badge">{lesson.model}</span>
-          <h3>{lesson.title}</h3>
-          <p className="muted">{lesson.lessonGoal}</p>
+          <h3>{hostView ? lesson.title : phase.title}</h3>
+          <p className="muted">{hostView ? lesson.lessonGoal : "Werk deze stap uit en stuur jouw antwoord in."}</p>
         </div>
         <div className="lesson-minutes">{phase.minutes} min</div>
       </div>
@@ -992,7 +1033,7 @@ function LessonStageCard({ lesson, hostView = false }) {
           </div>
         ) : null}
         <div className="lesson-box">
-          <strong>Leerlingen doen nu</strong>
+          <strong>{hostView ? "Leerlingen doen nu" : "Jouw opdracht"}</strong>
           <p>{phase.studentActivity}</p>
         </div>
         <div className="lesson-box">
@@ -1005,6 +1046,43 @@ function LessonStageCard({ lesson, hostView = false }) {
         </div>
       </div>
     </article>
+  )
+}
+
+function LessonResponsePanel({ answer, onChange, onSubmit, result, disabled }) {
+  return (
+    <section className="lesson-response-panel">
+      <div className="section-head">
+        <h3>Jouw antwoord</h3>
+        <span className="pill">{result?.label || "Nog niet verstuurd"}</span>
+      </div>
+
+      <label className="field">
+        <span>Typ je reactie</span>
+        <textarea
+          rows="4"
+          value={answer}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder="Schrijf hier je antwoord of uitleg..."
+        />
+      </label>
+
+      <button
+        className="button-primary"
+        disabled={disabled || !answer.trim()}
+        onClick={onSubmit}
+        type="button"
+      >
+        Verstuur antwoord
+      </button>
+
+      {result ? (
+        <div className={`answer-result ${result.isCorrect ? "ok" : "bad"}`}>
+          <strong>{result.label}</strong>
+          <p>{result.feedback}</p>
+        </div>
+      ) : null}
+    </section>
   )
 }
 
@@ -1076,6 +1154,63 @@ function LessonLibrarySection({ lessons, activeLessonId, onLoad, onDelete }) {
 
 function HostInsightsCard({ insights }) {
   if (!insights) return null
+
+  if (insights.mode === "lesson") {
+    return (
+      <section className="teacher-insights">
+        <div className="section-head">
+          <h3>Reactieoverzicht</h3>
+          <span className="pill">
+            {insights.answeredCount}/{insights.totalPlayers} gereageerd
+          </span>
+        </div>
+
+        {insights.allAnswered ? (
+          <div className="answer-result ok">
+            <strong>Iedereen heeft gereageerd.</strong>
+            <p>Je kunt nu bespreken en doorgaan naar de volgende lesstap.</p>
+          </div>
+        ) : (
+          <div className="answer-result">
+            <strong>Er komen nog reacties binnen.</strong>
+            <p>Wacht op de rest of ga handmatig verder als dat didactisch beter past.</p>
+          </div>
+        )}
+
+        {insights.expectedAnswer ? (
+          <div className="lesson-box">
+            <strong>Verwacht antwoord</strong>
+            <p>{insights.expectedAnswer}</p>
+          </div>
+        ) : null}
+
+        <div className="insight-grid">
+          {insights.responses.map((response) => (
+            <div
+              className={`insight-row ${response.answered ? "answered" : "pending"} ${response.isCorrect ? "correct" : ""}`}
+              key={response.playerId}
+            >
+              <div>
+                <strong>{response.name}</strong>
+                <span>{response.teamName || "Zonder team"}</span>
+                {response.answerText ? <span>{response.answerText}</span> : null}
+              </div>
+              <div className="insight-answer">
+                {response.answered ? (
+                  <>
+                    <b>{response.evaluationLabel || "Binnen"}</b>
+                    <span>{response.feedback || "Reactie ontvangen."}</span>
+                  </>
+                ) : (
+                  <b>Wacht nog</b>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+    )
+  }
 
   return (
     <section className="teacher-insights">

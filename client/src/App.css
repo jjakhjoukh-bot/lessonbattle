@@ -682,6 +682,15 @@
   align-items: center;
 }
 
+.lesson-response-panel {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+  padding: 18px;
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
 .lesson-stage-head {
   display: flex;
   justify-content: space-between;
