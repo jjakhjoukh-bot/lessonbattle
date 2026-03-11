@@ -1254,6 +1254,79 @@ function LessonLibrarySection({ lessons, activeLessonId, onLoad, onDelete }) {
   )
 }
 
+function buildLessonDistribution(responses) {
+  const buckets = [
+    { key: "goed", label: "Goed", colorClass: "good", match: (response) => response.evaluationLabel === "Goed" },
+    { key: "bijna", label: "Bijna goed", colorClass: "almost", match: (response) => response.evaluationLabel === "Bijna" },
+    {
+      key: "nog-niet",
+      label: "Nog niet goed",
+      colorClass: "notyet",
+      match: (response) => response.evaluationLabel !== "Goed" && response.evaluationLabel !== "Bijna",
+    },
+  ]
+
+  return buckets.map((bucket) => {
+    const players = responses.filter(bucket.match)
+    return {
+      ...bucket,
+      players,
+    }
+  })
+}
+
+function LessonDistributionChart({ responses, totalPlayers }) {
+  const distribution = buildLessonDistribution(responses)
+  const safeTotal = Math.max(1, totalPlayers || responses.length || 1)
+
+  return (
+    <section className="lesson-distribution">
+      <div className="section-head">
+        <h3>Klasbeeld</h3>
+        <span className="pill">Hover voor namen</span>
+      </div>
+      <div className="distribution-grid">
+        {distribution.map((bucket) => {
+          const percentage = Math.round((bucket.players.length / safeTotal) * 100)
+          return (
+            <div className={`distribution-card ${bucket.colorClass}`} key={bucket.key}>
+              <div className="distribution-meta">
+                <strong>{bucket.label}</strong>
+                <span>
+                  {bucket.players.length} leerling{bucket.players.length === 1 ? "" : "en"}
+                </span>
+              </div>
+              <div className="distribution-bar-track">
+                <div className="distribution-bar-fill" style={{ width: `${percentage}%` }} />
+              </div>
+              <div className="distribution-stats">
+                <b>{percentage}%</b>
+                <span>{bucket.players.length}/{safeTotal}</span>
+              </div>
+
+              <div className="distribution-tooltip">
+                <strong>{bucket.label}</strong>
+                {bucket.players.length ? (
+                  <ul>
+                    {bucket.players.map((player) => (
+                      <li key={player.playerId}>
+                        <span>{player.name}</span>
+                        <b>{player.evaluationLabel || "Nog niet"}</b>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p>Geen leerlingen in deze categorie.</p>
+                )}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </section>
+  )
+}
+
 function HostInsightsCard({ insights }) {
   if (!insights) return null
 
@@ -1292,6 +1365,8 @@ function HostInsightsCard({ insights }) {
             <p>{insights.expectedAnswer}</p>
           </div>
         ) : null}
+
+        <LessonDistributionChart responses={insights.responses} totalPlayers={insights.totalPlayers} />
 
         <div className="insight-grid">
           {insights.responses.map((response) => (
