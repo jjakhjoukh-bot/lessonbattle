@@ -71,6 +71,8 @@ function HostPage() {
   const [questionDurationSec, setQuestionDurationSec] = useState(20)
   const [lessonModel, setLessonModel] = useState("edi")
   const [lessonDurationMinutes, setLessonDurationMinutes] = useState(45)
+  const [lessonPromptDraft, setLessonPromptDraft] = useState("")
+  const [lessonExpectedAnswerDraft, setLessonExpectedAnswerDraft] = useState("")
   const [teamNamesInput, setTeamNamesInput] = useState("Team Zon\nTeam Oceaan")
   const [status, setStatus] = useState("Vul het onderwerp in, stel de teams in en start de ronde.")
   const [hostInsights, setHostInsights] = useState(null)
@@ -103,6 +105,12 @@ function HostPage() {
     if (game.lessonModel) setLessonModel(game.lessonModel)
     if (game.lessonDurationMinutes) setLessonDurationMinutes(game.lessonDurationMinutes)
   }, [game.lessonDurationMinutes, game.lessonModel])
+
+  useEffect(() => {
+    if (game.mode !== "lesson") return
+    setLessonPromptDraft(game.lesson?.currentPhase?.prompt || "")
+    setLessonExpectedAnswerDraft(game.lesson?.currentPhase?.expectedAnswer || "")
+  }, [game.lesson?.currentPhase?.id, game.lesson?.currentPhase?.prompt, game.lesson?.currentPhase?.expectedAnswer, game.mode])
 
   useEffect(() => {
     const onLoginSuccess = ({ username, roomCode }) => {
@@ -143,6 +151,7 @@ function HostPage() {
       setStatus(
         `${count} lesstappen klaar${providerLabel ? ` via ${providerLabel}` : ""}. ${String(nextLessonModel || "Lesmodus").toUpperCase()} is live.`
       )
+    const onLessonPromptSuccess = () => setStatus("Live lesvraag bijgewerkt voor de deelnemers.")
     const onSaveLessonSuccess = ({ title }) => setStatus(`Les opgeslagen in de bibliotheek: ${title}.`)
     const onLoadLessonSuccess = ({ title }) => {
       setSessionMode("lesson")
@@ -160,6 +169,7 @@ function HostPage() {
     socket.on("host:error", onError)
     socket.on("host:generate:success", onSuccess)
     socket.on("host:generate-lesson:success", onLessonSuccess)
+    socket.on("host:lesson-prompt:success", onLessonPromptSuccess)
     socket.on("host:save-lesson:success", onSaveLessonSuccess)
     socket.on("host:load-lesson:success", onLoadLessonSuccess)
     socket.on("host:delete-lesson:success", onDeleteLessonSuccess)
@@ -175,6 +185,7 @@ function HostPage() {
       socket.off("host:error", onError)
       socket.off("host:generate:success", onSuccess)
       socket.off("host:generate-lesson:success", onLessonSuccess)
+      socket.off("host:lesson-prompt:success", onLessonPromptSuccess)
       socket.off("host:save-lesson:success", onSaveLessonSuccess)
       socket.off("host:load-lesson:success", onLoadLessonSuccess)
       socket.off("host:delete-lesson:success", onDeleteLessonSuccess)
@@ -292,6 +303,14 @@ function HostPage() {
   const deleteLessonFromLibrary = (lessonId) => {
     setStatus("Les wordt verwijderd uit de bibliotheek...")
     socket.emit("host:delete-lesson", { lessonId })
+  }
+
+  const updateLessonPrompt = () => {
+    setStatus("Live lesvraag wordt bijgewerkt...")
+    socket.emit("host:lesson-prompt:update", {
+      prompt: lessonPromptDraft,
+      expectedAnswer: lessonExpectedAnswerDraft,
+    })
   }
 
   return (
@@ -577,6 +596,13 @@ function HostPage() {
           {game.mode === "lesson" && game.lesson?.currentPhase ? (
             <>
               <LessonStageCard lesson={game.lesson} hostView />
+              <LessonPromptComposer
+                expectedAnswer={lessonExpectedAnswerDraft}
+                onExpectedAnswerChange={setLessonExpectedAnswerDraft}
+                onSubmit={updateLessonPrompt}
+                onTextChange={setLessonPromptDraft}
+                text={lessonPromptDraft}
+              />
               <HostInsightsCard insights={hostInsights} />
             </>
           ) : game.mode === "lesson" && game.status === "finished" ? (
@@ -744,7 +770,7 @@ function PlayerPage() {
   useEffect(() => {
     setLessonAnswer("")
     setLessonResult(null)
-  }, [game.lesson?.currentPhase?.id])
+  }, [game.lesson?.currentPhase?.id, game.lesson?.currentPhase?.prompt])
 
   useEffect(() => {
     const onConnect = () => {
@@ -998,14 +1024,32 @@ function LessonStageCard({ lesson, hostView = false }) {
   if (!lesson?.currentPhase) return null
 
   const phase = lesson.currentPhase
+  const currentPrompt = phase.prompt || phase.interactivePrompt || phase.goal
+
+  if (!hostView) {
+    return (
+      <article className="lesson-stage-card student-stage-card">
+        <div className="student-stage-top">
+          <span className="category-badge">{lesson.model}</span>
+          <span className="lesson-minutes">{phase.minutes} min</span>
+        </div>
+        <div className="student-stage-kicker">Waar zijn we nu?</div>
+        <h3>{phase.title}</h3>
+        <div className="student-stage-prompt">
+          <strong>Opdracht</strong>
+          <p>{currentPrompt}</p>
+        </div>
+      </article>
+    )
+  }
 
   return (
     <article className="lesson-stage-card">
       <div className="lesson-stage-head">
         <div>
           <span className="category-badge">{lesson.model}</span>
-          <h3>{hostView ? lesson.title : phase.title}</h3>
-          <p className="muted">{hostView ? lesson.lessonGoal : "Werk deze stap uit en stuur jouw antwoord in."}</p>
+          <h3>{lesson.title}</h3>
+          <p className="muted">{lesson.lessonGoal}</p>
         </div>
         <div className="lesson-minutes">{phase.minutes} min</div>
       </div>
@@ -1022,23 +1066,21 @@ function LessonStageCard({ lesson, hostView = false }) {
       <div className="lesson-callout">
         <span>Huidige fase</span>
         <strong>{phase.title}</strong>
-        <p>{phase.goal}</p>
+        <p>{currentPrompt}</p>
       </div>
 
       <div className="lesson-stage-grid">
-        {hostView ? (
-          <div className="lesson-box">
-            <strong>Docentregie</strong>
-            <p>{phase.teacherScript}</p>
-          </div>
-        ) : null}
         <div className="lesson-box">
-          <strong>{hostView ? "Leerlingen doen nu" : "Jouw opdracht"}</strong>
+          <strong>Docentregie</strong>
+          <p>{phase.teacherScript}</p>
+        </div>
+        <div className="lesson-box">
+          <strong>Leerlingen doen nu</strong>
           <p>{phase.studentActivity}</p>
         </div>
         <div className="lesson-box">
-          <strong>Interactieve opdracht</strong>
-          <p>{phase.interactivePrompt}</p>
+          <strong>Live vraag</strong>
+          <p>{currentPrompt}</p>
         </div>
         <div className="lesson-box">
           <strong>Begrip checken</strong>
@@ -1046,6 +1088,44 @@ function LessonStageCard({ lesson, hostView = false }) {
         </div>
       </div>
     </article>
+  )
+}
+
+function LessonPromptComposer({
+  text,
+  expectedAnswer,
+  onTextChange,
+  onExpectedAnswerChange,
+  onSubmit,
+}) {
+  return (
+    <section className="lesson-prompt-composer">
+      <div className="section-head">
+        <h3>Live lesvraag</h3>
+        <span className="pill">Open vraag</span>
+      </div>
+      <label className="field">
+        <span>Vraag of opdracht voor leerlingen</span>
+        <textarea
+          rows="3"
+          value={text}
+          onChange={(event) => onTextChange(event.target.value)}
+          placeholder="Typ hier de vraag die nu live naar de leerlingen moet."
+        />
+      </label>
+      <label className="field">
+        <span>Verwacht antwoord</span>
+        <textarea
+          rows="2"
+          value={expectedAnswer}
+          onChange={(event) => onExpectedAnswerChange(event.target.value)}
+          placeholder="Korte kern van een goed antwoord."
+        />
+      </label>
+      <button className="button-secondary" disabled={!text.trim()} onClick={onSubmit} type="button">
+        Toon vraag live
+      </button>
+    </section>
   )
 }
 
@@ -1176,6 +1256,13 @@ function HostInsightsCard({ insights }) {
             <p>Wacht op de rest of ga handmatig verder als dat didactisch beter past.</p>
           </div>
         )}
+
+        {insights.expectedAnswer ? (
+          <div className="lesson-box">
+            <strong>Live vraag</strong>
+            <p>{insights.prompt}</p>
+          </div>
+        ) : null}
 
         {insights.expectedAnswer ? (
           <div className="lesson-box">

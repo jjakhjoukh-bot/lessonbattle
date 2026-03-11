@@ -89,6 +89,9 @@ function createEmptyLessonState() {
     materials: [],
     phases: [],
     currentPhaseIndex: -1,
+    activePrompt: "",
+    activeExpectedAnswer: "",
+    activeKeywords: [],
   }
 }
 
@@ -334,6 +337,30 @@ function currentLessonPhase(room) {
   return index >= 0 ? room.lesson?.phases?.[index] ?? null : null
 }
 
+function getActiveLessonPrompt(lesson) {
+  if (!lesson) return ""
+  const phase = lesson.currentPhaseIndex >= 0 ? lesson.phases?.[lesson.currentPhaseIndex] ?? null : null
+  return lesson.activePrompt || phase?.interactivePrompt || ""
+}
+
+function getActiveLessonExpectedAnswer(lesson) {
+  if (!lesson) return ""
+  const phase = lesson.currentPhaseIndex >= 0 ? lesson.phases?.[lesson.currentPhaseIndex] ?? null : null
+  return lesson.activeExpectedAnswer || phase?.expectedAnswer || ""
+}
+
+function withLessonPhaseContext(lesson, phaseIndex = lesson?.currentPhaseIndex ?? -1) {
+  const phase = phaseIndex >= 0 ? lesson?.phases?.[phaseIndex] ?? null : null
+  return {
+    ...createEmptyLessonState(),
+    ...lesson,
+    currentPhaseIndex: phase ? phaseIndex : -1,
+    activePrompt: phase?.interactivePrompt || "",
+    activeExpectedAnswer: phase?.expectedAnswer || "",
+    activeKeywords: [...(phase?.keywords || [])],
+  }
+}
+
 function sanitizeQuestion(question) {
   if (!question) return null
   return {
@@ -347,10 +374,29 @@ function sanitizeQuestion(question) {
   }
 }
 
-function sanitizeLesson(lesson) {
+function sanitizeLesson(lesson, viewer = "host") {
   if (!lesson || !Array.isArray(lesson.phases) || lesson.phases.length === 0) return null
   const currentPhase =
     lesson.currentPhaseIndex >= 0 ? lesson.phases[lesson.currentPhaseIndex] ?? null : null
+  const activePrompt = getActiveLessonPrompt(lesson)
+  const activeExpectedAnswer = getActiveLessonExpectedAnswer(lesson)
+
+  if (viewer === "player") {
+    return {
+      title: lesson.title,
+      model: lesson.model,
+      currentPhaseIndex: lesson.currentPhaseIndex,
+      totalPhases: lesson.phases.length,
+      currentPhase: currentPhase
+        ? {
+            id: currentPhase.id,
+            title: currentPhase.title,
+            minutes: currentPhase.minutes,
+            prompt: activePrompt,
+          }
+        : null,
+    }
+  }
 
   return {
     libraryId: lesson.libraryId || null,
@@ -363,7 +409,13 @@ function sanitizeLesson(lesson) {
     materials: lesson.materials,
     currentPhaseIndex: lesson.currentPhaseIndex,
     totalPhases: lesson.phases.length,
-    currentPhase,
+    currentPhase: currentPhase
+      ? {
+          ...currentPhase,
+          prompt: activePrompt,
+          expectedAnswer: activeExpectedAnswer,
+        }
+      : null,
     phases: lesson.phases.map((phase) => ({
       id: phase.id,
       title: phase.title,
@@ -394,7 +446,7 @@ function reassignPlayersToExistingTeams(room) {
   }))
 }
 
-function buildStatePayload(room) {
+function buildStatePayload(room, viewer = "host") {
   syncTeamScores(room)
   const lessonPhase = currentLessonPhase(room)
   const answeredCount =
@@ -415,7 +467,7 @@ function buildStatePayload(room) {
       totalPlayers,
       allAnswered: totalPlayers > 0 && answeredCount >= totalPlayers,
       question: sanitizeQuestion(currentQuestion(room)),
-      lesson: sanitizeLesson(room.lesson),
+      lesson: sanitizeLesson(room.lesson, viewer),
     },
   }
 }
@@ -517,6 +569,7 @@ function cloneLessonForRoom(lesson, libraryId = null) {
     successCriteria: [...(lesson.successCriteria || [])],
     materials: [...(lesson.materials || [])],
     phases: (lesson.phases || []).map((phase) => ({ ...phase })),
+    activeKeywords: [...(lesson.activeKeywords || [])],
   }
 }
 
@@ -532,11 +585,12 @@ function buildHostInsights(room) {
       mode: "lesson",
       phaseId: phase.id,
       phaseTitle: phase.title,
+      prompt: getActiveLessonPrompt(room.lesson),
       answeredCount,
       totalPlayers,
       allAnswered,
       canAdvance: allAnswered,
-      expectedAnswer: phase.expectedAnswer || "",
+      expectedAnswer: getActiveLessonExpectedAnswer(room.lesson),
       responses: room.players.map((player) => {
         const response = room.lessonResponses.get(player.id)
         return {
@@ -593,20 +647,26 @@ function emitHostInsights(room) {
 }
 
 function emitStateToRoom(room) {
-  const payload = buildStatePayload(room)
-  const recipients = [room.hostSocketId, ...room.players.map((player) => player.id)]
-  for (const recipient of recipients) {
-    io.to(recipient).emit("players:update", payload.players)
-    io.to(recipient).emit("teams:update", payload.teams)
-    io.to(recipient).emit("leaderboard:update", payload.leaderboard)
-    io.to(recipient).emit("game:update", payload.game)
+  const hostPayload = buildStatePayload(room, "host")
+  const playerPayload = buildStatePayload(room, "player")
+
+  io.to(room.hostSocketId).emit("players:update", hostPayload.players)
+  io.to(room.hostSocketId).emit("teams:update", hostPayload.teams)
+  io.to(room.hostSocketId).emit("leaderboard:update", hostPayload.leaderboard)
+  io.to(room.hostSocketId).emit("game:update", hostPayload.game)
+
+  for (const player of room.players) {
+    io.to(player.id).emit("players:update", playerPayload.players)
+    io.to(player.id).emit("teams:update", playerPayload.teams)
+    io.to(player.id).emit("leaderboard:update", playerPayload.leaderboard)
+    io.to(player.id).emit("game:update", playerPayload.game)
   }
   emitHostInsights(room)
 }
 
 function emitStateToSocket(socket, room) {
   const payload = room
-    ? buildStatePayload(room)
+    ? buildStatePayload(room, hostSocketIds.has(socket.id) ? "host" : "player")
     : {
         players: [],
         teams: createTeams(),
@@ -1281,8 +1341,8 @@ function evaluateLessonResponse(lesson, phase, responseText) {
   }
 
   const expectedTokens = uniqueTokens([
-    ...(phase.keywords || []),
-    phase.expectedAnswer,
+    ...(lesson.activeKeywords || phase.keywords || []),
+    getActiveLessonExpectedAnswer(lesson),
     phase.goal,
     phase.checkForUnderstanding,
   ])
@@ -1812,9 +1872,7 @@ io.on("connection", (socket) => {
     room.playerAnswers = new Map()
     room.lessonResponses = new Map()
     room.lesson = {
-      ...lessonResult.lesson,
-      libraryId: null,
-      currentPhaseIndex: 0,
+      ...withLessonPhaseContext({ ...lessonResult.lesson, libraryId: null, currentPhaseIndex: 0 }, 0),
     }
     room.game = {
       ...createIdleGameState(),
@@ -1890,8 +1948,7 @@ io.on("connection", (socket) => {
     room.playerAnswers = new Map()
     room.lessonResponses = new Map()
     room.lesson = {
-      ...cloneLessonForRoom(entry.lesson, entry.id),
-      currentPhaseIndex: 0,
+      ...withLessonPhaseContext(cloneLessonForRoom(entry.lesson, entry.id), 0),
     }
     room.game = {
       ...createIdleGameState(),
@@ -1908,6 +1965,27 @@ io.on("connection", (socket) => {
 
     socket.emit("host:load-lesson:success", { title: entry.title })
     emitStateToRoom(room)
+  })
+
+  socket.on("host:lesson-prompt:update", ({ prompt, expectedAnswer }) => {
+    const room = requireHostRoom(socket)
+    if (!room || room.game.mode !== "lesson") return
+
+    const phase = currentLessonPhase(room)
+    if (!phase) return
+
+    room.lesson = {
+      ...room.lesson,
+      activePrompt: String(prompt ?? "").trim() || phase.interactivePrompt,
+      activeExpectedAnswer: String(expectedAnswer ?? "").trim() || phase.expectedAnswer || "",
+      activeKeywords: uniqueTokens([
+        ...(phase.keywords || []),
+        String(expectedAnswer ?? "").trim() || phase.expectedAnswer || "",
+      ]),
+    }
+    room.lessonResponses = new Map()
+    emitStateToRoom(room)
+    socket.emit("host:lesson-prompt:success", { prompt: room.lesson.activePrompt })
   })
 
   socket.on("host:delete-lesson", ({ lessonId }) => {
@@ -1963,7 +2041,7 @@ io.on("connection", (socket) => {
       return
     }
 
-    room.lesson = { ...room.lesson, currentPhaseIndex: room.lesson.currentPhaseIndex + 1 }
+    room.lesson = withLessonPhaseContext(room.lesson, room.lesson.currentPhaseIndex + 1)
     room.lessonResponses = new Map()
     room.game = { ...room.game, status: "live", questionStartedAt: null }
     emitStateToRoom(room)
