@@ -92,6 +92,10 @@ function HostPage() {
       setHostSession((current) => ({ ...current, authenticated: true, username, roomCode }))
       setStatus("Beheeraccount verbonden.")
     }
+    const onConfigureSuccess = ({ teams: nextTeams }) => {
+      const teamCount = Array.isArray(nextTeams) ? nextTeams.length : teams.length
+      setStatus(`${teamCount} teams opgeslagen.`)
+    }
     const onRoomUpdate = ({ roomCode }) => {
       setHostSession((current) => ({ ...current, roomCode }))
     }
@@ -108,6 +112,7 @@ function HostPage() {
       )
 
     socket.on("host:login:success", onLoginSuccess)
+    socket.on("host:configure:success", onConfigureSuccess)
     socket.on("host:room:update", onRoomUpdate)
     socket.on("host:generate:started", onStarted)
     socket.on("host:error", onError)
@@ -115,6 +120,7 @@ function HostPage() {
 
     return () => {
       socket.off("host:login:success", onLoginSuccess)
+      socket.off("host:configure:success", onConfigureSuccess)
       socket.off("host:room:update", onRoomUpdate)
       socket.off("host:generate:started", onStarted)
       socket.off("host:error", onError)
@@ -175,8 +181,8 @@ function HostPage() {
   )
 
   const configureTeams = () => {
+    setStatus("Teams worden bijgewerkt...")
     socket.emit("host:configure", { teamNames: preparedTeamNames })
-    setStatus("Teams bijgewerkt.")
   }
 
   const login = () => {
@@ -482,6 +488,18 @@ function PlayerPage() {
 
     socket.emit("player:lookup-room", { roomCode: roomCode.trim().toUpperCase() })
   }, [roomCode])
+
+  useEffect(() => {
+    const normalizedCode = roomCode.trim().toUpperCase()
+
+    if (joined || normalizedCode.length < 5) return undefined
+
+    const intervalId = window.setInterval(() => {
+      socket.emit("player:lookup-room", { roomCode: normalizedCode })
+    }, 2000)
+
+    return () => window.clearInterval(intervalId)
+  }, [joined, roomCode])
 
   useEffect(() => {
     setResult(null)

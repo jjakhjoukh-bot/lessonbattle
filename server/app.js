@@ -1067,6 +1067,9 @@ io.on("connection", (socket) => {
     room.teams = createTeams(Array.isArray(teamNames) ? teamNames : DEFAULT_TEAMS)
     reassignPlayersToExistingTeams(room)
     emitStateToRoom(room)
+    socket.emit("host:configure:success", {
+      teams: room.teams,
+    })
   })
 
   socket.on("host:room:refresh", () => {
