@@ -65,6 +65,7 @@ function HostPage() {
   const [questionDurationSec, setQuestionDurationSec] = useState(20)
   const [teamNamesInput, setTeamNamesInput] = useState("Team Zon\nTeam Oceaan")
   const [status, setStatus] = useState("Vul het onderwerp in, stel de teams in en start de ronde.")
+  const [hostInsights, setHostInsights] = useState(null)
   const [loginForm, setLoginForm] = useState({ username: "", password: "" })
   const [hostSession, setHostSession] = useState(() => {
     try {
@@ -100,6 +101,12 @@ function HostPage() {
       setHostSession((current) => ({ ...current, roomCode }))
     }
     const onStarted = ({ message }) => setStatus(message)
+    const onInsights = (payload) => {
+      setHostInsights(payload)
+      if (payload?.allAnswered && payload.totalPlayers > 0) {
+        setStatus("Alle deelnemers hebben geantwoord. Je kunt naar de volgende vraag.")
+      }
+    }
     const onError = ({ message }) => {
       setStatus(`Fout: ${message}`)
       if (/onjuiste docentgegevens|log eerst in als docent/i.test(String(message))) {
@@ -115,6 +122,7 @@ function HostPage() {
     socket.on("host:configure:success", onConfigureSuccess)
     socket.on("host:room:update", onRoomUpdate)
     socket.on("host:generate:started", onStarted)
+    socket.on("host:question:insights", onInsights)
     socket.on("host:error", onError)
     socket.on("host:generate:success", onSuccess)
 
@@ -123,6 +131,7 @@ function HostPage() {
       socket.off("host:configure:success", onConfigureSuccess)
       socket.off("host:room:update", onRoomUpdate)
       socket.off("host:generate:started", onStarted)
+      socket.off("host:question:insights", onInsights)
       socket.off("host:error", onError)
       socket.off("host:generate:success", onSuccess)
     }
@@ -149,6 +158,12 @@ function HostPage() {
     socket.on("connect", onConnect)
     return () => socket.off("connect", onConnect)
   }, [hostSession.authenticated, hostSession.roomCode, loginForm])
+
+  useEffect(() => {
+    if (!game.question) {
+      setHostInsights(null)
+    }
+  }, [game.question?.id])
 
   const timeLeft = useQuestionCountdown(game)
   const [presenterMode, setPresenterMode] = useState(false)
@@ -362,7 +377,7 @@ function HostPage() {
               onClick={() => socket.emit("host:next")}
               type="button"
             >
-              Volgende vraag
+              {hostInsights?.canAdvance ? "Volgende vraag (iedereen klaar)" : "Volgende vraag"}
             </button>
             <button
               className="button-ghost"
@@ -393,7 +408,10 @@ function HostPage() {
           <ProgressBar current={game.currentQuestionIndex + 1} total={game.totalQuestions} timeLeft={timeLeft} duration={game.questionDurationSec} />
 
           {game.question ? (
-            <QuestionCard question={game.question} />
+            <>
+              <QuestionCard question={game.question} />
+              <HostInsightsCard insights={hostInsights} />
+            </>
           ) : game.status === "finished" ? (
             <ResultsCard teams={teams} leaderboard={leaderboard} />
           ) : (
@@ -404,7 +422,11 @@ function HostPage() {
 
       <section className="dashboard-grid">
         <ScoreBoard teams={teams} leaderboard={leaderboard} />
-        <RosterBoard players={players} teams={teams} />
+        <RosterBoard
+          onRemovePlayer={(playerId) => socket.emit("host:remove-player", { playerId })}
+          players={players}
+          teams={teams}
+        />
       </section>
     </main>
   )
@@ -433,11 +455,17 @@ function PlayerPage() {
   useSoundEffects(result, game.status)
 
   useEffect(() => {
-    const sourceTeams = roomPreview.valid ? roomPreview.teams : teams
-    if (!teamId && sourceTeams[0]?.id) {
+    const sourceTeams = joined ? teams : roomPreview.valid ? roomPreview.teams : teams
+
+    if (!sourceTeams.length) {
+      if (teamId) setTeamId("")
+      return
+    }
+
+    if (!sourceTeams.some((team) => team.id === teamId)) {
       setTeamId(sourceTeams[0].id)
     }
-  }, [roomPreview, teamId, teams])
+  }, [joined, roomPreview, teamId, teams])
 
   useEffect(() => {
     const onJoined = () => {
@@ -456,6 +484,12 @@ function PlayerPage() {
         setStatus("Deze spelcode bestaat niet.")
       }
     }
+    const onRemoved = ({ message }) => {
+      setJoined(false)
+      setResult(null)
+      setChosenAnswer(null)
+      setStatus(message || "Je bent verwijderd door de beheerder.")
+    }
     const onAnswerResult = (payload) => {
       setResult(payload)
       setStatus(payload.correct ? "Goed antwoord. Je team pakt punten." : "Niet correct. Probeer de volgende vraag.")
@@ -463,12 +497,14 @@ function PlayerPage() {
 
     socket.on("player:joined", onJoined)
     socket.on("player:error", onPlayerError)
+    socket.on("player:removed", onRemoved)
     socket.on("player:room:preview", onRoomPreview)
     socket.on("player:answer:result", onAnswerResult)
 
     return () => {
       socket.off("player:joined", onJoined)
       socket.off("player:error", onPlayerError)
+      socket.off("player:removed", onRemoved)
       socket.off("player:room:preview", onRoomPreview)
       socket.off("player:answer:result", onAnswerResult)
     }
@@ -525,7 +561,7 @@ function PlayerPage() {
     socket.emit("player:join", { name: name.trim(), teamId, roomCode: roomCode.trim().toUpperCase() })
   }
 
-  const availableTeams = roomPreview.valid ? roomPreview.teams : teams
+  const availableTeams = joined ? teams : roomPreview.valid ? roomPreview.teams : teams
   const selectedTeam = availableTeams.find((team) => team.id === teamId)
 
   return (
@@ -656,6 +692,57 @@ function QuestionCard({ question, compact = false, showOptions = true }) {
         ) : null}
       </div>
     </article>
+  )
+}
+
+function HostInsightsCard({ insights }) {
+  if (!insights) return null
+
+  return (
+    <section className="teacher-insights">
+      <div className="section-head">
+        <h3>Antwoordoverzicht</h3>
+        <span className="pill">
+          {insights.answeredCount}/{insights.totalPlayers} geantwoord
+        </span>
+      </div>
+
+      {insights.allAnswered ? (
+        <div className="answer-result ok">
+          <strong>Iedereen is klaar. Juiste antwoord: {insights.correctOption}</strong>
+          <p>{insights.explanation}</p>
+        </div>
+      ) : (
+        <div className="answer-result">
+          <strong>Nog niet iedereen heeft geantwoord.</strong>
+          <p>Je kunt wachten of handmatig doorgaan naar de volgende vraag.</p>
+        </div>
+      )}
+
+      <div className="insight-grid">
+        {insights.responses.map((response) => (
+          <div
+            className={`insight-row ${response.answered ? "answered" : "pending"} ${response.isCorrect ? "correct" : ""}`}
+            key={response.playerId}
+          >
+            <div>
+              <strong>{response.name}</strong>
+              <span>{response.teamName || "Zonder team"}</span>
+            </div>
+            <div className="insight-answer">
+              {insights.allAnswered ? (
+                <>
+                  <span>{response.answerText || "Nog geen antwoord"}</span>
+                  <b>{response.isCorrect ? "Goed" : response.answered ? "Fout" : "Open"}</b>
+                </>
+              ) : (
+                <b>{response.answered ? "Geantwoord" : "Wacht nog"}</b>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
   )
 }
 
@@ -849,7 +936,7 @@ function ScoreBoard({ teams, leaderboard, compact = false }) {
   )
 }
 
-function RosterBoard({ players, teams, compact = false }) {
+function RosterBoard({ players, teams, compact = false, onRemovePlayer }) {
   return (
     <section className={`glass board-card ${compact ? "compact" : ""}`}>
       <div className="section-head">
@@ -864,8 +951,19 @@ function RosterBoard({ players, teams, compact = false }) {
               ? players.filter((player) => player.teamId === team.id)
               : [{ id: `${team.id}-empty`, name: "Nog niemand", score: 0 }]).map((player) => (
               <div className="roster-row" key={player.id}>
-                <span>{player.name}</span>
-                <strong>{player.score}</strong>
+                <div className="roster-row-main">
+                  <span>{player.name}</span>
+                  <strong>{player.score}</strong>
+                </div>
+                {onRemovePlayer && !String(player.id).endsWith("-empty") ? (
+                  <button
+                    className="button-remove-mini"
+                    onClick={() => onRemovePlayer(player.id)}
+                    type="button"
+                  >
+                    Verwijder
+                  </button>
+                ) : null}
               </div>
             ))}
           </div>

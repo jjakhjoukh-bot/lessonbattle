@@ -261,6 +261,7 @@ function createRoom(hostSocketId) {
     questions: [],
     currentQuestionIndex: -1,
     answeredPlayers: new Set(),
+    playerAnswers: new Map(),
     closingTimeout: null,
     game: {
       topic: "",
@@ -332,6 +333,8 @@ function reassignPlayersToExistingTeams(room) {
 
 function buildStatePayload(room) {
   syncTeamScores(room)
+  const answeredCount = room.answeredPlayers.size
+  const totalPlayers = room.players.length
   return {
     players: room.players,
     teams: room.teams,
@@ -341,9 +344,49 @@ function buildStatePayload(room) {
       currentQuestionIndex: room.currentQuestionIndex,
       totalQuestions: room.questions.length,
       roomCodeActive: true,
+      answeredCount,
+      totalPlayers,
+      allAnswered: totalPlayers > 0 && answeredCount >= totalPlayers,
       question: sanitizeQuestion(currentQuestion(room)),
     },
   }
+}
+
+function buildHostInsights(room) {
+  const question = currentQuestion(room)
+  const answeredCount = room.answeredPlayers.size
+  const totalPlayers = room.players.length
+  const allAnswered = totalPlayers > 0 && answeredCount >= totalPlayers
+
+  return {
+    questionId: question?.id ?? null,
+    answeredCount,
+    totalPlayers,
+    allAnswered,
+    canAdvance: Boolean(question) && allAnswered,
+    correctIndex: allAnswered && question ? question.correctIndex : null,
+    correctOption: allAnswered && question ? question.options[question.correctIndex] : null,
+    explanation: allAnswered && question ? question.explanation : "",
+    responses: room.players.map((player) => {
+      const answer = room.playerAnswers.get(player.id)
+
+      return {
+        playerId: player.id,
+        name: player.name,
+        teamId: player.teamId,
+        teamName: room.teams.find((team) => team.id === player.teamId)?.name || "",
+        answered: Boolean(answer),
+        answerIndex: allAnswered ? answer?.answerIndex ?? null : null,
+        answerText: allAnswered && answer ? question?.options?.[answer.answerIndex] ?? null : null,
+        isCorrect: allAnswered && answer ? answer.isCorrect : null,
+      }
+    }),
+  }
+}
+
+function emitHostInsights(room) {
+  if (!room?.hostSocketId) return
+  io.to(room.hostSocketId).emit("host:question:insights", buildHostInsights(room))
 }
 
 function emitStateToRoom(room) {
@@ -355,6 +398,7 @@ function emitStateToRoom(room) {
     io.to(recipient).emit("leaderboard:update", payload.leaderboard)
     io.to(recipient).emit("game:update", payload.game)
   }
+  emitHostInsights(room)
 }
 
 function emitStateToSocket(socket, room) {
@@ -1089,6 +1133,7 @@ io.on("connection", (socket) => {
 
     room.players = []
     room.answeredPlayers = new Set()
+    room.playerAnswers = new Map()
     socket.emit("host:room:update", { roomCode: room.code })
     emitStateToRoom(room)
   })
@@ -1122,6 +1167,7 @@ io.on("connection", (socket) => {
       room.questions = []
       room.currentQuestionIndex = -1
       room.answeredPlayers = new Set()
+      room.playerAnswers = new Map()
       room.game = {
         topic: String(topic ?? "").trim(),
         audience: audience?.trim() || "vmbo",
@@ -1140,6 +1186,7 @@ io.on("connection", (socket) => {
 
     room.currentQuestionIndex = 0
     room.answeredPlayers = new Set()
+    room.playerAnswers = new Map()
     room.game = {
       topic: String(topic ?? "").trim(),
       audience: audience?.trim() || "vmbo",
@@ -1167,6 +1214,7 @@ io.on("connection", (socket) => {
     if (room.currentQuestionIndex + 1 >= room.questions.length) {
       room.currentQuestionIndex = -1
       room.answeredPlayers = new Set()
+      room.playerAnswers = new Map()
       room.game = { ...room.game, status: room.questions.length ? "finished" : "idle", questionStartedAt: null }
       emitStateToRoom(room)
       return
@@ -1174,6 +1222,7 @@ io.on("connection", (socket) => {
 
     room.currentQuestionIndex += 1
     room.answeredPlayers = new Set()
+    room.playerAnswers = new Map()
     stampQuestionStart(room)
     emitStateToRoom(room)
   })
@@ -1186,6 +1235,7 @@ io.on("connection", (socket) => {
     room.questions = []
     room.currentQuestionIndex = -1
     room.answeredPlayers = new Set()
+    room.playerAnswers = new Map()
     room.game = {
       topic: "",
       audience: "vmbo",
@@ -1197,6 +1247,25 @@ io.on("connection", (socket) => {
       providerLabel: null,
       generatedAt: null,
     }
+    emitStateToRoom(room)
+  })
+
+  socket.on("host:remove-player", ({ playerId }) => {
+    const room = requireHostRoom(socket)
+    if (!room) return
+
+    const playerToRemove = room.players.find((player) => player.id === playerId)
+    if (!playerToRemove) return
+
+    room.players = room.players.filter((player) => player.id !== playerId)
+    room.answeredPlayers.delete(playerId)
+    room.playerAnswers.delete(playerId)
+    socketToRoom.delete(playerId)
+
+    io.to(playerId).emit("player:removed", {
+      message: "Je bent verwijderd door de beheerder. Je kunt opnieuw deelnemen met de spelcode.",
+    })
+
     emitStateToRoom(room)
   })
 
@@ -1224,6 +1293,7 @@ io.on("connection", (socket) => {
       if (previousRoom) {
         previousRoom.players = previousRoom.players.filter((player) => player.id !== socket.id)
         previousRoom.answeredPlayers.delete(socket.id)
+        previousRoom.playerAnswers.delete(socket.id)
         emitStateToRoom(previousRoom)
       }
     }
@@ -1255,6 +1325,10 @@ io.on("connection", (socket) => {
 
     room.answeredPlayers.add(socket.id)
     const isCorrect = answer === question.correctIndex
+    room.playerAnswers.set(socket.id, {
+      answerIndex: answer,
+      isCorrect,
+    })
     if (isCorrect) player.score += 100
 
     syncTeamScores(room)
@@ -1282,6 +1356,7 @@ io.on("connection", (socket) => {
 
     room.players = room.players.filter((player) => player.id !== socket.id)
     room.answeredPlayers.delete(socket.id)
+    room.playerAnswers.delete(socket.id)
     emitStateToRoom(room)
   })
 })
