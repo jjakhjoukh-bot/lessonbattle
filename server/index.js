@@ -54,7 +54,7 @@ const TEAM_COLORS = ["#ff8c42", "#3dd6d0", "#8f7cff", "#ff5d8f"]
 const DEFAULT_TEAMS = ["Team Zon", "Team Oceaan"]
 const QUESTION_BATCH_SIZE = 50
 const QUESTION_POOL_LOW_WATERMARK = 10
-const QUESTION_GENERATION_TIMEOUT_MS = 40000
+const QUESTION_GENERATION_TIMEOUT_MS = 120000
 
 const hostSockets = new Set()
 let players = []

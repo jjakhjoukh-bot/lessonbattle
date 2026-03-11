@@ -47,6 +47,9 @@ const openAI = openAIApiKey ? new OpenAI({ apiKey: openAIApiKey }) : null
 const TEAM_COLORS = ["#ff8c42", "#3dd6d0", "#8f7cff", "#ff5d8f"]
 const DEFAULT_TEAMS = ["Team Zon", "Team Oceaan"]
 const ROOM_HOST_GRACE_MS = 2 * 60 * 1000
+const AI_PROVIDER_REQUEST_TIMEOUT_MS = 45000
+const AI_PROVIDER_REPAIR_TIMEOUT_MS = 30000
+const AI_ROUND_GENERATION_TIMEOUT_MS = 120000
 const hostSocketIds = new Set()
 const socketToRoom = new Map()
 const rooms = new Map()
@@ -861,7 +864,7 @@ function formatProviderLabel(provider) {
 }
 
 async function generateQuestionsWithProvider(provider, { topic, audience, questionCount }) {
-  const providerTimeoutMs = provider === "gemini" ? 30000 : 35000
+  const providerTimeoutMs = AI_PROVIDER_REQUEST_TIMEOUT_MS
   let lastError = null
 
   for (let attempt = 1; attempt <= 2; attempt += 1) {
@@ -892,7 +895,7 @@ async function generateQuestionsWithProvider(provider, { topic, audience, questi
               brokenOutput: rawText,
               previousIssue: parseError instanceof Error ? parseError.message : "output was ongeldig",
             }),
-            20000
+            AI_PROVIDER_REPAIR_TIMEOUT_MS
           )
           const repairedQuestions = parseQuestionsFromText(repairedText, topic)
           console.info(`[AI] ${provider} repair-pass geslaagd`)
@@ -953,6 +956,10 @@ function formatGenerationError(error) {
 
   if (/geen geldige JSON|JSON-array|niet worden omgezet/i.test(rawMessage)) {
     return "De AI gaf geen bruikbare vragen terug. Probeer je onderwerp iets concreter te formuleren."
+  }
+
+  if (/AI-generatie duurt te lang/i.test(rawMessage)) {
+    return "De AI reageert te traag voor deze ronde. Probeer het opnieuw of wacht heel even."
   }
 
   return `AI kon de ronde niet genereren. Details: ${rawMessage}`
@@ -1097,7 +1104,10 @@ io.on("connection", (socket) => {
 
     let generationResult
     try {
-      generationResult = await withTimeout(generateQuestions({ topic, audience, questionCount }), 25000)
+      generationResult = await withTimeout(
+        generateQuestions({ topic, audience, questionCount }),
+        AI_ROUND_GENERATION_TIMEOUT_MS
+      )
       room.questions = generationResult.questions
       console.info(
         `[AI] ronde voor room ${room.code} gegenereerd via ${generationResult.providerLabel}`
