@@ -43,7 +43,7 @@ const io = new Server(server, {
 const apiKey = process.env.GEMINI_API_KEY
 const modelName = process.env.GEMINI_MODEL || "gemini-2.5-flash"
 const groqApiKey = process.env.GROQ_API_KEY
-const groqModel = process.env.GROQ_MODEL || "llama3-70b-8192"
+const groqModel = process.env.GROQ_MODEL || "llama-3.3-70b-versatile"
 const port = Number(process.env.PORT || 3001)
 const teacherUsername = process.env.TEACHER_USERNAME || "docent"
 const teacherPassword = process.env.TEACHER_PASSWORD || "les1234"
@@ -72,6 +72,8 @@ let gameMeta = {
   questionDurationSec: 20,
   questionStartedAt: null,
   status: "idle",
+  source: "idle",
+  providerLabel: null,
   generatedAt: null,
 }
 
@@ -663,6 +665,12 @@ function getQuestionPoolCacheKey(topic, audience) {
   return `${normalizeTopicKey(topic)}::${normalizeTopicKey(audience || "vmbo")}`
 }
 
+function formatProviderLabel(provider) {
+  if (provider === "gemini") return "Gemini"
+  if (provider === "groq") return "Groq"
+  return provider
+}
+
 function getTopicCacheEntry(topic, audience) {
   return questionsPerTopic[getQuestionPoolCacheKey(topic, audience)] ?? null
 }
@@ -765,7 +773,12 @@ async function generateQuestions({ topic, audience, minimumCount = QUESTION_POOL
         console.warn(`AI-provider ${providers[index - 1].name} faalde. Fallback naar ${provider.name}.`)
       }
 
-      return await provider.run()
+      const questions = await provider.run()
+      return {
+        questions,
+        provider: provider.name,
+        providerLabel: formatProviderLabel(provider.name),
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Onbekende AI-fout"
       providerErrors.push(`${provider.name}: ${message}`)
@@ -789,13 +802,15 @@ async function refillQuestionPool({ topic, audience, minimumCount }) {
     generateQuestions({ topic, audience, minimumCount }),
     QUESTION_GENERATION_TIMEOUT_MS
   )
-    .then((generatedQuestions) => {
+    .then((generationResult) => {
       const cacheEntry = {
         topicKey: normalizeTopicKey(topic),
         topicLabel: String(topic ?? "").trim(),
         audience: audience?.trim() || "vmbo",
         generatedAt: new Date().toISOString(),
-        questions: [...generatedQuestions],
+        provider: generationResult.provider,
+        providerLabel: generationResult.providerLabel,
+        questions: [...generationResult.questions],
       }
 
       questionsPerTopic[poolKey] = cacheEntry
@@ -934,6 +949,8 @@ io.on("connection", (socket) => {
     })
     socket.emit("host:generate:success", {
       count: questions.length,
+      provider: gameMeta.source || null,
+      providerLabel: gameMeta.providerLabel || null,
     })
   })
 
@@ -995,6 +1012,9 @@ io.on("connection", (socket) => {
         console.log(
           `Ronde geladen: ${questions.length} vragen actief, ${cacheEntry?.questions.length ?? 0} vragen blijven in de cache voor dit onderwerp.`
         )
+        console.info(
+          `Ronde gegenereerd via ${cacheEntry?.providerLabel || cacheEntry?.provider || "AI-provider"}.`
+        )
       } catch (aiError) {
         const fallbackMessage = aiError instanceof Error ? aiError.message : "AI-fout"
         console.error("AI-generatie mislukt, fallback geactiveerd:", fallbackMessage)
@@ -1010,6 +1030,7 @@ io.on("connection", (socket) => {
 
       currentQuestionIndex = 0
       answeredPlayers = new Set()
+      const cacheEntry = getTopicCacheEntry(cleanTopic, cleanAudience)
       gameMeta = {
         topic: cleanTopic,
         audience: cleanAudience,
@@ -1017,12 +1038,18 @@ io.on("connection", (socket) => {
         questionDurationSec: safeDuration,
         questionStartedAt: new Date().toISOString(),
         status: "live",
+        source: cacheEntry?.provider || "ai",
+        providerLabel: cacheEntry?.providerLabel || "AI",
         generatedAt: new Date().toISOString(),
       }
 
       console.log(`vragen (${modelName}):`, questions.length)
       broadcastState()
-      socket.emit("host:generate:success", { count: questions.length })
+      socket.emit("host:generate:success", {
+        count: questions.length,
+        provider: cacheEntry?.provider || null,
+        providerLabel: cacheEntry?.providerLabel || null,
+      })
     } catch (err) {
       const message = err instanceof Error ? err.message : "Onbekende serverfout."
       console.error("Fout bij vragen genereren:", message)
@@ -1066,6 +1093,8 @@ io.on("connection", (socket) => {
       questionDurationSec: 20,
       questionStartedAt: null,
       status: "idle",
+      source: "idle",
+      providerLabel: null,
       generatedAt: null,
     }
     socket.emit("host:room:update", { roomCode })

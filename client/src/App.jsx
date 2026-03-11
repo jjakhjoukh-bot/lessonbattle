@@ -102,7 +102,10 @@ function HostPage() {
         setHostSession((current) => ({ ...current, authenticated: false, roomCode: "" }))
       }
     }
-    const onSuccess = ({ count }) => setStatus(`${count} AI-vragen klaar. De ronde is live.`)
+    const onSuccess = ({ count, providerLabel }) =>
+      setStatus(
+        `${count} AI-vragen klaar${providerLabel ? ` via ${providerLabel}` : ""}. De ronde is live.`
+      )
 
     socket.on("host:login:success", onLoginSuccess)
     socket.on("host:room:update", onRoomUpdate)

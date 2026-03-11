@@ -34,7 +34,7 @@ const io = new Server(server, { cors: { origin: "*" } })
 const apiKey = process.env.GEMINI_API_KEY
 const modelName = process.env.GEMINI_MODEL || "gemini-2.5-flash"
 const groqApiKey = process.env.GROQ_API_KEY
-const groqModel = process.env.GROQ_MODEL || "llama3-70b-8192"
+const groqModel = process.env.GROQ_MODEL || "llama-3.3-70b-versatile"
 const openAIApiKey = process.env.OPENAI_API_KEY
 const openAIModel = process.env.OPENAI_MODEL || "gpt-4.1-mini"
 const port = Number(process.env.PORT || 3001)
@@ -267,6 +267,7 @@ function createRoom(hostSocketId) {
       questionStartedAt: null,
       status: "idle",
       source: "idle",
+      providerLabel: null,
       generatedAt: null,
     },
   }
@@ -368,6 +369,7 @@ function emitStateToSocket(socket, room) {
           questionStartedAt: null,
           status: "idle",
           source: "idle",
+          providerLabel: null,
           generatedAt: null,
           currentQuestionIndex: -1,
           totalQuestions: 0,
@@ -851,6 +853,13 @@ function retryDelaySecondsFromError(error) {
   return retryMatch?.[1] ? Math.max(1, Math.ceil(Number(retryMatch[1]))) : null
 }
 
+function formatProviderLabel(provider) {
+  if (provider === "gemini") return "Gemini"
+  if (provider === "groq") return "Groq"
+  if (provider === "openai") return "OpenAI"
+  return provider
+}
+
 async function generateQuestionsWithProvider(provider, { topic, audience, questionCount }) {
   const providerTimeoutMs = provider === "gemini" ? 30000 : 35000
   let lastError = null
@@ -968,7 +977,12 @@ async function generateQuestions({ topic, audience, questionCount }) {
       if (index > 0) {
         console.warn(`[AI] ${attempts[index - 1].name} gefaald, probeer ${provider.name} fallback.`)
       }
-      return await provider.run()
+      const questions = await provider.run()
+      return {
+        questions,
+        provider: provider.name,
+        providerLabel: formatProviderLabel(provider.name),
+      }
     } catch (providerError) {
       errors.push(`${provider.name}: ${providerError instanceof Error ? providerError.message : "onbekende fout"}`)
       console.warn(`[AI] provider ${provider.name} definitief afgekeurd`)
@@ -1016,7 +1030,11 @@ io.on("connection", (socket) => {
     claimRoomForHost(room, socket.id)
     socket.emit("host:login:success", { username: teacherUsername, roomCode: room.code })
     socket.emit("host:room:update", { roomCode: room.code })
-    socket.emit("host:generate:success", { count: room.questions.length })
+    socket.emit("host:generate:success", {
+      count: room.questions.length,
+      provider: room.game.source || null,
+      providerLabel: room.game.providerLabel || null,
+    })
     emitStateToRoom(room)
     emitStateToSocket(socket, room)
   })
@@ -1077,8 +1095,13 @@ io.on("connection", (socket) => {
       reassignPlayersToExistingTeams(room)
     }
 
+    let generationResult
     try {
-      room.questions = await withTimeout(generateQuestions({ topic, audience, questionCount }), 25000)
+      generationResult = await withTimeout(generateQuestions({ topic, audience, questionCount }), 25000)
+      room.questions = generationResult.questions
+      console.info(
+        `[AI] ronde voor room ${room.code} gegenereerd via ${generationResult.providerLabel}`
+      )
     } catch (aiError) {
       const fullErrorMessage = aiError instanceof Error ? aiError.message : "AI-fout"
       const userMessage = formatGenerationError(aiError)
@@ -1094,6 +1117,7 @@ io.on("connection", (socket) => {
         questionStartedAt: null,
         status: "idle",
         source: "idle",
+        providerLabel: null,
         generatedAt: null,
       }
       emitStateToRoom(room)
@@ -1110,12 +1134,17 @@ io.on("connection", (socket) => {
       questionDurationSec: safeDuration,
       questionStartedAt: new Date().toISOString(),
       status: "live",
-      source: "ai",
+      source: generationResult?.provider || "ai",
+      providerLabel: generationResult?.providerLabel || "AI",
       generatedAt: new Date().toISOString(),
     }
 
     emitStateToRoom(room)
-    socket.emit("host:generate:success", { count: room.questions.length })
+    socket.emit("host:generate:success", {
+      count: room.questions.length,
+      provider: generationResult?.provider || null,
+      providerLabel: generationResult?.providerLabel || null,
+    })
   })
 
   socket.on("host:next", () => {
@@ -1152,6 +1181,7 @@ io.on("connection", (socket) => {
       questionStartedAt: null,
       status: "idle",
       source: "idle",
+      providerLabel: null,
       generatedAt: null,
     }
     emitStateToRoom(room)
