@@ -1348,6 +1348,44 @@ function uniqueTokens(values) {
   return [...new Set(values.flatMap((value) => tokenizeText(value)))]
 }
 
+function normalizeComparableText(value) {
+  return tokenizeText(value).join(" ").trim()
+}
+
+function extractAnswerCandidates(value) {
+  const source = String(value || "").trim()
+  if (!source) return []
+
+  const quoted = [...source.matchAll(/["'“”‘’]([^"'“”‘’]+)["'“”‘’]/g)].map((match) => match[1])
+  const split = source
+    .replace(/\b(bijvoorbeeld|zoals|denk aan|verwacht ongeveer)\b[:]?/gi, "")
+    .split(/[,;/]|\sof\s/gi)
+    .map((part) => part.trim())
+    .filter(Boolean)
+
+  return [...new Set([...quoted, ...split].map((part) => normalizeComparableText(part)).filter(Boolean))]
+}
+
+function matchesExpectedCandidate(response, candidate) {
+  const normalizedResponse = normalizeComparableText(response)
+  const normalizedCandidate = normalizeComparableText(candidate)
+
+  if (!normalizedResponse || !normalizedCandidate) return false
+  if (normalizedResponse === normalizedCandidate) return true
+
+  const responseTokens = tokenizeText(normalizedResponse)
+  const candidateTokens = tokenizeText(normalizedCandidate)
+
+  if (responseTokens.length === 1 && candidateTokens.includes(responseTokens[0])) return true
+  if (candidateTokens.length === 1 && responseTokens.includes(candidateTokens[0])) return true
+
+  return (
+    normalizedResponse.length >= 5 &&
+    normalizedCandidate.length >= 5 &&
+    (normalizedResponse.includes(normalizedCandidate) || normalizedCandidate.includes(normalizedResponse))
+  )
+}
+
 function evaluateLessonResponse(lesson, phase, responseText) {
   const response = String(responseText || "").trim()
   if (!response) {
@@ -1365,6 +1403,12 @@ function evaluateLessonResponse(lesson, phase, responseText) {
     phase.checkForUnderstanding,
   ])
   const responseTokens = uniqueTokens([response])
+  const expectedCandidates = [
+    ...(lesson.activeKeywords || []),
+    ...(phase.keywords || []),
+    ...extractAnswerCandidates(getActiveLessonExpectedAnswer(lesson)),
+    ...extractAnswerCandidates(phase.expectedAnswer),
+  ]
 
   if (responseTokens.length === 0 || expectedTokens.length === 0) {
     return {
@@ -1377,8 +1421,24 @@ function evaluateLessonResponse(lesson, phase, responseText) {
     }
   }
 
+  if (expectedCandidates.some((candidate) => matchesExpectedCandidate(response, candidate))) {
+    return {
+      isCorrect: true,
+      label: "Goed",
+      feedback: "Dit antwoord raakt direct een kernbegrip van deze lesfase.",
+    }
+  }
+
   const matches = responseTokens.filter((token) => expectedTokens.includes(token))
   const ratio = matches.length / Math.max(1, Math.min(expectedTokens.length, 5))
+
+  if (responseTokens.length <= 2 && responseTokens.every((token) => expectedTokens.includes(token))) {
+    return {
+      isCorrect: true,
+      label: "Goed",
+      feedback: "Dit antwoord is kort, maar inhoudelijk passend bij de kern van de vraag.",
+    }
+  }
 
   if (ratio >= 0.5 || matches.length >= 3) {
     return {
