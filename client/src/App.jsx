@@ -141,9 +141,19 @@ function HostPage() {
   const [loginForm, setLoginForm] = useState(storedHostSession.loginForm)
   const [hostSession, setHostSession] = useState(storedHostSession.hostSession)
 
-  const activeMode = game.mode === "lesson" ? "lesson" : sessionMode
+  const activeMode = game.mode === "lesson" ? "lesson" : sessionMode === "battle" ? "battle" : "lesson"
   const includePracticeTest = lessonPackage === "practice" || lessonPackage === "complete"
   const includePresentation = lessonPackage === "presentation" || lessonPackage === "complete"
+  const selectedSuiteMode =
+    sessionMode === "battle" ? "battle" : includePresentation ? "presentation" : includePracticeTest ? "practice" : "lesson"
+  const buildActionLabel =
+    sessionMode === "battle"
+      ? "Ronde starten"
+      : selectedSuiteMode === "presentation"
+        ? "Presentatie opbouwen"
+        : selectedSuiteMode === "practice"
+          ? "Oefentoets opbouwen"
+          : "Les opbouwen"
 
   useEffect(() => {
     if (teams.length > 0) {
@@ -321,6 +331,30 @@ function HostPage() {
     socket.emit("host:configure", { teamNames: preparedTeamNames })
   }
 
+  const selectSessionMode = (nextMode) => {
+    if (nextMode === "battle") {
+      setSessionMode("battle")
+      return
+    }
+
+    setSessionMode(nextMode)
+
+    if (nextMode === "lesson") {
+      setLessonPackage("lesson")
+      return
+    }
+
+    if (nextMode === "presentation") {
+      setLessonPackage("presentation")
+      return
+    }
+
+    if (nextMode === "practice") {
+      setLessonPackage("practice")
+      setIncludeVideoPlan(false)
+    }
+  }
+
   const login = () => {
     setStatus("Inloggegevens controleren...")
     socket.emit("host:login", { ...loginForm, roomCode: "" })
@@ -360,7 +394,7 @@ function HostPage() {
   }
 
   const goToNextStep = () => {
-    if (game.mode === "lesson" || activeMode === "lesson") {
+    if (game.mode === "lesson") {
       socket.emit("host:lesson-next")
       return
     }
@@ -402,16 +436,17 @@ function HostPage() {
           <span className="eyebrow">Lesson Battle Live</span>
           <h1>Bouw van elk onderwerp een live quiz of complete les.</h1>
           <p>
-            Gebruik Battle voor tempo en competitie, of Lesmodus voor een interactieve lesopzet
-            met lesdoel, fasen en actieve leerlingmomenten. Jij kiest de vorm; de sessie wordt
-            daarna live opgebouwd voor docent en deelnemers.
+            Gebruik Battle voor tempo en competitie, of kies in de lessuite voor Lesmodus,
+            Presentatieweergave of Oefentoets. Jij kiest de vorm; de sessie wordt daarna live
+            opgebouwd voor docent en deelnemers.
           </p>
           <div className="hero-tags">
             <span>Live battle</span>
-            <span>Lesfasen</span>
-            <span>Open antwoorden</span>
+            <span>Lesmodus</span>
+            <span>Presentatieweergave</span>
             <span>Oefentoets</span>
-            <span>Presentatiepakket</span>
+            <span>Open antwoorden</span>
+            <span>Lesfasen</span>
           </div>
         </div>
         <div className="hero-panel glass">
@@ -497,21 +532,44 @@ function HostPage() {
             <strong>{hostSession.roomCode || "-----"}</strong>
           </div>
 
-          <div className="mode-switch">
-            <button
-              className={`mode-chip ${activeMode === "battle" ? "is-active" : ""}`}
-              onClick={() => setSessionMode("battle")}
-              type="button"
-            >
-              Battle
-            </button>
-            <button
-              className={`mode-chip ${activeMode === "lesson" ? "is-active" : ""}`}
-              onClick={() => setSessionMode("lesson")}
-              type="button"
-            >
-              Lesmodus
-            </button>
+          <div className="suite-switch-panel">
+            <div className="suite-switch-head">
+              <h3>Lesmodus</h3>
+              <span className="pill">Kies de vorm</span>
+            </div>
+            <div className="mode-switch main-mode-switch">
+              <button
+                className={`mode-chip ${selectedSuiteMode === "lesson" ? "is-active" : ""}`}
+                onClick={() => selectSessionMode("lesson")}
+                type="button"
+              >
+                Lesmodus
+              </button>
+              <button
+                className={`mode-chip ${selectedSuiteMode === "presentation" ? "is-active" : ""}`}
+                onClick={() => selectSessionMode("presentation")}
+                type="button"
+              >
+                Presentatieweergave
+              </button>
+              <button
+                className={`mode-chip ${selectedSuiteMode === "practice" ? "is-active" : ""}`}
+                onClick={() => selectSessionMode("practice")}
+                type="button"
+              >
+                Oefentoets
+              </button>
+            </div>
+            <div className="battle-shortcut-row">
+              <button
+                className={`mode-chip mode-chip-secondary ${sessionMode === "battle" ? "is-active" : ""}`}
+                onClick={() => selectSessionMode("battle")}
+                type="button"
+              >
+                Battle
+              </button>
+              <span className="muted">Snelle quizronde zonder lesopbouw.</span>
+            </div>
           </div>
 
           <label className="field">
@@ -543,12 +601,12 @@ function HostPage() {
             {activeMode === "lesson" ? (
               <>
                 <label className="field">
-                  <span>Lesmodel</span>
+                  <span>Lesmodus</span>
                   <select value={lessonModel} onChange={(event) => setLessonModel(event.target.value)}>
-                    <option value="edi">EDI</option>
-                    <option value="directe instructie">Directe instructie</option>
+                    <option value="edi">EDI (Directe instructie)</option>
                     <option value="formatief handelen">Formatief handelen</option>
                     <option value="activerende didactiek">Activerende didactiek</option>
+                    <option value="directe instructie">Directe instructie</option>
                   </select>
                 </label>
                 <label className="field">
@@ -590,25 +648,19 @@ function HostPage() {
 
           {activeMode === "lesson" ? (
             <>
-              <div className="field-row">
-                <label className="field">
-                  <span>Lespakket</span>
-                  <select
-                    value={lessonPackage}
-                    onChange={(event) => {
-                      const nextPackage = event.target.value
-                      setLessonPackage(nextPackage)
-                      if (nextPackage !== "presentation" && nextPackage !== "complete") {
-                        setIncludeVideoPlan(false)
-                      }
-                    }}
-                  >
-                    <option value="lesson">Basis les</option>
-                    <option value="practice">Les + oefentoets</option>
-                    <option value="presentation">Les + dia-presentatie</option>
-                    <option value="complete">Compleet lespakket</option>
-                  </select>
-                </label>
+              <div className="lesson-suite-hint">
+                <span className="eyebrow">Actieve vorm</span>
+                <strong>
+                  {selectedSuiteMode === "presentation"
+                    ? "Presentatieweergave"
+                    : selectedSuiteMode === "practice"
+                      ? "Oefentoets"
+                      : "Lesmodus"}
+                </strong>
+                <p>
+                  Kies hierboven de hoofdvorm. Voeg hieronder optioneel extra's toe zonder je
+                  bestaande lesflow kwijt te raken.
+                </p>
               </div>
               <div className="toggle-grid">
                 <button
@@ -688,7 +740,7 @@ function HostPage() {
               onClick={activeMode === "lesson" ? generateLesson : generate}
               type="button"
             >
-              {activeMode === "lesson" ? "Les opbouwen" : "Ronde starten"}
+              {activeMode === "lesson" ? buildActionLabel : "Ronde starten"}
             </button>
             <button
               className="button-secondary"
@@ -969,6 +1021,13 @@ function PlayerPage() {
 
   const availableTeams = joined ? teams : roomPreview.valid ? roomPreview.teams : teams
   const selectedTeam = availableTeams.find((team) => team.id === teamId)
+  const isPracticeTestLive = game.source === "practice"
+  const isLastPracticeQuestion = isPracticeTestLive && game.currentQuestionIndex + 1 >= game.totalQuestions
+  const canAdvancePracticeQuestion =
+    joined &&
+    isPracticeTestLive &&
+    game.question &&
+    (Boolean(result) || timeLeft === 0)
 
   return (
     <main className="page-shell player-shell">
@@ -1084,10 +1143,26 @@ function PlayerPage() {
                   <p>{result.explanation}</p>
                 </div>
               ) : null}
+              {isPracticeTestLive && canAdvancePracticeQuestion ? (
+                <button
+                  className="button-secondary practice-next-button"
+                  onClick={() => {
+                    socket.emit("player:practice-next")
+                  }}
+                  type="button"
+                >
+                  {isLastPracticeQuestion ? "Einde van de oefentoets" : "Volgende vraag"}
+                </button>
+              ) : null}
             </>
           ) : game.status === "finished" ? (
-            game.mode === "lesson" ? <LessonCompleteCard lesson={game.lesson} /> :
-            <ResultsCard teams={teams} leaderboard={leaderboard} />
+            game.mode === "lesson" ? (
+              <LessonCompleteCard lesson={game.lesson} />
+            ) : isPracticeTestLive ? (
+              <PracticeCompleteCard />
+            ) : (
+              <ResultsCard teams={teams} leaderboard={leaderboard} />
+            )
           ) : (
             <div className="empty-state">
               <h3>{game.mode === "lesson" ? "De les start zo" : "De ronde start zo"}</h3>
@@ -1294,27 +1369,73 @@ function LessonStageCard({ lesson, hostView = false }) {
   )
 }
 
+function SlideVisual({ slide, compact = false }) {
+  const [hasImageError, setHasImageError] = useState(false)
+  const prompt = slide?.imagePrompt || `${slide?.title || ""} ${slide?.focus || slide?.studentViewText || ""}`.trim()
+  const imageUrl = prompt ? buildQuestionImageUrl(prompt, "Presentatie") : ""
+
+  useEffect(() => {
+    setHasImageError(false)
+  }, [slide?.id])
+
+  if (!prompt || hasImageError) {
+    return (
+      <div className={`slide-visual-fallback ${compact ? "compact" : ""}`}>
+        <span className="visual-label">Dia</span>
+        <strong>{slide?.title || "Presentatiedia"}</strong>
+        <p>{slide?.focus || slide?.studentViewText || "De kern van deze uitleg verschijnt hier."}</p>
+      </div>
+    )
+  }
+
+  return (
+    <img
+      alt={slide?.imageAlt || slide?.title || "Presentatiedia"}
+      className={`slide-visual ${compact ? "compact" : ""}`}
+      onError={() => setHasImageError(true)}
+      src={imageUrl}
+    />
+  )
+}
+
+function PresentationSlideCanvas({ presentation, slide, compact = false }) {
+  if (!slide) return null
+
+  return (
+    <article className={`presentation-slide-canvas ${compact ? "compact" : ""}`}>
+      <div className="presentation-slide-copy">
+        <span className="eyebrow">{presentation?.title || "Presentatieweergave"}</span>
+        <h4>{slide.title}</h4>
+        <p>{slide.studentViewText || slide.focus}</p>
+        {(slide.bullets || []).length ? (
+          <ul className="presentation-bullet-list">
+            {slide.bullets.map((bullet) => (
+              <li key={bullet}>{bullet}</li>
+            ))}
+          </ul>
+        ) : null}
+      </div>
+      <div className="presentation-slide-visual-wrap">
+        <SlideVisual compact={compact} slide={slide} />
+      </div>
+    </article>
+  )
+}
+
 function LessonPresentationPanel({ presentation, compact = false }) {
   if (!presentation?.currentSlide) return null
 
   return (
     <section className={`lesson-presentation-panel ${compact ? "compact" : ""}`}>
       <div className="section-head">
-        <h3>{compact ? "Uitlegkaart" : "Presentatiepakket"}</h3>
-        <span className="pill">{presentation.style || "Interactief"}</span>
+        <h3>{compact ? "Live dia" : "Presentatieweergave"}</h3>
+        <span className="pill">
+          {presentation.slideCount ? `${presentation.slideCount} dia's` : presentation.style || "Interactief"}
+        </span>
       </div>
-      <div className="presentation-stage">
-        <div className="presentation-card">
-          <span className="eyebrow">{presentation.title}</span>
-          <h4>{presentation.currentSlide.title}</h4>
-          <p>{presentation.currentSlide.studentViewText || presentation.currentSlide.focus}</p>
-          <ul>
-            {(presentation.currentSlide.bullets || []).map((bullet) => (
-              <li key={bullet}>{bullet}</li>
-            ))}
-          </ul>
-        </div>
-        {presentation.video ? (
+      <div className={`presentation-stage ${compact ? "compact" : ""}`}>
+        <PresentationSlideCanvas compact={compact} presentation={presentation} slide={presentation.currentSlide} />
+        {!compact && presentation.video ? (
           <div className="presentation-video-card">
             <span className="eyebrow">Video-opzet</span>
             <h4>{presentation.video.title}</h4>
@@ -1357,15 +1478,8 @@ function LessonPresenterOverlay({ lesson, insights, onNext, onClose }) {
 
         <div className="presenter-main">
           <article className="presenter-slide-card">
-            <div className="presenter-slide-copy">
-              <span className="presenter-kicker">{lesson.currentPhase.title}</span>
-              <h3>{slide.studentViewText || slide.focus}</h3>
-              <ul className="presenter-bullet-list">
-                {(slide.bullets || []).map((bullet) => (
-                  <li key={bullet}>{bullet}</li>
-                ))}
-              </ul>
-            </div>
+            <span className="presenter-kicker">{lesson.currentPhase.title}</span>
+            <PresentationSlideCanvas presentation={lesson.presentation} slide={slide} />
           </article>
 
           <aside className="presenter-side-panel">
@@ -1501,6 +1615,16 @@ function LessonCompleteCard({ lesson }) {
           </ul>
         </div>
       ) : null}
+    </div>
+  )
+}
+
+function PracticeCompleteCard() {
+  return (
+    <div className="results-card">
+      <span className="eyebrow">Oefentoets afgerond</span>
+      <h3>Einde van de oefentoets</h3>
+      <p>Je hebt alle oefenvragen doorlopen. Bespreek de antwoorden nu samen met de docent.</p>
     </div>
   )
 }

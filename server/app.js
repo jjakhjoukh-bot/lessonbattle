@@ -423,6 +423,7 @@ function sanitizeLesson(lesson, viewer = "host") {
         ? {
             title: lesson.presentation.title,
             style: lesson.presentation.style,
+            slideCount: lesson.presentation.slides.length,
             currentSlide: currentPresentationSlide(lesson),
             video: lesson.presentation.video
               ? {
@@ -1536,6 +1537,10 @@ function normalizePresentationPackage(rawPresentation, lesson, { includeVideoPla
         .slice(0, 4),
       studentViewText: String(slide?.studentViewText ?? "").trim(),
       speakerNotes: String(slide?.speakerNotes ?? "").trim(),
+      imagePrompt:
+        String(slide?.imagePrompt ?? "").trim() ||
+        `${String(slide?.title ?? "").trim()} ${String(slide?.focus ?? "").trim()}`.trim(),
+      imageAlt: String(slide?.imageAlt ?? "").trim() || `${String(slide?.title ?? "").trim()} dia`,
     }))
     .filter((slide) => slide.title && slide.bullets.length)
     .slice(0, 7)
@@ -1550,6 +1555,8 @@ function normalizePresentationPackage(rawPresentation, lesson, { includeVideoPla
           bullets: [phase.goal, phase.studentActivity, phase.checkForUnderstanding].filter(Boolean).slice(0, 3),
           studentViewText: phase.interactivePrompt || phase.goal,
           speakerNotes: phase.teacherScript,
+          imagePrompt: `${lesson.title} ${phase.title} ${phase.goal}`.trim(),
+          imageAlt: `${phase.title} dia`,
         }))
 
   const rawVideo = safePresentation.video
@@ -2750,6 +2757,38 @@ io.on("connection", (socket) => {
   socket.on("host:next", () => {
     const room = requireHostRoom(socket)
     if (!room) return
+
+    if (room.currentQuestionIndex + 1 >= room.questions.length) {
+      room.currentQuestionIndex = -1
+      room.answeredPlayers = new Set()
+      room.playerAnswers = new Map()
+      room.game = { ...room.game, status: room.questions.length ? "finished" : "idle", questionStartedAt: null }
+      emitStateToRoom(room)
+      return
+    }
+
+    room.currentQuestionIndex += 1
+    room.answeredPlayers = new Set()
+    room.playerAnswers = new Map()
+    stampQuestionStart(room)
+    emitStateToRoom(room)
+  })
+
+  socket.on("player:practice-next", () => {
+    const room = getRoomBySocketId(socket.id)
+    if (!room || room.game.source !== "practice" || room.game.mode !== "battle") return
+
+    const question = currentQuestion(room)
+    if (!question) return
+
+    const startTime = room.game.questionStartedAt ? new Date(room.game.questionStartedAt).getTime() : 0
+    const answerWindowEnded = !startTime || Date.now() > startTime + room.game.questionDurationSec * 1000
+    const alreadyAnswered = room.answeredPlayers.has(socket.id)
+
+    if (!alreadyAnswered && !answerWindowEnded) {
+      socket.emit("player:error", { message: "Beantwoord eerst de vraag of wacht tot de tijd voorbij is." })
+      return
+    }
 
     if (room.currentQuestionIndex + 1 >= room.questions.length) {
       room.currentQuestionIndex = -1

@@ -244,6 +244,37 @@
   margin: 18px 0 8px;
 }
 
+.suite-switch-panel {
+  display: grid;
+  gap: 14px;
+  margin: 18px 0 8px;
+}
+
+.suite-switch-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.suite-switch-head h3 {
+  margin: 0;
+  font-family: "Avenir Next Condensed", "Trebuchet MS", sans-serif;
+  font-size: 1.8rem;
+}
+
+.main-mode-switch {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  width: 100%;
+  margin: 0;
+}
+
+.battle-shortcut-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
 .mode-chip {
   border: 0;
   border-radius: 999px;
@@ -258,6 +289,30 @@
 .mode-chip.is-active {
   background: linear-gradient(135deg, rgba(255, 157, 67, 0.24), rgba(69, 104, 255, 0.28));
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.mode-chip-secondary {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.lesson-suite-hint {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+  padding: 18px;
+  border-radius: 22px;
+  background:
+    linear-gradient(140deg, rgba(73, 182, 255, 0.12), rgba(255, 157, 67, 0.1)),
+    rgba(255, 255, 255, 0.04);
+}
+
+.lesson-suite-hint strong {
+  font-size: 1.15rem;
+}
+
+.lesson-suite-hint p {
+  margin: 0;
+  color: var(--muted);
 }
 
 .toggle-grid {
@@ -806,6 +861,10 @@
     rgba(255, 255, 255, 0.04);
 }
 
+.practice-next-button {
+  margin-top: 4px;
+}
+
 .lesson-distribution {
   display: grid;
   gap: 12px;
@@ -956,6 +1015,97 @@
   gap: 14px;
 }
 
+.presentation-stage.compact {
+  grid-template-columns: 1fr;
+}
+
+.presentation-slide-canvas {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 0.72fr);
+  gap: 18px;
+  min-height: 300px;
+  padding: 22px;
+  border-radius: 26px;
+  background:
+    linear-gradient(165deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.03)),
+    radial-gradient(circle at top left, rgba(73, 182, 255, 0.18), transparent 28%),
+    rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.presentation-slide-canvas.compact {
+  grid-template-columns: 1fr;
+  min-height: 0;
+  padding: 18px;
+}
+
+.presentation-slide-copy {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
+.presentation-slide-copy h4 {
+  margin: 0;
+  font-family: "Avenir Next Condensed", "Trebuchet MS", sans-serif;
+  font-size: clamp(2rem, 2.8vw, 3.2rem);
+  line-height: 0.96;
+}
+
+.presentation-slide-copy p {
+  margin: 0;
+  color: #eff7ff;
+  font-size: 1.04rem;
+  line-height: 1.6;
+}
+
+.presentation-bullet-list {
+  margin: 0;
+  padding-left: 20px;
+  color: #eff7ff;
+  display: grid;
+  gap: 10px;
+}
+
+.presentation-slide-visual-wrap {
+  min-height: 220px;
+  border-radius: 22px;
+  overflow: hidden;
+  background: rgba(5, 12, 22, 0.58);
+}
+
+.slide-visual,
+.slide-visual-fallback {
+  width: 100%;
+  height: 100%;
+  min-height: 220px;
+  object-fit: cover;
+  display: block;
+}
+
+.slide-visual.compact,
+.slide-visual-fallback.compact {
+  min-height: 180px;
+}
+
+.slide-visual-fallback {
+  display: grid;
+  align-content: end;
+  gap: 10px;
+  padding: 18px;
+  background:
+    radial-gradient(circle at top right, rgba(255, 180, 77, 0.22), transparent 28%),
+    radial-gradient(circle at bottom left, rgba(66, 214, 208, 0.18), transparent 28%),
+    linear-gradient(135deg, #122646, #09111f);
+  color: #fff7df;
+}
+
+.slide-visual-fallback p {
+  margin: 0;
+  color: #d9e9ff;
+}
+
 .presentation-card,
 .presentation-video-card {
   display: grid;
@@ -1072,7 +1222,8 @@
 
 .presenter-slide-card {
   display: grid;
-  align-items: end;
+  gap: 18px;
+  align-items: stretch;
   padding: 34px;
   background:
     radial-gradient(circle at top right, rgba(61, 214, 208, 0.22), transparent 28%),
@@ -1489,6 +1640,10 @@
   .podium {
     grid-template-columns: 1fr;
   }
+
+  .presentation-slide-canvas {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 720px) {
@@ -1508,12 +1663,18 @@
   .host-meta-bar,
   .lobby-stats,
   .mode-switch,
+  .main-mode-switch,
   .toggle-grid,
   .presentation-stage,
   .lesson-summary-grid,
   .lesson-stage-grid,
   .distribution-grid {
     grid-template-columns: 1fr;
+  }
+
+  .battle-shortcut-row,
+  .suite-switch-head {
+    display: grid;
   }
 
   .hero-copy,
@@ -1539,5 +1700,9 @@
   .presenter-pills,
   .presenter-actions {
     display: grid;
+  }
+
+  .presentation-slide-canvas {
+    padding: 16px;
   }
 }
