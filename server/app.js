@@ -2469,6 +2469,9 @@ io.on("connection", (socket) => {
 
     const safeDuration = Math.max(20, Math.min(90, Number(durationMinutes) || 45))
     const safeLessonModel = String(lessonModel ?? "edi").trim() || "edi"
+    const wantsPracticeTest = Boolean(includePracticeTest)
+    const wantsPresentation = Boolean(includePresentation)
+    const wantsVideoPlan = Boolean(includePresentation && includeVideoPlan)
     socket.emit("host:generate-lesson:started", { message: "AI bouwt de lesopzet..." })
 
     if (Array.isArray(teamNames) && teamNames.length > 0) {
@@ -2484,9 +2487,9 @@ io.on("connection", (socket) => {
           audience,
           lessonModel: safeLessonModel,
           durationMinutes: safeDuration,
-          includePracticeTest: Boolean(includePracticeTest),
-          includePresentation: Boolean(includePresentation),
-          includeVideoPlan: Boolean(includePresentation && includeVideoPlan),
+          includePracticeTest: false,
+          includePresentation: false,
+          includeVideoPlan: false,
         }),
         AI_ROUND_GENERATION_TIMEOUT_MS
       )
@@ -2514,13 +2517,58 @@ io.on("connection", (socket) => {
       return
     }
 
+    let practiceTest = null
+    if (wantsPracticeTest) {
+      try {
+        const practiceResult = await withTimeout(
+          generateQuestions({
+            topic: `${String(topic ?? "").trim()}\nMaak hier een korte oefentoets van met afwisselende controlevragen.`,
+            audience,
+            questionCount: 8,
+          }),
+          AI_ROUND_GENERATION_TIMEOUT_MS
+        )
+        practiceTest = {
+          title: `Oefentoets over ${String(topic ?? "").trim() || "dit onderwerp"}`,
+          instructions: "Maak deze oefentoets zelfstandig en bespreek daarna de antwoorden.",
+          questions: practiceResult.questions,
+          providerLabel: practiceResult.providerLabel,
+        }
+        console.info(`[AI] oefentoets voor room ${room.code} gegenereerd via ${practiceResult.providerLabel}`)
+      } catch (practiceError) {
+        console.error("AI oefentoetsgeneratie mislukt:", practiceError instanceof Error ? practiceError.message : practiceError)
+        practiceTest = {
+          title: `Oefentoets over ${String(topic ?? "").trim() || "dit onderwerp"}`,
+          instructions: "Maak deze oefentoets zelfstandig en bespreek daarna de antwoorden.",
+          questions: buildFallbackQuestions({ topic, questionCount: 8 }).slice(0, 8),
+          providerLabel: "Lokale reserve",
+        }
+      }
+    }
+
+    const presentation = wantsPresentation
+      ? normalizePresentationPackage({}, lessonResult.lesson, { includeVideoPlan: wantsVideoPlan })
+      : null
+
     room.questions = []
     room.currentQuestionIndex = -1
     room.answeredPlayers = new Set()
     room.playerAnswers = new Map()
     room.lessonResponses = new Map()
     room.lesson = {
-      ...withLessonPhaseContext({ ...lessonResult.lesson, libraryId: null, currentPhaseIndex: 0 }, 0),
+      ...withLessonPhaseContext(
+        {
+          ...lessonResult.lesson,
+          libraryId: null,
+          currentPhaseIndex: 0,
+          practiceTest,
+          presentation,
+          includePracticeTest: Boolean(practiceTest?.questions?.length),
+          includePresentation: Boolean(presentation?.slides?.length),
+          includeVideoPlan: Boolean(presentation?.video?.scenes?.length),
+        },
+        0
+      ),
     }
     room.game = {
       ...createIdleGameState(),

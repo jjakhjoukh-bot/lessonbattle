@@ -19,7 +19,7 @@ function readStoredHostSession() {
     const parsed = JSON.parse(stored)
     return {
       hostSession: {
-        authenticated: Boolean(parsed?.authenticated),
+        authenticated: Boolean(parsed?.authenticated && parsed?.username && parsed?.password),
         username: parsed?.username || "",
         roomCode: parsed?.roomCode || "",
       },
@@ -34,6 +34,13 @@ function readStoredHostSession() {
       loginForm: { username: "", password: "" },
     }
   }
+}
+
+function lessonPackageFromFlags({ includePracticeTest, includePresentation }) {
+  if (includePracticeTest && includePresentation) return "complete"
+  if (includePracticeTest) return "practice"
+  if (includePresentation) return "presentation"
+  return "lesson"
 }
 
 function App() {
@@ -122,9 +129,8 @@ function HostPage() {
   const [questionCount, setQuestionCount] = useState(12)
   const [questionDurationSec, setQuestionDurationSec] = useState(20)
   const [lessonModel, setLessonModel] = useState("edi")
+  const [lessonPackage, setLessonPackage] = useState("lesson")
   const [lessonDurationMinutes, setLessonDurationMinutes] = useState(45)
-  const [includePracticeTest, setIncludePracticeTest] = useState(false)
-  const [includePresentation, setIncludePresentation] = useState(false)
   const [includeVideoPlan, setIncludeVideoPlan] = useState(false)
   const [lessonPromptDraft, setLessonPromptDraft] = useState("")
   const [lessonExpectedAnswerDraft, setLessonExpectedAnswerDraft] = useState("")
@@ -136,6 +142,8 @@ function HostPage() {
   const [hostSession, setHostSession] = useState(storedHostSession.hostSession)
 
   const activeMode = game.mode === "lesson" ? "lesson" : sessionMode
+  const includePracticeTest = lessonPackage === "practice" || lessonPackage === "complete"
+  const includePresentation = lessonPackage === "presentation" || lessonPackage === "complete"
 
   useEffect(() => {
     if (teams.length > 0) {
@@ -150,8 +158,12 @@ function HostPage() {
 
   useEffect(() => {
     if (game.mode !== "lesson") return
-    setIncludePracticeTest(Boolean(game.lesson?.includePracticeTest))
-    setIncludePresentation(Boolean(game.lesson?.includePresentation))
+    setLessonPackage(
+      lessonPackageFromFlags({
+        includePracticeTest: Boolean(game.lesson?.includePracticeTest),
+        includePresentation: Boolean(game.lesson?.includePresentation),
+      })
+    )
     setIncludeVideoPlan(Boolean(game.lesson?.includeVideoPlan))
   }, [game.lesson?.includePracticeTest, game.lesson?.includePresentation, game.lesson?.includeVideoPlan, game.mode])
 
@@ -577,41 +589,70 @@ function HostPage() {
           </div>
 
           {activeMode === "lesson" ? (
-            <div className="toggle-grid">
-              <button
-                className={`toggle-card ${includePracticeTest ? "is-active" : ""}`}
-                onClick={() => setIncludePracticeTest((current) => !current)}
-                type="button"
-              >
-                <span>Extra</span>
-                <strong>Genereer ook een oefentoets</strong>
-                <p>Maakt direct een extra toetsset die je later live kunt starten.</p>
-              </button>
-              <button
-                className={`toggle-card ${includePresentation ? "is-active" : ""}`}
-                onClick={() => {
-                  setIncludePresentation((current) => {
-                    if (current) setIncludeVideoPlan(false)
-                    return !current
-                  })
-                }}
-                type="button"
-              >
-                <span>Extra</span>
-                <strong>Genereer presentatiepakket</strong>
-                <p>Maakt dia’s en compacte uitlegkaarten die met de les mee kunnen lopen.</p>
-              </button>
-              <button
-                className={`toggle-card ${includeVideoPlan ? "is-active" : ""}`}
-                disabled={!includePresentation}
-                onClick={() => setIncludeVideoPlan((current) => !current)}
-                type="button"
-              >
-                <span>Extra</span>
-                <strong>Voeg video-opzet toe</strong>
-                <p>Eerste versie: storyboard en verteltekst, geen gerenderde video.</p>
-              </button>
-            </div>
+            <>
+              <div className="field-row">
+                <label className="field">
+                  <span>Lespakket</span>
+                  <select
+                    value={lessonPackage}
+                    onChange={(event) => {
+                      const nextPackage = event.target.value
+                      setLessonPackage(nextPackage)
+                      if (nextPackage !== "presentation" && nextPackage !== "complete") {
+                        setIncludeVideoPlan(false)
+                      }
+                    }}
+                  >
+                    <option value="lesson">Basis les</option>
+                    <option value="practice">Les + oefentoets</option>
+                    <option value="presentation">Les + dia-presentatie</option>
+                    <option value="complete">Compleet lespakket</option>
+                  </select>
+                </label>
+              </div>
+              <div className="toggle-grid">
+                <button
+                  className={`toggle-card ${includePracticeTest ? "is-active" : ""}`}
+                  onClick={() => setLessonPackage(includePracticeTest ? "lesson" : includePresentation ? "complete" : "practice")}
+                  type="button"
+                >
+                  <span>Pakket</span>
+                  <strong>Oefentoets</strong>
+                  <p>Maakt een aparte toetsset die je direct na of tijdens de les kunt starten.</p>
+                </button>
+                <button
+                  className={`toggle-card ${includePresentation ? "is-active" : ""}`}
+                  onClick={() => {
+                    const nextIncludesPresentation = !includePresentation
+                    setLessonPackage(
+                      nextIncludesPresentation
+                        ? includePracticeTest
+                          ? "complete"
+                          : "presentation"
+                        : includePracticeTest
+                          ? "practice"
+                          : "lesson"
+                    )
+                    if (!nextIncludesPresentation) setIncludeVideoPlan(false)
+                  }}
+                  type="button"
+                >
+                  <span>Pakket</span>
+                  <strong>Dia-presentatie</strong>
+                  <p>Maakt per fase een digibord-dia die je fullscreen kunt tonen.</p>
+                </button>
+                <button
+                  className={`toggle-card ${includeVideoPlan ? "is-active" : ""}`}
+                  disabled={!includePresentation}
+                  onClick={() => setIncludeVideoPlan((current) => !current)}
+                  type="button"
+                >
+                  <span>Pakket</span>
+                  <strong>Video-opzet</strong>
+                  <p>Eerste versie: storyboard en spreektekst naast de presentatiedia’s.</p>
+                </button>
+              </div>
+            </>
           ) : null}
 
           <label className="field">
