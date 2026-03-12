@@ -52,9 +52,12 @@ const ROOM_HOST_GRACE_MS = 2 * 60 * 1000
 const AI_PROVIDER_REQUEST_TIMEOUT_MS = 45000
 const AI_PROVIDER_REPAIR_TIMEOUT_MS = 30000
 const AI_ROUND_GENERATION_TIMEOUT_MS = 120000
+const AI_RESPONSE_EVALUATION_TIMEOUT_MS = 12000
+const LESSON_EVALUATION_CACHE_LIMIT = 500
 const hostSocketIds = new Set()
 const socketToRoom = new Map()
 const rooms = new Map()
+const lessonEvaluationCache = new Map()
 
 function generateEntityId(prefix = "item") {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
@@ -93,6 +96,11 @@ function createEmptyLessonState() {
     activeExpectedAnswer: "",
     activeKeywords: [],
     promptVersion: 0,
+    practiceTest: null,
+    presentation: null,
+    includePracticeTest: false,
+    includePresentation: false,
+    includeVideoPlan: false,
   }
 }
 
@@ -350,6 +358,18 @@ function getActiveLessonExpectedAnswer(lesson) {
   return lesson.activeExpectedAnswer || phase?.expectedAnswer || ""
 }
 
+function currentPresentationSlide(lesson) {
+  if (!lesson?.presentation?.slides?.length) return null
+  const slideIndex = Math.max(0, Math.min(lesson.currentPhaseIndex >= 0 ? lesson.currentPhaseIndex : 0, lesson.presentation.slides.length - 1))
+  return lesson.presentation.slides[slideIndex] ?? lesson.presentation.slides[0] ?? null
+}
+
+function currentPresentationScene(lesson) {
+  if (!lesson?.presentation?.video?.scenes?.length) return null
+  const sceneIndex = Math.max(0, Math.min(lesson.currentPhaseIndex >= 0 ? lesson.currentPhaseIndex : 0, lesson.presentation.video.scenes.length - 1))
+  return lesson.presentation.video.scenes[sceneIndex] ?? lesson.presentation.video.scenes[0] ?? null
+}
+
 function withLessonPhaseContext(lesson, phaseIndex = lesson?.currentPhaseIndex ?? -1) {
   const phase = phaseIndex >= 0 ? lesson?.phases?.[phaseIndex] ?? null : null
   return {
@@ -399,6 +419,20 @@ function sanitizeLesson(lesson, viewer = "host") {
             promptVersion: lesson.promptVersion || 0,
           }
         : null,
+      presentation: lesson.presentation
+        ? {
+            title: lesson.presentation.title,
+            style: lesson.presentation.style,
+            currentSlide: currentPresentationSlide(lesson),
+            video: lesson.presentation.video
+              ? {
+                  title: lesson.presentation.video.title,
+                  summary: lesson.presentation.video.studentViewText || lesson.presentation.video.summary,
+                  currentScene: currentPresentationScene(lesson),
+                }
+              : null,
+          }
+        : null,
     }
   }
 
@@ -411,6 +445,32 @@ function sanitizeLesson(lesson, viewer = "host") {
     lessonGoal: lesson.lessonGoal,
     successCriteria: lesson.successCriteria,
     materials: lesson.materials,
+    includePracticeTest: Boolean(lesson.practiceTest?.questions?.length),
+    includePresentation: Boolean(lesson.presentation?.slides?.length),
+    includeVideoPlan: Boolean(lesson.presentation?.video?.scenes?.length),
+    practiceTest: lesson.practiceTest
+      ? {
+          title: lesson.practiceTest.title,
+          instructions: lesson.practiceTest.instructions,
+          questionCount: lesson.practiceTest.questions.length,
+        }
+      : null,
+    presentation: lesson.presentation
+      ? {
+          title: lesson.presentation.title,
+          style: lesson.presentation.style,
+          slideCount: lesson.presentation.slides.length,
+          currentSlide: currentPresentationSlide(lesson),
+          video: lesson.presentation.video
+            ? {
+                title: lesson.presentation.video.title,
+                summary: lesson.presentation.video.summary,
+                sceneCount: lesson.presentation.video.scenes.length,
+                currentScene: currentPresentationScene(lesson),
+              }
+            : null,
+        }
+      : null,
     promptVersion: lesson.promptVersion || 0,
     currentPhaseIndex: lesson.currentPhaseIndex,
     totalPhases: lesson.phases.length,
@@ -481,11 +541,14 @@ function normalizeLessonLibraryEntry(rawEntry) {
   if (!rawEntry || typeof rawEntry !== "object") return null
   const entryId = String(rawEntry.id ?? generateEntityId("lesson"))
 
-  const normalizedLesson = normalizeLessonPlan(rawEntry.lesson, {
+  const normalizedLesson = normalizeLessonPackage(rawEntry.lesson, {
     topic: String(rawEntry.topic ?? "").trim() || "algemeen thema",
     audience: String(rawEntry.audience ?? "vmbo").trim() || "vmbo",
     lessonModel: String(rawEntry.model ?? "edi").trim() || "edi",
     durationMinutes: Number(rawEntry.durationMinutes) || 45,
+    includePracticeTest: Boolean(rawEntry.lesson?.practiceTest || rawEntry.practiceQuestionCount),
+    includePresentation: Boolean(rawEntry.lesson?.presentation || rawEntry.slideCount),
+    includeVideoPlan: Boolean(rawEntry.lesson?.presentation?.video),
   })
 
   return {
@@ -551,6 +614,8 @@ function lessonLibrarySummaries() {
       durationMinutes: entry.durationMinutes,
       lessonGoal: entry.lessonGoal,
       phaseCount: entry.lesson.phases.length,
+      practiceQuestionCount: entry.lesson.practiceTest?.questions?.length || 0,
+      slideCount: entry.lesson.presentation?.slides?.length || 0,
       updatedAt: entry.updatedAt,
       providerLabel: entry.providerLabel,
     }))
@@ -575,6 +640,30 @@ function cloneLessonForRoom(lesson, libraryId = null) {
     materials: [...(lesson.materials || [])],
     phases: (lesson.phases || []).map((phase) => ({ ...phase })),
     activeKeywords: [...(lesson.activeKeywords || [])],
+    practiceTest: lesson.practiceTest
+      ? {
+          ...lesson.practiceTest,
+          questions: (lesson.practiceTest.questions || []).map((question) => ({
+            ...question,
+            options: [...(question.options || [])],
+          })),
+        }
+      : null,
+    presentation: lesson.presentation
+      ? {
+          ...lesson.presentation,
+          slides: (lesson.presentation.slides || []).map((slide) => ({
+            ...slide,
+            bullets: [...(slide.bullets || [])],
+          })),
+          video: lesson.presentation.video
+            ? {
+                ...lesson.presentation.video,
+                scenes: (lesson.presentation.video.scenes || []).map((scene) => ({ ...scene })),
+              }
+            : null,
+        }
+      : null,
   }
 }
 
@@ -1092,7 +1181,47 @@ Formaat:
 `
 }
 
-function buildLessonPrompt({ topic, audience, lessonModel, durationMinutes, extraRules = "" }) {
+function buildLessonPrompt({
+  topic,
+  audience,
+  lessonModel,
+  durationMinutes,
+  includePracticeTest = false,
+  includePresentation = false,
+  includeVideoPlan = false,
+  extraRules = "",
+}) {
+  const practiceSection = includePracticeTest
+    ? `
+- Voeg ook een veld "practiceTest" toe met een oefentoets van 8 meerkeuzevragen in hetzelfde onderwerp.
+- practiceTest bevat: title, instructions, questions.
+- Elke practiceTest-vraag gebruikt exact de velden: prompt, options, correctIndex, explanation, category, imagePrompt, imageAlt.
+`
+    : `
+- Voeg géén practiceTest toe.
+`
+
+  const presentationSection = includePresentation
+    ? `
+- Voeg ook een veld "presentation" toe voor een compacte presentatieset die de docent live kan tonen.
+- presentation bevat: title, style, slides.
+- slides is een array met 5 tot 7 dia's.
+- Elke dia bevat: id, title, focus, bullets, studentViewText, speakerNotes.
+- studentViewText is compact en bedoeld voor leerlingen.
+${includeVideoPlan ? `
+- Voeg binnen "presentation" ook een veld "video" toe.
+- video bevat: title, summary, studentViewText, scenes.
+- scenes is een array met 3 tot 5 scènes.
+- Elke scène bevat: title, narration, visualCue, seconds.
+- Dit is een video-opzet of script, geen verwijzing naar een extern platform.
+` : `
+- Voeg géén video-veld toe.
+`}
+`
+    : `
+- Voeg géén presentation toe.
+`
+
   return `
 Maak een complete interactieve lesopzet in het Nederlands.
 
@@ -1118,6 +1247,8 @@ Regels:
 - De totale tijd moet ongeveer ${durationMinutes} minuten zijn.
 - Gebruik duidelijke, professionele taal.
 - Geen markdown, alleen geldige JSON.
+${practiceSection}
+${presentationSection}
 ${extraRules}
 
 Formaat:
@@ -1139,7 +1270,23 @@ Formaat:
       "keywords": ["woord 1", "woord 2"],
       "minutes": 5
     }
-  ]
+  ]${includePracticeTest ? `,
+  "practiceTest": {
+    "title": "korte titel voor de oefentoets",
+    "instructions": "korte instructie voor leerlingen",
+    "questions": []
+  }` : ""}${includePresentation ? `,
+  "presentation": {
+    "title": "titel van de presentatieset",
+    "style": "korte stijlomschrijving",
+    "slides": []${includeVideoPlan ? `,
+    "video": {
+      "title": "titel van de video-opzet",
+      "summary": "korte samenvatting",
+      "studentViewText": "korte leerlingtekst",
+      "scenes": []
+    }` : ""}
+  }` : ""}
 }
 `
 }
@@ -1169,7 +1316,17 @@ ${String(brokenOutput || "").slice(0, 12000)}
 `
 }
 
-function buildLessonRepairPrompt({ topic, audience, lessonModel, durationMinutes, brokenOutput, previousIssue }) {
+function buildLessonRepairPrompt({
+  topic,
+  audience,
+  lessonModel,
+  durationMinutes,
+  includePracticeTest = false,
+  includePresentation = false,
+  includeVideoPlan = false,
+  brokenOutput,
+  previousIssue,
+}) {
   return `
 Zet de onderstaande AI-output om naar exact geldige JSON voor een lesopzet.
 
@@ -1186,6 +1343,9 @@ Regels:
 - Gebruik de velden: title, model, lessonGoal, successCriteria, materials, phases.
 - phases moet een array zijn met 5 tot 7 objecten.
 - Elke fase moet bevatten: title, goal, teacherScript, studentActivity, interactivePrompt, checkForUnderstanding, expectedAnswer, keywords, minutes.
+- ${includePracticeTest ? 'Voeg ook een geldig "practiceTest" veld toe met title, instructions en questions.' : 'Laat het veld "practiceTest" weg.'}
+- ${includePresentation ? 'Voeg ook een geldig "presentation" veld toe met title, style en slides.' : 'Laat het veld "presentation" weg.'}
+- ${includePresentation && includeVideoPlan ? 'Voeg binnen presentation ook een geldig "video" veld toe met title, summary, studentViewText en scenes.' : 'Laat een eventueel "video" veld weg.'}
 - Houd de les inhoudelijk passend bij het onderwerp.
 - Geen markdown en geen extra tekst.
 
@@ -1201,16 +1361,19 @@ async function requestGeminiText(prompt) {
   return result.response.text()
 }
 
-async function requestOpenAIText(prompt) {
+async function requestOpenAIText(prompt, systemPrompt = "") {
   if (!openAI) throw new Error("OpenAI is niet geconfigureerd.")
   const response = await openAI.responses.create({
     model: openAIModel,
-    input: prompt,
+    input: systemPrompt ? `${systemPrompt}\n\n${prompt}` : prompt,
   })
   return response.output_text || ""
 }
 
-async function requestGroqText(prompt) {
+async function requestGroqText(
+  prompt,
+  systemPrompt = "Je maakt quizvragen in helder Nederlands. Antwoord uitsluitend met geldige JSON."
+) {
   if (!groq) throw new Error("Groq is niet geconfigureerd.")
   const completion = await groq.chat.completions.create({
     model: groqModel,
@@ -1218,7 +1381,7 @@ async function requestGroqText(prompt) {
     messages: [
       {
         role: "system",
-        content: "Je maakt quizvragen in helder Nederlands. Antwoord uitsluitend met geldige JSON.",
+        content: systemPrompt,
       },
       {
         role: "user",
@@ -1230,10 +1393,10 @@ async function requestGroqText(prompt) {
   return completion.choices?.[0]?.message?.content || ""
 }
 
-async function requestProviderText(provider, prompt, timeoutMs) {
-  if (provider === "gemini") return withTimeout(requestGeminiText(prompt), timeoutMs)
-  if (provider === "groq") return withTimeout(requestGroqText(prompt), timeoutMs)
-  if (provider === "openai") return withTimeout(requestOpenAIText(prompt), timeoutMs)
+async function requestProviderText(provider, prompt, timeoutMs, systemPrompt = "") {
+  if (provider === "gemini") return withTimeout(requestGeminiText(systemPrompt ? `${systemPrompt}\n\n${prompt}` : prompt), timeoutMs)
+  if (provider === "groq") return withTimeout(requestGroqText(prompt, systemPrompt || undefined), timeoutMs)
+  if (provider === "openai") return withTimeout(requestOpenAIText(prompt, systemPrompt), timeoutMs)
   throw new Error(`Onbekende AI-provider: ${provider}`)
 }
 
@@ -1330,9 +1493,161 @@ function normalizeLessonPlan(rawPlan, { topic, audience, lessonModel, durationMi
   }
 }
 
+function normalizePracticeTest(rawPracticeTest, topic) {
+  if (!rawPracticeTest || typeof rawPracticeTest !== "object") {
+    const fallbackQuestions = buildFallbackQuestions({ topic, questionCount: 8 }).slice(0, 8)
+    return {
+      title: `Oefentoets over ${topic.trim()}`,
+      instructions: "Maak deze oefentoets zelfstandig en bespreek daarna de antwoorden klassikaal.",
+      questions: fallbackQuestions,
+    }
+  }
+
+  const normalizedQuestions = normalizeQuestionsForTopic(
+    rawPracticeTest.questions,
+    topic
+  )
+
+  if (!normalizedQuestions.length) return null
+
+  return {
+    title: String(rawPracticeTest.title ?? "").trim() || `Oefentoets over ${topic.trim()}`,
+    instructions:
+      String(rawPracticeTest.instructions ?? "").trim() ||
+      "Maak deze oefentoets zelfstandig en bespreek daarna de antwoorden klassikaal.",
+    questions: normalizedQuestions.slice(0, 12),
+  }
+}
+
+function normalizePresentationPackage(rawPresentation, lesson, { includeVideoPlan = false } = {}) {
+  const safePresentation =
+    rawPresentation && typeof rawPresentation === "object" && !Array.isArray(rawPresentation)
+      ? rawPresentation
+      : {}
+
+  const slides = (Array.isArray(safePresentation.slides) ? safePresentation.slides : [])
+    .map((slide, index) => ({
+      id: String(slide?.id ?? `slide-${index + 1}`).trim() || `slide-${index + 1}`,
+      title: String(slide?.title ?? "").trim(),
+      focus: String(slide?.focus ?? "").trim(),
+      bullets: (Array.isArray(slide?.bullets) ? slide.bullets : [])
+        .map((item) => String(item).trim())
+        .filter(Boolean)
+        .slice(0, 4),
+      studentViewText: String(slide?.studentViewText ?? "").trim(),
+      speakerNotes: String(slide?.speakerNotes ?? "").trim(),
+    }))
+    .filter((slide) => slide.title && slide.bullets.length)
+    .slice(0, 7)
+
+  const fallbackSlides =
+    slides.length > 0
+      ? slides
+      : lesson.phases.map((phase, index) => ({
+          id: `slide-${index + 1}`,
+          title: phase.title,
+          focus: phase.goal,
+          bullets: [phase.goal, phase.studentActivity, phase.checkForUnderstanding].filter(Boolean).slice(0, 3),
+          studentViewText: phase.interactivePrompt || phase.goal,
+          speakerNotes: phase.teacherScript,
+        }))
+
+  const rawVideo = safePresentation.video
+  const video =
+    includeVideoPlan && rawVideo && typeof rawVideo === "object"
+      ? {
+          title: String(rawVideo.title ?? "").trim() || `Video-uitleg bij ${lesson.title}`,
+          summary: String(rawVideo.summary ?? "").trim() || lesson.lessonGoal,
+          studentViewText:
+            String(rawVideo.studentViewText ?? "").trim() ||
+            "Kijk mee naar de kern van deze uitleg en let op de begrippen die straks terugkomen.",
+          scenes: (Array.isArray(rawVideo.scenes) ? rawVideo.scenes : [])
+            .map((scene, index) => ({
+              id: String(scene?.id ?? `scene-${index + 1}`).trim() || `scene-${index + 1}`,
+              title: String(scene?.title ?? "").trim(),
+              narration: String(scene?.narration ?? "").trim(),
+              visualCue: String(scene?.visualCue ?? "").trim(),
+              seconds: Math.max(8, Math.min(60, Number(scene?.seconds) || 18)),
+            }))
+            .filter((scene) => scene.title && scene.narration)
+            .slice(0, 5),
+        }
+      : null
+
+  const fallbackVideo =
+    includeVideoPlan
+      ? {
+          title: `Video-opzet bij ${lesson.title}`,
+          summary: lesson.lessonGoal,
+          studentViewText: "Kijk en luister mee naar de kern van deze uitleg. Let op de begrippen die straks terugkomen.",
+          scenes: lesson.phases.slice(0, 4).map((phase, index) => ({
+            id: `scene-${index + 1}`,
+            title: phase.title,
+            narration: phase.teacherScript || phase.goal,
+            visualCue: phase.studentActivity || phase.checkForUnderstanding || phase.goal,
+            seconds: 18,
+          })),
+        }
+      : null
+
+  return {
+    title: String(safePresentation.title ?? "").trim() || `Presentatie bij ${lesson.title}`,
+    style: String(safePresentation.style ?? "").trim() || "Interactieve uitleg",
+    slides: fallbackSlides,
+    video: video?.scenes?.length ? video : fallbackVideo?.scenes?.length ? fallbackVideo : null,
+  }
+}
+
+function normalizeLessonPackage(
+  rawPlan,
+  { topic, audience, lessonModel, durationMinutes, includePracticeTest = false, includePresentation = false, includeVideoPlan = false }
+) {
+  if (!rawPlan || typeof rawPlan !== "object" || Array.isArray(rawPlan)) {
+    throw new Error("AI gaf geen bruikbare lesopzet terug.")
+  }
+
+  const lessonSource =
+    rawPlan.lesson && typeof rawPlan.lesson === "object" && !Array.isArray(rawPlan.lesson)
+      ? rawPlan.lesson
+      : rawPlan
+
+  const lesson = normalizeLessonPlan(lessonSource, { topic, audience, lessonModel, durationMinutes })
+  let practiceTest = null
+  let presentation = null
+
+  if (includePracticeTest) {
+    try {
+      practiceTest = normalizePracticeTest(rawPlan.practiceTest, topic)
+    } catch (error) {
+      console.warn(
+        `[AI] oefentoets is overgeslagen: ${error instanceof Error ? error.message : "onbekende normalisatiefout"}`
+      )
+    }
+  }
+
+  if (includePresentation) {
+    try {
+      presentation = normalizePresentationPackage(rawPlan.presentation, lesson, { includeVideoPlan })
+    } catch (error) {
+      console.warn(
+        `[AI] presentatieset is overgeslagen: ${error instanceof Error ? error.message : "onbekende normalisatiefout"}`
+      )
+    }
+  }
+
+  return {
+    ...lesson,
+    practiceTest,
+    presentation,
+    includePracticeTest: Boolean(practiceTest),
+    includePresentation: Boolean(presentation),
+    includeVideoPlan: Boolean(presentation?.video),
+  }
+}
+
 function parseLessonPlanFromText(text, options) {
   const parsed = JSON.parse(extractJsonObject(text))
-  return normalizeLessonPlan(parsed, options)
+  return normalizeLessonPackage(parsed, options)
 }
 
 function tokenizeText(value) {
@@ -1386,7 +1701,7 @@ function matchesExpectedCandidate(response, candidate) {
   )
 }
 
-function evaluateLessonResponse(lesson, phase, responseText) {
+function evaluateLessonResponseHeuristic(lesson, phase, responseText) {
   const response = String(responseText || "").trim()
   if (!response) {
     return {
@@ -1463,6 +1778,144 @@ function evaluateLessonResponse(lesson, phase, responseText) {
   }
 }
 
+function normalizeEvaluationLabel(value) {
+  const normalized = String(value || "").trim().toLowerCase()
+  if (normalized.startsWith("goed")) return "Goed"
+  if (normalized.startsWith("bijna")) return "Bijna"
+  return "Nog niet"
+}
+
+function lessonEvaluationCacheKey({ prompt, expectedAnswer, response }) {
+  return [
+    normalizeComparableText(prompt),
+    normalizeComparableText(expectedAnswer),
+    normalizeComparableText(response),
+  ].join("||")
+}
+
+function rememberLessonEvaluation(key, value) {
+  if (!key) return
+  if (lessonEvaluationCache.has(key)) {
+    lessonEvaluationCache.delete(key)
+  }
+  lessonEvaluationCache.set(key, value)
+  if (lessonEvaluationCache.size > LESSON_EVALUATION_CACHE_LIMIT) {
+    const oldestKey = lessonEvaluationCache.keys().next().value
+    if (oldestKey) lessonEvaluationCache.delete(oldestKey)
+  }
+}
+
+function buildLessonEvaluationPrompt({ lesson, phase, responseText, heuristic }) {
+  return `
+Beoordeel een kort leerlingantwoord voor een lesfase.
+
+Onderwerp van de les:
+${lesson.title || lesson.lessonGoal}
+
+Lesdoel:
+${lesson.lessonGoal}
+
+Huidige fase:
+${phase.title}
+
+Vraag of opdracht:
+${getActiveLessonPrompt(lesson) || phase.interactivePrompt || phase.goal}
+
+Verwacht antwoord:
+${getActiveLessonExpectedAnswer(lesson) || phase.expectedAnswer || phase.checkForUnderstanding || lesson.lessonGoal}
+
+Extra sleutelwoorden:
+${[...(phase.keywords || []), ...(lesson.activeKeywords || [])].filter(Boolean).join(", ") || "geen"}
+
+Leerlingantwoord:
+${String(responseText || "").trim()}
+
+Heuristische eerste inschatting:
+${JSON.stringify(heuristic)}
+
+Beoordelingsregels:
+- Kijk naar betekenis, niet naar hoofdletters, spelling, leestekens of woordvolgorde.
+- Synoniemen en parafrases die inhoudelijk hetzelfde betekenen tellen als Goed.
+- Als de vraag vraagt om één begrip of één voorbeeld, dan mag één correct kernbegrip voldoende zijn voor Goed.
+- Gebruik Bijna alleen als het antwoord deels raak is maar nog belangrijke informatie mist.
+- Gebruik Nog niet alleen als het antwoord inhoudelijk niet passend is.
+- Geef korte, leerlingvriendelijke feedback in het Nederlands.
+- Geef alleen geldige JSON terug.
+
+Formaat:
+{
+  "label": "Goed",
+  "feedback": "korte feedback"
+}
+`
+}
+
+function parseLessonEvaluationFromText(text) {
+  const parsed = JSON.parse(extractJsonObject(text))
+  const label = normalizeEvaluationLabel(parsed?.label)
+  const feedback = String(parsed?.feedback ?? "").trim()
+
+  return {
+    isCorrect: label === "Goed",
+    label,
+    feedback:
+      feedback ||
+      (label === "Goed"
+        ? "Dit antwoord is inhoudelijk goed."
+        : label === "Bijna"
+          ? "Dit antwoord zit in de goede richting, maar kan nog preciezer."
+          : "Dit antwoord past nog niet goed genoeg bij de kern van de vraag."),
+  }
+}
+
+async function evaluateLessonResponseWithAI(lesson, phase, responseText, heuristic) {
+  const prompt = buildLessonEvaluationPrompt({ lesson, phase, responseText, heuristic })
+  const systemPrompt = "Je beoordeelt leerlingantwoorden voor een les. Kijk naar betekenis en antwoord alleen met geldige JSON."
+  const attempts = [
+    ...(genAI ? ["gemini"] : []),
+    ...(groq ? ["groq"] : []),
+    ...(openAI ? ["openai"] : []),
+  ]
+
+  const errors = []
+  for (const provider of attempts) {
+    try {
+      const rawText = await requestProviderText(provider, prompt, AI_RESPONSE_EVALUATION_TIMEOUT_MS, systemPrompt)
+      return parseLessonEvaluationFromText(rawText)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "onbekende fout"
+      errors.push(`${provider}: ${message}`)
+      console.warn(`[AI] lesantwoord-evaluatie via ${provider} mislukt: ${message}`)
+    }
+  }
+
+  console.warn(`[AI] lesantwoord-evaluatie teruggevallen op heuristiek: ${errors.join(" | ")}`)
+  return heuristic
+}
+
+async function evaluateLessonResponse(lesson, phase, responseText) {
+  const heuristic = evaluateLessonResponseHeuristic(lesson, phase, responseText)
+
+  if (!responseText?.trim()) return heuristic
+  if (heuristic.label === "Goed") return heuristic
+
+  const expectedAnswer = getActiveLessonExpectedAnswer(lesson) || phase.expectedAnswer || phase.checkForUnderstanding || ""
+  if (!expectedAnswer.trim()) return heuristic
+
+  const cacheKey = lessonEvaluationCacheKey({
+    prompt: getActiveLessonPrompt(lesson) || phase.interactivePrompt || phase.goal,
+    expectedAnswer,
+    response: responseText,
+  })
+
+  const cached = lessonEvaluationCache.get(cacheKey)
+  if (cached) return cached
+
+  const evaluated = await evaluateLessonResponseWithAI(lesson, phase, responseText, heuristic)
+  rememberLessonEvaluation(cacheKey, evaluated)
+  return evaluated
+}
+
 function retryDelaySecondsFromError(error) {
   const rawMessage =
     error instanceof Error
@@ -1537,7 +1990,10 @@ async function generateQuestionsWithProvider(provider, { topic, audience, questi
   throw lastError ?? new Error(`${provider} kon geen bruikbare vragen genereren.`)
 }
 
-async function generateLessonPlanWithProvider(provider, { topic, audience, lessonModel, durationMinutes }) {
+async function generateLessonPlanWithProvider(
+  provider,
+  { topic, audience, lessonModel, durationMinutes, includePracticeTest = false, includePresentation = false, includeVideoPlan = false }
+) {
   const providerTimeoutMs = AI_PROVIDER_REQUEST_TIMEOUT_MS
   let lastError = null
 
@@ -1551,12 +2007,29 @@ async function generateLessonPlanWithProvider(provider, { topic, audience, lesso
       console.info(`[AI] ${provider} lesson attempt ${attempt} gestart voor onderwerp: ${topic}`)
       const rawText = await requestProviderText(
         provider,
-        buildLessonPrompt({ topic, audience, lessonModel, durationMinutes, extraRules }),
+        buildLessonPrompt({
+          topic,
+          audience,
+          lessonModel,
+          durationMinutes,
+          includePracticeTest,
+          includePresentation,
+          includeVideoPlan,
+          extraRules,
+        }),
         providerTimeoutMs
       )
 
       try {
-        const lessonPlan = parseLessonPlanFromText(rawText, { topic, audience, lessonModel, durationMinutes })
+        const lessonPlan = parseLessonPlanFromText(rawText, {
+          topic,
+          audience,
+          lessonModel,
+          durationMinutes,
+          includePracticeTest,
+          includePresentation,
+          includeVideoPlan,
+        })
         console.info(`[AI] ${provider} lesson attempt ${attempt} geaccepteerd met ${lessonPlan.phases.length} lesfasen`)
         return lessonPlan
       } catch (parseError) {
@@ -1571,12 +2044,23 @@ async function generateLessonPlanWithProvider(provider, { topic, audience, lesso
               audience,
               lessonModel,
               durationMinutes,
+              includePracticeTest,
+              includePresentation,
+              includeVideoPlan,
               brokenOutput: rawText,
               previousIssue: parseError instanceof Error ? parseError.message : "output was ongeldig",
             }),
             AI_PROVIDER_REPAIR_TIMEOUT_MS
           )
-          const repairedPlan = parseLessonPlanFromText(repairedText, { topic, audience, lessonModel, durationMinutes })
+          const repairedPlan = parseLessonPlanFromText(repairedText, {
+            topic,
+            audience,
+            lessonModel,
+            durationMinutes,
+            includePracticeTest,
+            includePresentation,
+            includeVideoPlan,
+          })
           console.info(`[AI] ${provider} lesson repair-pass geslaagd`)
           return repairedPlan
         } catch (repairError) {
@@ -1609,7 +2093,15 @@ async function generateQuestionsWithOpenAI(topic, audience, questionCount) {
   return generateQuestionsWithProvider("openai", { topic, audience, questionCount })
 }
 
-async function generateLessonPlan({ topic, audience, lessonModel, durationMinutes }) {
+async function generateLessonPlan({
+  topic,
+  audience,
+  lessonModel,
+  durationMinutes,
+  includePracticeTest = false,
+  includePresentation = false,
+  includeVideoPlan = false,
+}) {
   if (!genAI && !groq && !openAI) throw new Error("Er is geen AI-provider geconfigureerd op de server.")
   if (!topic?.trim()) throw new Error("Voer eerst een onderwerp of thema in.")
 
@@ -1617,9 +2109,51 @@ async function generateLessonPlan({ topic, audience, lessonModel, durationMinute
   const targetAudience = audience?.trim() || "vmbo"
   const targetModel = String(lessonModel ?? "edi").trim() || "edi"
   const attempts = [
-    ...(genAI ? [{ name: "gemini", run: () => generateLessonPlanWithProvider("gemini", { topic, audience: targetAudience, lessonModel: targetModel, durationMinutes: safeDuration }) }] : []),
-    ...(groq ? [{ name: "groq", run: () => generateLessonPlanWithProvider("groq", { topic, audience: targetAudience, lessonModel: targetModel, durationMinutes: safeDuration }) }] : []),
-    ...(openAI ? [{ name: "openai", run: () => generateLessonPlanWithProvider("openai", { topic, audience: targetAudience, lessonModel: targetModel, durationMinutes: safeDuration }) }] : []),
+    ...(genAI
+      ? [{
+          name: "gemini",
+          run: () =>
+            generateLessonPlanWithProvider("gemini", {
+              topic,
+              audience: targetAudience,
+              lessonModel: targetModel,
+              durationMinutes: safeDuration,
+              includePracticeTest,
+              includePresentation,
+              includeVideoPlan,
+            }),
+        }]
+      : []),
+    ...(groq
+      ? [{
+          name: "groq",
+          run: () =>
+            generateLessonPlanWithProvider("groq", {
+              topic,
+              audience: targetAudience,
+              lessonModel: targetModel,
+              durationMinutes: safeDuration,
+              includePracticeTest,
+              includePresentation,
+              includeVideoPlan,
+            }),
+        }]
+      : []),
+    ...(openAI
+      ? [{
+          name: "openai",
+          run: () =>
+            generateLessonPlanWithProvider("openai", {
+              topic,
+              audience: targetAudience,
+              lessonModel: targetModel,
+              durationMinutes: safeDuration,
+              includePracticeTest,
+              includePresentation,
+              includeVideoPlan,
+            }),
+        }]
+      : []),
   ]
 
   const errors = []
@@ -1757,6 +2291,8 @@ io.on("connection", (socket) => {
         provider: room.game.source || null,
         providerLabel: room.game.providerLabel || null,
         lessonModel: room.lesson.model,
+        hasPracticeTest: Boolean(room.lesson.practiceTest?.questions?.length),
+        hasPresentation: Boolean(room.lesson.presentation?.slides?.length),
       })
     } else {
       socket.emit("host:generate:success", {
@@ -1774,6 +2310,23 @@ io.on("connection", (socket) => {
     const room = requireHostRoom(socket)
     if (!room) return
     emitLessonLibraryToSocket(socket)
+  })
+
+  socket.on("host:logout", () => {
+    hostSocketIds.delete(socket.id)
+    const room = getRoomBySocketId(socket.id)
+    socketToRoom.delete(socket.id)
+    if (!room) {
+      emitStateToSocket(socket, null)
+      return
+    }
+
+    if (room.hostSocketId === socket.id) {
+      scheduleRoomClosure(room)
+      emitStateToRoom(room)
+    }
+
+    emitStateToSocket(socket, null)
   })
 
   socket.on("player:lookup-room", ({ roomCode }) => {
@@ -1901,7 +2454,16 @@ io.on("connection", (socket) => {
     })
   })
 
-  socket.on("host:generate-lesson", async ({ topic, audience, lessonModel, durationMinutes, teamNames }) => {
+  socket.on("host:generate-lesson", async ({
+    topic,
+    audience,
+    lessonModel,
+    durationMinutes,
+    teamNames,
+    includePracticeTest,
+    includePresentation,
+    includeVideoPlan,
+  }) => {
     const room = requireHostRoom(socket)
     if (!room) return
 
@@ -1917,7 +2479,15 @@ io.on("connection", (socket) => {
     let lessonResult
     try {
       lessonResult = await withTimeout(
-        generateLessonPlan({ topic, audience, lessonModel: safeLessonModel, durationMinutes: safeDuration }),
+        generateLessonPlan({
+          topic,
+          audience,
+          lessonModel: safeLessonModel,
+          durationMinutes: safeDuration,
+          includePracticeTest: Boolean(includePracticeTest),
+          includePresentation: Boolean(includePresentation),
+          includeVideoPlan: Boolean(includePresentation && includeVideoPlan),
+        }),
         AI_ROUND_GENERATION_TIMEOUT_MS
       )
       console.info(`[AI] les voor room ${room.code} gegenereerd via ${lessonResult.providerLabel}`)
@@ -1971,6 +2541,48 @@ io.on("connection", (socket) => {
       provider: lessonResult.provider || null,
       providerLabel: lessonResult.providerLabel || null,
       lessonModel: room.lesson.model,
+      hasPracticeTest: Boolean(room.lesson.practiceTest?.questions?.length),
+      hasPresentation: Boolean(room.lesson.presentation?.slides?.length),
+    })
+  })
+
+  socket.on("host:start-practice-test", () => {
+    const room = requireHostRoom(socket)
+    if (!room) return
+    const practiceTest = room.lesson?.practiceTest
+    if (!practiceTest?.questions?.length) {
+      socket.emit("host:error", { message: "Er is nog geen oefentoets beschikbaar voor deze les." })
+      return
+    }
+
+    room.questions = practiceTest.questions.map((question, index) => ({
+      ...question,
+      id: `practice-${index + 1}`,
+      options: [...(question.options || [])],
+    }))
+    room.currentQuestionIndex = 0
+    room.answeredPlayers = new Set()
+    room.playerAnswers = new Map()
+    room.lessonResponses = new Map()
+    room.game = {
+      ...createIdleGameState(),
+      topic: room.game.topic,
+      audience: room.game.audience,
+      questionCount: room.questions.length,
+      questionDurationSec: 25,
+      questionStartedAt: new Date().toISOString(),
+      status: "live",
+      source: "practice",
+      providerLabel: "Oefentoets",
+      generatedAt: new Date().toISOString(),
+      mode: "battle",
+    }
+
+    emitStateToRoom(room)
+    socket.emit("host:generate:success", {
+      count: room.questions.length,
+      provider: "practice",
+      providerLabel: "Oefentoets",
     })
   })
 
@@ -2236,7 +2848,7 @@ io.on("connection", (socket) => {
     emitStateToRoom(room)
   })
 
-  socket.on("player:lesson-response", ({ response }) => {
+  socket.on("player:lesson-response", async ({ response }) => {
     const room = getRoomBySocketId(socket.id)
     if (!room || room.game.mode !== "lesson") return
 
@@ -2250,21 +2862,26 @@ io.on("connection", (socket) => {
       return
     }
 
-    const evaluation = evaluateLessonResponse(room.lesson, phase, text)
-    room.lessonResponses.set(socket.id, {
-      text,
-      isCorrect: evaluation.isCorrect,
-      label: evaluation.label,
-      feedback: evaluation.feedback,
-      submittedAt: new Date().toISOString(),
-    })
+    try {
+      const evaluation = await evaluateLessonResponse(room.lesson, phase, text)
+      room.lessonResponses.set(socket.id, {
+        text,
+        isCorrect: evaluation.isCorrect,
+        label: evaluation.label,
+        feedback: evaluation.feedback,
+        submittedAt: new Date().toISOString(),
+      })
 
-    socket.emit("player:lesson-response:result", {
-      isCorrect: evaluation.isCorrect,
-      label: evaluation.label,
-      feedback: evaluation.feedback,
-    })
-    emitStateToRoom(room)
+      socket.emit("player:lesson-response:result", {
+        isCorrect: evaluation.isCorrect,
+        label: evaluation.label,
+        feedback: evaluation.feedback,
+      })
+      emitStateToRoom(room)
+    } catch (error) {
+      console.error("Lesantwoord kon niet worden beoordeeld:", error instanceof Error ? error.message : error)
+      socket.emit("player:error", { message: "Je antwoord is ontvangen, maar de beoordeling liep vast. Probeer het nog eens." })
+    }
   })
 
   socket.on("disconnect", () => {

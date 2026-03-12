@@ -7,6 +7,35 @@ const HOST_SESSION_KEY = "lessonbattle-host-session"
 const PLAYER_SESSION_KEY = "lessonbattle-player-session"
 const DEFAULT_HOST_SESSION = { authenticated: false, username: "", roomCode: "" }
 
+function readStoredHostSession() {
+  try {
+    const stored = window.sessionStorage.getItem(HOST_SESSION_KEY)
+    if (!stored) {
+      return {
+        hostSession: DEFAULT_HOST_SESSION,
+        loginForm: { username: "", password: "" },
+      }
+    }
+    const parsed = JSON.parse(stored)
+    return {
+      hostSession: {
+        authenticated: Boolean(parsed?.authenticated),
+        username: parsed?.username || "",
+        roomCode: parsed?.roomCode || "",
+      },
+      loginForm: {
+        username: parsed?.username || "",
+        password: parsed?.password || "",
+      },
+    }
+  } catch {
+    return {
+      hostSession: DEFAULT_HOST_SESSION,
+      loginForm: { username: "", password: "" },
+    }
+  }
+}
+
 function App() {
   const path = window.location.pathname
 
@@ -86,6 +115,7 @@ function useQuizState() {
 
 function HostPage() {
   const { players, teams, leaderboard, game } = useQuizState()
+  const storedHostSession = readStoredHostSession()
   const [sessionMode, setSessionMode] = useState("battle")
   const [topic, setTopic] = useState("")
   const [audience, setAudience] = useState("vmbo")
@@ -93,27 +123,17 @@ function HostPage() {
   const [questionDurationSec, setQuestionDurationSec] = useState(20)
   const [lessonModel, setLessonModel] = useState("edi")
   const [lessonDurationMinutes, setLessonDurationMinutes] = useState(45)
+  const [includePracticeTest, setIncludePracticeTest] = useState(false)
+  const [includePresentation, setIncludePresentation] = useState(false)
+  const [includeVideoPlan, setIncludeVideoPlan] = useState(false)
   const [lessonPromptDraft, setLessonPromptDraft] = useState("")
   const [lessonExpectedAnswerDraft, setLessonExpectedAnswerDraft] = useState("")
   const [teamNamesInput, setTeamNamesInput] = useState("Team Zon\nTeam Oceaan")
   const [status, setStatus] = useState("Vul het onderwerp in, stel de teams in en start de ronde.")
   const [hostInsights, setHostInsights] = useState(null)
   const [lessonLibrary, setLessonLibrary] = useState([])
-  const [loginForm, setLoginForm] = useState({ username: "", password: "" })
-  const [hostSession, setHostSession] = useState(() => {
-    try {
-      const stored = window.localStorage.getItem(HOST_SESSION_KEY)
-      if (!stored) return DEFAULT_HOST_SESSION
-      const parsed = JSON.parse(stored)
-      return {
-        authenticated: false,
-        username: parsed?.username || "",
-        roomCode: "",
-      }
-    } catch {
-      return DEFAULT_HOST_SESSION
-    }
-  })
+  const [loginForm, setLoginForm] = useState(storedHostSession.loginForm)
+  const [hostSession, setHostSession] = useState(storedHostSession.hostSession)
 
   const activeMode = game.mode === "lesson" ? "lesson" : sessionMode
 
@@ -127,6 +147,13 @@ function HostPage() {
     if (game.lessonModel) setLessonModel(game.lessonModel)
     if (game.lessonDurationMinutes) setLessonDurationMinutes(game.lessonDurationMinutes)
   }, [game.lessonDurationMinutes, game.lessonModel])
+
+  useEffect(() => {
+    if (game.mode !== "lesson") return
+    setIncludePracticeTest(Boolean(game.lesson?.includePracticeTest))
+    setIncludePresentation(Boolean(game.lesson?.includePresentation))
+    setIncludeVideoPlan(Boolean(game.lesson?.includeVideoPlan))
+  }, [game.lesson?.includePracticeTest, game.lesson?.includePresentation, game.lesson?.includeVideoPlan, game.mode])
 
   useEffect(() => {
     if (game.mode !== "lesson") return
@@ -169,9 +196,9 @@ function HostPage() {
       setStatus(
         `${count} AI-vragen klaar${providerLabel ? ` via ${providerLabel}` : ""}. De ronde is live.`
       )
-    const onLessonSuccess = ({ count, providerLabel, lessonModel: nextLessonModel }) =>
+    const onLessonSuccess = ({ count, providerLabel, lessonModel: nextLessonModel, hasPracticeTest, hasPresentation }) =>
       setStatus(
-        `${count} lesstappen klaar${providerLabel ? ` via ${providerLabel}` : ""}. ${String(nextLessonModel || "Lesmodus").toUpperCase()} is live.`
+        `${count} lesstappen klaar${providerLabel ? ` via ${providerLabel}` : ""}. ${String(nextLessonModel || "Lesmodus").toUpperCase()} is live.${hasPracticeTest ? " Oefentoets klaar." : ""}${hasPresentation ? " Presentatiepakket klaar." : ""}`
       )
     const onLessonPromptSuccess = () => setStatus("Live lesvraag bijgewerkt voor de deelnemers.")
     const onSaveLessonSuccess = ({ title }) => setStatus(`Les opgeslagen in de bibliotheek: ${title}.`)
@@ -215,16 +242,19 @@ function HostPage() {
   }, [])
 
   useEffect(() => {
-    window.localStorage.setItem(
+    window.sessionStorage.setItem(
       HOST_SESSION_KEY,
       JSON.stringify({
+        authenticated: hostSession.authenticated,
         username: hostSession.username,
+        password: loginForm.password,
+        roomCode: hostSession.roomCode,
       })
     )
-  }, [hostSession.username])
+  }, [hostSession.authenticated, hostSession.roomCode, hostSession.username, loginForm.password])
 
   useEffect(() => {
-    const onConnect = () => {
+    const reconnectHost = () => {
       if (!hostSession.authenticated || !loginForm.username || !loginForm.password) return
       socket.emit("host:login", {
         ...loginForm,
@@ -232,8 +262,10 @@ function HostPage() {
       })
     }
 
-    socket.on("connect", onConnect)
-    return () => socket.off("connect", onConnect)
+    if (socket.connected) reconnectHost()
+
+    socket.on("connect", reconnectHost)
+    return () => socket.off("connect", reconnectHost)
   }, [hostSession.authenticated, hostSession.roomCode, loginForm])
 
   useEffect(() => {
@@ -282,6 +314,14 @@ function HostPage() {
     socket.emit("host:login", { ...loginForm, roomCode: "" })
   }
 
+  const logout = () => {
+    socket.emit("host:logout")
+    window.sessionStorage.removeItem(HOST_SESSION_KEY)
+    setHostSession(DEFAULT_HOST_SESSION)
+    setLoginForm({ username: "", password: "" })
+    setStatus("Je bent uitgelogd.")
+  }
+
   const generate = () => {
     setStatus("AI bouwt de nieuwe ronde op...")
     socket.emit("host:generate", {
@@ -300,6 +340,9 @@ function HostPage() {
       audience,
       lessonModel,
       durationMinutes: lessonDurationMinutes,
+      includePracticeTest,
+      includePresentation,
+      includeVideoPlan: includePresentation && includeVideoPlan,
       teamNames: preparedTeamNames,
     })
   }
@@ -315,6 +358,11 @@ function HostPage() {
   const saveCurrentLesson = () => {
     setStatus("Les wordt opgeslagen in de bibliotheek...")
     socket.emit("host:save-lesson")
+  }
+
+  const startPracticeTest = () => {
+    setStatus("Oefentoets wordt live gezet...")
+    socket.emit("host:start-practice-test")
   }
 
   const loadLessonFromLibrary = (lessonId) => {
@@ -346,6 +394,13 @@ function HostPage() {
             met lesdoel, fasen en actieve leerlingmomenten. Jij kiest de vorm; de sessie wordt
             daarna live opgebouwd voor docent en deelnemers.
           </p>
+          <div className="hero-tags">
+            <span>Live battle</span>
+            <span>Lesfasen</span>
+            <span>Open antwoorden</span>
+            <span>Oefentoets</span>
+            <span>Presentatiepakket</span>
+          </div>
         </div>
         <div className="hero-panel glass">
           <div className="hero-stat">
@@ -415,9 +470,14 @@ function HostPage() {
               <span>Spelcode</span>
               <strong>{hostSession.roomCode || "-----"}</strong>
             </div>
-            <button className="button-ghost" onClick={() => socket.emit("host:room:refresh")} type="button">
-              Nieuwe code
-            </button>
+            <div className="meta-actions">
+              <button className="button-ghost" onClick={() => socket.emit("host:room:refresh")} type="button">
+                Nieuwe code
+              </button>
+              <button className="button-ghost subtle-danger" onClick={logout} type="button">
+                Uitloggen
+              </button>
+            </div>
           </div>
 
           <div className="lobby-banner">
@@ -516,6 +576,44 @@ function HostPage() {
             )}
           </div>
 
+          {activeMode === "lesson" ? (
+            <div className="toggle-grid">
+              <button
+                className={`toggle-card ${includePracticeTest ? "is-active" : ""}`}
+                onClick={() => setIncludePracticeTest((current) => !current)}
+                type="button"
+              >
+                <span>Extra</span>
+                <strong>Genereer ook een oefentoets</strong>
+                <p>Maakt direct een extra toetsset die je later live kunt starten.</p>
+              </button>
+              <button
+                className={`toggle-card ${includePresentation ? "is-active" : ""}`}
+                onClick={() => {
+                  setIncludePresentation((current) => {
+                    if (current) setIncludeVideoPlan(false)
+                    return !current
+                  })
+                }}
+                type="button"
+              >
+                <span>Extra</span>
+                <strong>Genereer presentatiepakket</strong>
+                <p>Maakt dia’s en compacte uitlegkaarten die met de les mee kunnen lopen.</p>
+              </button>
+              <button
+                className={`toggle-card ${includeVideoPlan ? "is-active" : ""}`}
+                disabled={!includePresentation}
+                onClick={() => setIncludeVideoPlan((current) => !current)}
+                type="button"
+              >
+                <span>Extra</span>
+                <strong>Voeg video-opzet toe</strong>
+                <p>Eerste versie: storyboard en verteltekst, geen gerenderde video.</p>
+              </button>
+            </div>
+          ) : null}
+
           <label className="field">
             <span>Teams</span>
             <textarea
@@ -530,6 +628,7 @@ function HostPage() {
             <LessonSummaryCard
               lesson={game.lesson}
               onSave={game.lesson?.phases?.length ? saveCurrentLesson : null}
+              onStartPractice={game.lesson?.practiceTest?.questionCount ? startPracticeTest : null}
             />
           ) : null}
 
@@ -618,6 +717,7 @@ function HostPage() {
           {game.mode === "lesson" && game.lesson?.currentPhase ? (
             <>
               <LessonStageCard lesson={game.lesson} hostView />
+              <LessonPresentationPanel presentation={game.lesson?.presentation} />
               <LessonPromptComposer
                 expectedAnswer={lessonExpectedAnswerDraft}
                 onExpectedAnswerChange={setLessonExpectedAnswerDraft}
@@ -657,6 +757,15 @@ function HostPage() {
           lessons={lessonLibrary}
           onDelete={deleteLessonFromLibrary}
           onLoad={loadLessonFromLibrary}
+        />
+      ) : null}
+
+      {presenterMode && game.mode === "lesson" && game.lesson?.presentation?.currentSlide ? (
+        <LessonPresenterOverlay
+          insights={hostInsights}
+          lesson={game.lesson}
+          onClose={toggleFullscreen}
+          onNext={goToNextStep}
         />
       ) : null}
     </main>
@@ -893,6 +1002,7 @@ function PlayerPage() {
             <>
               <LessonProgress lesson={game.lesson} />
               <LessonStageCard lesson={game.lesson} />
+              <LessonPresentationPanel compact presentation={game.lesson?.presentation} />
               <LessonResponsePanel
                 answer={lessonAnswer}
                 disabled={!joined}
@@ -982,7 +1092,7 @@ function QuestionCard({ question, compact = false, showOptions = true }) {
   )
 }
 
-function LessonSummaryCard({ lesson, onSave }) {
+function LessonSummaryCard({ lesson, onSave, onStartPractice }) {
   if (!lesson) return null
 
   return (
@@ -1011,6 +1121,36 @@ function LessonSummaryCard({ lesson, onSave }) {
             ))}
           </ul>
         </div>
+        {lesson.practiceTest ? (
+          <div className="lesson-box accent-box practice-box">
+            <strong>Oefentoets</strong>
+            <p>{lesson.practiceTest.title}</p>
+            <span className="pill">{lesson.practiceTest.questionCount} vragen klaar</span>
+            <div className="lesson-box-actions">
+              {onStartPractice ? (
+                <button className="button-secondary" onClick={onStartPractice} type="button">
+                  Start oefentoets
+                </button>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+        {lesson.presentation ? (
+          <div className="lesson-box accent-box presentation-box">
+            <strong>Presentatiepakket</strong>
+            <p>{lesson.presentation.title}</p>
+            <div className="lesson-library-meta">
+              <span>{lesson.presentation.slideCount} dia's</span>
+              {lesson.presentation.video ? <span>{lesson.presentation.video.sceneCount} videoscènes</span> : null}
+            </div>
+            {lesson.presentation.currentSlide ? (
+              <div className="micro-slide">
+                <b>{lesson.presentation.currentSlide.title}</b>
+                <p>{lesson.presentation.currentSlide.studentViewText || lesson.presentation.currentSlide.focus}</p>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </div>
       <div className="lesson-summary-actions">
         <span className="pill">
@@ -1110,6 +1250,122 @@ function LessonStageCard({ lesson, hostView = false }) {
         </div>
       </div>
     </article>
+  )
+}
+
+function LessonPresentationPanel({ presentation, compact = false }) {
+  if (!presentation?.currentSlide) return null
+
+  return (
+    <section className={`lesson-presentation-panel ${compact ? "compact" : ""}`}>
+      <div className="section-head">
+        <h3>{compact ? "Uitlegkaart" : "Presentatiepakket"}</h3>
+        <span className="pill">{presentation.style || "Interactief"}</span>
+      </div>
+      <div className="presentation-stage">
+        <div className="presentation-card">
+          <span className="eyebrow">{presentation.title}</span>
+          <h4>{presentation.currentSlide.title}</h4>
+          <p>{presentation.currentSlide.studentViewText || presentation.currentSlide.focus}</p>
+          <ul>
+            {(presentation.currentSlide.bullets || []).map((bullet) => (
+              <li key={bullet}>{bullet}</li>
+            ))}
+          </ul>
+        </div>
+        {presentation.video ? (
+          <div className="presentation-video-card">
+            <span className="eyebrow">Video-opzet</span>
+            <h4>{presentation.video.title}</h4>
+            <p>{presentation.video.summary}</p>
+            {presentation.video.currentScene ? (
+              <div className="micro-slide">
+                <b>{presentation.video.currentScene.title}</b>
+                <p>{presentation.video.currentScene.narration}</p>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    </section>
+  )
+}
+
+function LessonPresenterOverlay({ lesson, insights, onNext, onClose }) {
+  if (!lesson?.presentation?.currentSlide || !lesson?.currentPhase) return null
+
+  const slide = lesson.presentation.currentSlide
+  const videoScene = lesson.presentation.video?.currentScene || null
+  const answeredCount = insights?.answeredCount ?? 0
+  const totalPlayers = insights?.totalPlayers ?? 0
+
+  return (
+    <div className="presenter-overlay">
+      <div className="presenter-backdrop" />
+      <section className="presenter-stage-frame">
+        <div className="presenter-topbar">
+          <div>
+            <span className="eyebrow">{lesson.presentation.title}</span>
+            <h2>{slide.title}</h2>
+          </div>
+          <div className="presenter-pills">
+            <span className="pill">{lesson.currentPhaseIndex + 1} / {lesson.totalPhases}</span>
+            <span className="pill">{lesson.currentPhase.minutes} min</span>
+          </div>
+        </div>
+
+        <div className="presenter-main">
+          <article className="presenter-slide-card">
+            <div className="presenter-slide-copy">
+              <span className="presenter-kicker">{lesson.currentPhase.title}</span>
+              <h3>{slide.studentViewText || slide.focus}</h3>
+              <ul className="presenter-bullet-list">
+                {(slide.bullets || []).map((bullet) => (
+                  <li key={bullet}>{bullet}</li>
+                ))}
+              </ul>
+            </div>
+          </article>
+
+          <aside className="presenter-side-panel">
+            <div className="presenter-side-card">
+              <span className="presenter-kicker">Live opdracht</span>
+              <p>{lesson.currentPhase.prompt || lesson.currentPhase.goal}</p>
+            </div>
+
+            {videoScene ? (
+              <div className="presenter-side-card video-card">
+                <span className="presenter-kicker">Video-opzet</span>
+                <strong>{videoScene.title}</strong>
+                <p>{videoScene.narration}</p>
+              </div>
+            ) : null}
+
+            <div className="presenter-side-card">
+              <span className="presenter-kicker">Klasreacties</span>
+              <strong>{answeredCount}/{totalPlayers}</strong>
+              <p>
+                {insights?.allAnswered
+                  ? "Iedereen heeft gereageerd. Je kunt nu door."
+                  : "Reacties lopen nog binnen."}
+              </p>
+            </div>
+          </aside>
+        </div>
+
+        <div className="presenter-bottombar">
+          <span className="presenter-hint">ESC of knop om fullscreen te verlaten</span>
+          <div className="presenter-actions">
+            <button className="button-ghost" onClick={onClose} type="button">
+              Sluit presentatieweergave
+            </button>
+            <button className="button-secondary" onClick={onNext} type="button">
+              Volgende lesstap
+            </button>
+          </div>
+        </div>
+      </section>
+    </div>
   )
 }
 
@@ -1232,6 +1488,8 @@ function LessonLibrarySection({ lessons, activeLessonId, onLoad, onDelete }) {
                 <span>{lesson.topic || "Algemeen thema"}</span>
                 <span>{lesson.audience}</span>
                 <span>{lesson.phaseCount} fasen</span>
+                {lesson.practiceQuestionCount ? <span>{lesson.practiceQuestionCount} oefenvragen</span> : null}
+                {lesson.slideCount ? <span>{lesson.slideCount} dia's</span> : null}
               </div>
               <div className="lesson-library-actions">
                 <button className="button-secondary" onClick={() => onLoad(lesson.id)} type="button">

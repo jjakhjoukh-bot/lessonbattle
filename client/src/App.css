@@ -1,13 +1,18 @@
 .page-shell {
   width: min(1380px, calc(100% - 32px));
   margin: 0 auto;
-  padding: 28px 0 42px;
+  padding: 28px 0 56px;
+  position: relative;
 }
 
 .glass {
-  background: linear-gradient(180deg, rgba(18, 28, 43, 0.84), rgba(10, 17, 29, 0.9));
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
+  background:
+    linear-gradient(180deg, rgba(19, 29, 48, 0.9), rgba(9, 14, 27, 0.94)),
+    rgba(11, 18, 33, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  box-shadow:
+    0 28px 70px rgba(0, 0, 0, 0.34),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
   backdrop-filter: blur(18px);
 }
 
@@ -23,6 +28,7 @@
   grid-template-columns: 1.5fr 0.9fr;
   align-items: stretch;
   margin-bottom: 22px;
+  position: relative;
 }
 
 .hero-copy,
@@ -39,9 +45,10 @@
 
 .hero-copy {
   background:
-    radial-gradient(circle at top left, rgba(255, 166, 77, 0.28), transparent 28%),
-    radial-gradient(circle at bottom right, rgba(56, 189, 248, 0.24), transparent 24%),
-    linear-gradient(135deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.01));
+    radial-gradient(circle at 18% 18%, rgba(255, 166, 77, 0.34), transparent 30%),
+    radial-gradient(circle at 82% 22%, rgba(108, 92, 231, 0.2), transparent 26%),
+    radial-gradient(circle at bottom right, rgba(56, 189, 248, 0.28), transparent 28%),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.01));
   border: 1px solid rgba(255, 255, 255, 0.08);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03);
 }
@@ -60,6 +67,22 @@
   max-width: 58ch;
   color: var(--muted);
   font-size: 1.03rem;
+}
+
+.hero-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.hero-tags span {
+  padding: 10px 14px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #ebf5ff;
+  font-size: 0.88rem;
+  font-weight: 700;
 }
 
 .eyebrow {
@@ -237,6 +260,70 @@
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
 
+.toggle-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.toggle-card {
+  border: 0;
+  border-radius: 22px;
+  padding: 16px;
+  text-align: left;
+  background:
+    linear-gradient(160deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.03)),
+    rgba(255, 255, 255, 0.04);
+  color: #f6fbff;
+  cursor: pointer;
+  transition: transform 180ms ease, box-shadow 180ms ease, opacity 180ms ease;
+}
+
+.toggle-card:hover {
+  transform: translateY(-2px);
+}
+
+.toggle-card span,
+.toggle-card p {
+  display: block;
+  margin: 0;
+}
+
+.toggle-card span {
+  color: #9fd2ff;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.toggle-card strong {
+  display: block;
+  margin: 10px 0 8px;
+  font-size: 1rem;
+}
+
+.toggle-card p {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.toggle-card.is-active {
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.1),
+    0 18px 30px rgba(69, 104, 255, 0.14);
+  background:
+    linear-gradient(145deg, rgba(255, 157, 67, 0.18), rgba(69, 104, 255, 0.18)),
+    rgba(255, 255, 255, 0.04);
+}
+
+.toggle-card:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+  transform: none;
+}
+
 .single-action {
   grid-template-columns: 1fr;
 }
@@ -275,7 +362,8 @@
 .question-stage {
   min-height: 100%;
   background:
-    radial-gradient(circle at top right, rgba(73, 182, 255, 0.14), transparent 26%),
+    radial-gradient(circle at top right, rgba(73, 182, 255, 0.2), transparent 26%),
+    radial-gradient(circle at bottom left, rgba(255, 159, 67, 0.14), transparent 22%),
     linear-gradient(180deg, rgba(18, 28, 43, 0.84), rgba(10, 17, 29, 0.92));
 }
 
@@ -330,6 +418,16 @@
   display: block;
   margin-top: 6px;
   font-size: 1.15rem;
+}
+
+.meta-actions {
+  display: grid;
+  gap: 10px;
+}
+
+.subtle-danger {
+  color: #ffd6e6;
+  background: rgba(255, 93, 143, 0.12);
 }
 
 .lobby-banner {
@@ -664,6 +762,12 @@
   background: rgba(255, 255, 255, 0.05);
 }
 
+.accent-box {
+  background:
+    linear-gradient(160deg, rgba(255, 159, 67, 0.1), rgba(69, 104, 255, 0.1)),
+    rgba(255, 255, 255, 0.05);
+}
+
 .lesson-box strong {
   display: block;
   margin-bottom: 8px;
@@ -683,7 +787,8 @@
 
 .lesson-summary-actions,
 .lesson-library-actions,
-.lesson-library-meta {
+.lesson-library-meta,
+.lesson-box-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
@@ -828,6 +933,213 @@
   background:
     linear-gradient(180deg, rgba(255, 157, 67, 0.08), rgba(255, 255, 255, 0.03)),
     rgba(255, 255, 255, 0.04);
+}
+
+.lesson-presentation-panel {
+  display: grid;
+  gap: 16px;
+  margin-top: 18px;
+  padding: 18px;
+  border-radius: 24px;
+  background:
+    radial-gradient(circle at top right, rgba(61, 214, 208, 0.18), transparent 28%),
+    linear-gradient(180deg, rgba(12, 25, 44, 0.92), rgba(13, 19, 34, 0.95));
+}
+
+.lesson-presentation-panel.compact {
+  padding: 16px;
+}
+
+.presentation-stage {
+  display: grid;
+  grid-template-columns: 1.2fr 0.8fr;
+  gap: 14px;
+}
+
+.presentation-card,
+.presentation-video-card {
+  display: grid;
+  gap: 12px;
+  padding: 18px;
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.presentation-card h4,
+.presentation-video-card h4 {
+  margin: 0;
+  font-family: "Avenir Next Condensed", "Trebuchet MS", sans-serif;
+  font-size: 1.55rem;
+}
+
+.presentation-card p,
+.presentation-video-card p,
+.micro-slide p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.presentation-card ul {
+  margin: 0;
+  padding-left: 18px;
+  color: #f2f8ff;
+}
+
+.micro-slide {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.micro-slide b {
+  font-size: 1rem;
+}
+
+.presenter-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.presenter-backdrop {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at top left, rgba(255, 166, 77, 0.18), transparent 24%),
+    radial-gradient(circle at bottom right, rgba(73, 182, 255, 0.22), transparent 28%),
+    linear-gradient(180deg, rgba(6, 10, 18, 0.92), rgba(5, 8, 16, 0.97));
+}
+
+.presenter-stage-frame {
+  position: relative;
+  z-index: 1;
+  width: min(1440px, 100%);
+  min-height: calc(100vh - 48px);
+  display: grid;
+  gap: 20px;
+  grid-template-rows: auto 1fr auto;
+  padding: 28px;
+  border-radius: 32px;
+  background:
+    linear-gradient(160deg, rgba(20, 33, 54, 0.94), rgba(8, 13, 24, 0.98)),
+    rgba(9, 15, 28, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 32px 80px rgba(0, 0, 0, 0.42);
+}
+
+.presenter-topbar,
+.presenter-bottombar {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  align-items: center;
+}
+
+.presenter-topbar h2 {
+  margin: 10px 0 0;
+  font-family: "Avenir Next Condensed", "Trebuchet MS", sans-serif;
+  font-size: clamp(2.6rem, 4vw, 4.5rem);
+  line-height: 0.94;
+}
+
+.presenter-pills,
+.presenter-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.presenter-main {
+  display: grid;
+  grid-template-columns: 1.25fr 0.75fr;
+  gap: 18px;
+  min-height: 0;
+}
+
+.presenter-slide-card,
+.presenter-side-card {
+  border-radius: 28px;
+  background:
+    linear-gradient(160deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.03)),
+    rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.presenter-slide-card {
+  display: grid;
+  align-items: end;
+  padding: 34px;
+  background:
+    radial-gradient(circle at top right, rgba(61, 214, 208, 0.22), transparent 28%),
+    radial-gradient(circle at bottom left, rgba(255, 157, 67, 0.18), transparent 22%),
+    linear-gradient(160deg, rgba(20, 32, 50, 0.96), rgba(9, 13, 24, 0.98));
+}
+
+.presenter-slide-copy {
+  max-width: 56rem;
+}
+
+.presenter-kicker {
+  display: inline-flex;
+  margin-bottom: 16px;
+  color: #9fd2ff;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.presenter-slide-copy h3 {
+  margin: 0 0 18px;
+  font-family: "Avenir Next Condensed", "Trebuchet MS", sans-serif;
+  font-size: clamp(2.8rem, 4.2vw, 5.4rem);
+  line-height: 0.94;
+}
+
+.presenter-bullet-list {
+  margin: 0;
+  padding-left: 24px;
+  display: grid;
+  gap: 14px;
+  font-size: clamp(1.1rem, 1.8vw, 1.6rem);
+  color: #eef7ff;
+}
+
+.presenter-side-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.presenter-side-card {
+  padding: 20px;
+  display: grid;
+  gap: 10px;
+}
+
+.presenter-side-card p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.presenter-side-card strong {
+  font-size: 1.3rem;
+}
+
+.video-card {
+  background:
+    linear-gradient(160deg, rgba(108, 92, 231, 0.14), rgba(61, 214, 208, 0.08)),
+    rgba(255, 255, 255, 0.04);
+}
+
+.presenter-hint {
+  color: var(--muted);
+  font-size: 0.95rem;
 }
 
 .lesson-stage-head {
@@ -975,7 +1287,9 @@
   gap: 14px;
   padding: 18px;
   border-radius: 22px;
-  background: rgba(255, 255, 255, 0.04);
+  background:
+    linear-gradient(160deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.02)),
+    rgba(255, 255, 255, 0.04);
 }
 
 .lesson-library-card.is-active {
@@ -1157,12 +1471,15 @@
   .host-grid,
   .dashboard-grid,
   .player-layout,
-  .question-card {
+  .question-card,
+  .presenter-main {
     grid-template-columns: 1fr;
   }
 
   .lesson-summary-grid,
   .lesson-stage-grid,
+  .toggle-grid,
+  .presentation-stage,
   .distribution-grid,
   .action-row {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1191,6 +1508,8 @@
   .host-meta-bar,
   .lobby-stats,
   .mode-switch,
+  .toggle-grid,
+  .presentation-stage,
   .lesson-summary-grid,
   .lesson-stage-grid,
   .distribution-grid {
@@ -1204,13 +1523,21 @@
   .board-card,
   .join-card,
   .battle-card,
-  .side-column {
+  .side-column,
+  .presenter-stage-frame {
     padding: 18px;
     border-radius: 22px;
   }
 
   .lesson-stage-head {
     grid-template-columns: 1fr;
+    display: grid;
+  }
+
+  .presenter-topbar,
+  .presenter-bottombar,
+  .presenter-pills,
+  .presenter-actions {
     display: grid;
   }
 }
