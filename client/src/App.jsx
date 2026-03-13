@@ -131,6 +131,8 @@ function HostPage() {
   const [lessonModel, setLessonModel] = useState("edi")
   const [lessonPackage, setLessonPackage] = useState("lesson")
   const [lessonDurationMinutes, setLessonDurationMinutes] = useState(45)
+  const [presentationSlideCount, setPresentationSlideCount] = useState(6)
+  const [practiceQuestionCount, setPracticeQuestionCount] = useState(8)
   const [includeVideoPlan, setIncludeVideoPlan] = useState(false)
   const [lessonPromptDraft, setLessonPromptDraft] = useState("")
   const [lessonExpectedAnswerDraft, setLessonExpectedAnswerDraft] = useState("")
@@ -386,6 +388,8 @@ function HostPage() {
       audience,
       lessonModel,
       durationMinutes: lessonDurationMinutes,
+      slideCount: presentationSlideCount,
+      practiceQuestionCount,
       includePracticeTest,
       includePresentation,
       includeVideoPlan: includePresentation && includeVideoPlan,
@@ -599,27 +603,71 @@ function HostPage() {
             </label>
 
             {activeMode === "lesson" ? (
-              <>
-                <label className="field">
-                  <span>Lesmodus</span>
-                  <select value={lessonModel} onChange={(event) => setLessonModel(event.target.value)}>
-                    <option value="edi">EDI (Directe instructie)</option>
-                    <option value="formatief handelen">Formatief handelen</option>
-                    <option value="activerende didactiek">Activerende didactiek</option>
-                    <option value="directe instructie">Directe instructie</option>
-                  </select>
-                </label>
-                <label className="field">
-                  <span>Lesduur (min)</span>
-                  <input
-                    type="number"
-                    min="20"
-                    max="90"
-                    value={lessonDurationMinutes}
-                    onChange={(event) => setLessonDurationMinutes(Number(event.target.value))}
-                  />
-                </label>
-              </>
+              selectedSuiteMode === "lesson" ? (
+                <>
+                  <label className="field">
+                    <span>Lesmodus</span>
+                    <select value={lessonModel} onChange={(event) => setLessonModel(event.target.value)}>
+                      <option value="edi">EDI (Directe instructie)</option>
+                      <option value="formatief handelen">Formatief handelen</option>
+                      <option value="activerende didactiek">Activerende didactiek</option>
+                      <option value="directe instructie">Directe instructie</option>
+                    </select>
+                  </label>
+                  <label className="field">
+                    <span>Lesduur (min)</span>
+                    <input
+                      type="number"
+                      min="20"
+                      max="90"
+                      value={lessonDurationMinutes}
+                      onChange={(event) => setLessonDurationMinutes(Number(event.target.value))}
+                    />
+                  </label>
+                </>
+              ) : selectedSuiteMode === "presentation" ? (
+                <>
+                  <label className="field">
+                    <span>Aantal dia's</span>
+                    <input
+                      type="number"
+                      min="4"
+                      max="7"
+                      value={presentationSlideCount}
+                      onChange={(event) => setPresentationSlideCount(Number(event.target.value))}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Video-opzet</span>
+                    <select
+                      value={includeVideoPlan ? "ja" : "nee"}
+                      onChange={(event) => setIncludeVideoPlan(event.target.value === "ja")}
+                    >
+                      <option value="nee">Nee</option>
+                      <option value="ja">Ja</option>
+                    </select>
+                  </label>
+                </>
+              ) : (
+                <>
+                  <label className="field">
+                    <span>Aantal vragen</span>
+                    <input
+                      type="number"
+                      min="6"
+                      max="24"
+                      value={practiceQuestionCount}
+                      onChange={(event) => setPracticeQuestionCount(Number(event.target.value))}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Vorm</span>
+                    <select value="oefentoets" disabled>
+                      <option value="oefentoets">Oefentoets</option>
+                    </select>
+                  </label>
+                </>
+              )
             ) : (
               <>
                 <label className="field">
@@ -645,67 +693,6 @@ function HostPage() {
               </>
             )}
           </div>
-
-          {activeMode === "lesson" ? (
-            <>
-              <div className="lesson-suite-hint">
-                <span className="eyebrow">Actieve vorm</span>
-                <strong>
-                  {selectedSuiteMode === "presentation"
-                    ? "Presentatieweergave"
-                    : selectedSuiteMode === "practice"
-                      ? "Oefentoets"
-                      : "Lesmodus"}
-                </strong>
-                <p>
-                  Kies hierboven de hoofdvorm. Voeg hieronder optioneel extra's toe zonder je
-                  bestaande lesflow kwijt te raken.
-                </p>
-              </div>
-              <div className="toggle-grid">
-                <button
-                  className={`toggle-card ${includePracticeTest ? "is-active" : ""}`}
-                  onClick={() => setLessonPackage(includePracticeTest ? "lesson" : includePresentation ? "complete" : "practice")}
-                  type="button"
-                >
-                  <span>Pakket</span>
-                  <strong>Oefentoets</strong>
-                  <p>Maakt een aparte toetsset die je direct na of tijdens de les kunt starten.</p>
-                </button>
-                <button
-                  className={`toggle-card ${includePresentation ? "is-active" : ""}`}
-                  onClick={() => {
-                    const nextIncludesPresentation = !includePresentation
-                    setLessonPackage(
-                      nextIncludesPresentation
-                        ? includePracticeTest
-                          ? "complete"
-                          : "presentation"
-                        : includePracticeTest
-                          ? "practice"
-                          : "lesson"
-                    )
-                    if (!nextIncludesPresentation) setIncludeVideoPlan(false)
-                  }}
-                  type="button"
-                >
-                  <span>Pakket</span>
-                  <strong>Dia-presentatie</strong>
-                  <p>Maakt per fase een digibord-dia die je fullscreen kunt tonen.</p>
-                </button>
-                <button
-                  className={`toggle-card ${includeVideoPlan ? "is-active" : ""}`}
-                  disabled={!includePresentation}
-                  onClick={() => setIncludeVideoPlan((current) => !current)}
-                  type="button"
-                >
-                  <span>Pakket</span>
-                  <strong>Video-opzet</strong>
-                  <p>Eerste versie: storyboard en spreektekst naast de presentatiedia’s.</p>
-                </button>
-              </div>
-            </>
-          ) : null}
 
           <label className="field">
             <span>Teams</span>

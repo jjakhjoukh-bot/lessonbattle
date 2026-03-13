@@ -1187,6 +1187,8 @@ function buildLessonPrompt({
   audience,
   lessonModel,
   durationMinutes,
+  practiceQuestionCount = 8,
+  slideCount = 6,
   includePracticeTest = false,
   includePresentation = false,
   includeVideoPlan = false,
@@ -1194,7 +1196,7 @@ function buildLessonPrompt({
 }) {
   const practiceSection = includePracticeTest
     ? `
-- Voeg ook een veld "practiceTest" toe met een oefentoets van 8 meerkeuzevragen in hetzelfde onderwerp.
+- Voeg ook een veld "practiceTest" toe met een oefentoets van precies ${practiceQuestionCount} meerkeuzevragen in hetzelfde onderwerp.
 - practiceTest bevat: title, instructions, questions.
 - Elke practiceTest-vraag gebruikt exact de velden: prompt, options, correctIndex, explanation, category, imagePrompt, imageAlt.
 `
@@ -1206,7 +1208,7 @@ function buildLessonPrompt({
     ? `
 - Voeg ook een veld "presentation" toe voor een compacte presentatieset die de docent live kan tonen.
 - presentation bevat: title, style, slides.
-- slides is een array met 5 tot 7 dia's.
+- slides is een array met precies ${slideCount} dia's.
 - Elke dia bevat: id, title, focus, bullets, studentViewText, speakerNotes.
 - studentViewText is compact en bedoeld voor leerlingen.
 ${includeVideoPlan ? `
@@ -1322,6 +1324,8 @@ function buildLessonRepairPrompt({
   audience,
   lessonModel,
   durationMinutes,
+  practiceQuestionCount = 8,
+  slideCount = 6,
   includePracticeTest = false,
   includePresentation = false,
   includeVideoPlan = false,
@@ -1344,8 +1348,8 @@ Regels:
 - Gebruik de velden: title, model, lessonGoal, successCriteria, materials, phases.
 - phases moet een array zijn met 5 tot 7 objecten.
 - Elke fase moet bevatten: title, goal, teacherScript, studentActivity, interactivePrompt, checkForUnderstanding, expectedAnswer, keywords, minutes.
-- ${includePracticeTest ? 'Voeg ook een geldig "practiceTest" veld toe met title, instructions en questions.' : 'Laat het veld "practiceTest" weg.'}
-- ${includePresentation ? 'Voeg ook een geldig "presentation" veld toe met title, style en slides.' : 'Laat het veld "presentation" weg.'}
+- ${includePracticeTest ? `Voeg ook een geldig "practiceTest" veld toe met title, instructions en precies ${practiceQuestionCount} questions.` : 'Laat het veld "practiceTest" weg.'}
+- ${includePresentation ? `Voeg ook een geldig "presentation" veld toe met title, style en precies ${slideCount} slides.` : 'Laat het veld "presentation" weg.'}
 - ${includePresentation && includeVideoPlan ? 'Voeg binnen presentation ook een geldig "video" veld toe met title, summary, studentViewText en scenes.' : 'Laat een eventueel "video" veld weg.'}
 - Houd de les inhoudelijk passend bij het onderwerp.
 - Geen markdown en geen extra tekst.
@@ -1494,9 +1498,10 @@ function normalizeLessonPlan(rawPlan, { topic, audience, lessonModel, durationMi
   }
 }
 
-function normalizePracticeTest(rawPracticeTest, topic) {
+function normalizePracticeTest(rawPracticeTest, topic, questionCount = 8) {
+  const safeQuestionCount = Math.max(6, Math.min(24, Number(questionCount) || 8))
   if (!rawPracticeTest || typeof rawPracticeTest !== "object") {
-    const fallbackQuestions = buildFallbackQuestions({ topic, questionCount: 8 }).slice(0, 8)
+    const fallbackQuestions = buildFallbackQuestions({ topic, questionCount: safeQuestionCount }).slice(0, safeQuestionCount)
     return {
       title: `Oefentoets over ${topic.trim()}`,
       instructions: "Maak deze oefentoets zelfstandig en bespreek daarna de antwoorden klassikaal.",
@@ -1516,11 +1521,12 @@ function normalizePracticeTest(rawPracticeTest, topic) {
     instructions:
       String(rawPracticeTest.instructions ?? "").trim() ||
       "Maak deze oefentoets zelfstandig en bespreek daarna de antwoorden klassikaal.",
-    questions: normalizedQuestions.slice(0, 12),
+    questions: normalizedQuestions.slice(0, safeQuestionCount),
   }
 }
 
-function normalizePresentationPackage(rawPresentation, lesson, { includeVideoPlan = false } = {}) {
+function normalizePresentationPackage(rawPresentation, lesson, { includeVideoPlan = false, slideCount = 6 } = {}) {
+  const safeSlideCount = Math.max(4, Math.min(7, Number(slideCount) || 6))
   const safePresentation =
     rawPresentation && typeof rawPresentation === "object" && !Array.isArray(rawPresentation)
       ? rawPresentation
@@ -1543,7 +1549,7 @@ function normalizePresentationPackage(rawPresentation, lesson, { includeVideoPla
       imageAlt: String(slide?.imageAlt ?? "").trim() || `${String(slide?.title ?? "").trim()} dia`,
     }))
     .filter((slide) => slide.title && slide.bullets.length)
-    .slice(0, 7)
+    .slice(0, safeSlideCount)
 
   const fallbackSlides =
     slides.length > 0
@@ -1557,7 +1563,7 @@ function normalizePresentationPackage(rawPresentation, lesson, { includeVideoPla
           speakerNotes: phase.teacherScript,
           imagePrompt: `${lesson.title} ${phase.title} ${phase.goal}`.trim(),
           imageAlt: `${phase.title} dia`,
-        }))
+        })).slice(0, safeSlideCount)
 
   const rawVideo = safePresentation.video
   const video =
@@ -1607,7 +1613,17 @@ function normalizePresentationPackage(rawPresentation, lesson, { includeVideoPla
 
 function normalizeLessonPackage(
   rawPlan,
-  { topic, audience, lessonModel, durationMinutes, includePracticeTest = false, includePresentation = false, includeVideoPlan = false }
+  {
+    topic,
+    audience,
+    lessonModel,
+    durationMinutes,
+    practiceQuestionCount = 8,
+    slideCount = 6,
+    includePracticeTest = false,
+    includePresentation = false,
+    includeVideoPlan = false,
+  }
 ) {
   if (!rawPlan || typeof rawPlan !== "object" || Array.isArray(rawPlan)) {
     throw new Error("AI gaf geen bruikbare lesopzet terug.")
@@ -1624,7 +1640,7 @@ function normalizeLessonPackage(
 
   if (includePracticeTest) {
     try {
-      practiceTest = normalizePracticeTest(rawPlan.practiceTest, topic)
+      practiceTest = normalizePracticeTest(rawPlan.practiceTest, topic, practiceQuestionCount)
     } catch (error) {
       console.warn(
         `[AI] oefentoets is overgeslagen: ${error instanceof Error ? error.message : "onbekende normalisatiefout"}`
@@ -1634,7 +1650,7 @@ function normalizeLessonPackage(
 
   if (includePresentation) {
     try {
-      presentation = normalizePresentationPackage(rawPlan.presentation, lesson, { includeVideoPlan })
+      presentation = normalizePresentationPackage(rawPlan.presentation, lesson, { includeVideoPlan, slideCount })
     } catch (error) {
       console.warn(
         `[AI] presentatieset is overgeslagen: ${error instanceof Error ? error.message : "onbekende normalisatiefout"}`
@@ -1999,7 +2015,17 @@ async function generateQuestionsWithProvider(provider, { topic, audience, questi
 
 async function generateLessonPlanWithProvider(
   provider,
-  { topic, audience, lessonModel, durationMinutes, includePracticeTest = false, includePresentation = false, includeVideoPlan = false }
+  {
+    topic,
+    audience,
+    lessonModel,
+    durationMinutes,
+    practiceQuestionCount = 8,
+    slideCount = 6,
+    includePracticeTest = false,
+    includePresentation = false,
+    includeVideoPlan = false,
+  }
 ) {
   const providerTimeoutMs = AI_PROVIDER_REQUEST_TIMEOUT_MS
   let lastError = null
@@ -2019,6 +2045,8 @@ async function generateLessonPlanWithProvider(
           audience,
           lessonModel,
           durationMinutes,
+          practiceQuestionCount,
+          slideCount,
           includePracticeTest,
           includePresentation,
           includeVideoPlan,
@@ -2033,6 +2061,8 @@ async function generateLessonPlanWithProvider(
           audience,
           lessonModel,
           durationMinutes,
+          practiceQuestionCount,
+          slideCount,
           includePracticeTest,
           includePresentation,
           includeVideoPlan,
@@ -2051,6 +2081,8 @@ async function generateLessonPlanWithProvider(
               audience,
               lessonModel,
               durationMinutes,
+              practiceQuestionCount,
+              slideCount,
               includePracticeTest,
               includePresentation,
               includeVideoPlan,
@@ -2064,6 +2096,8 @@ async function generateLessonPlanWithProvider(
             audience,
             lessonModel,
             durationMinutes,
+            practiceQuestionCount,
+            slideCount,
             includePracticeTest,
             includePresentation,
             includeVideoPlan,
@@ -2105,6 +2139,8 @@ async function generateLessonPlan({
   audience,
   lessonModel,
   durationMinutes,
+  practiceQuestionCount = 8,
+  slideCount = 6,
   includePracticeTest = false,
   includePresentation = false,
   includeVideoPlan = false,
@@ -2125,6 +2161,8 @@ async function generateLessonPlan({
               audience: targetAudience,
               lessonModel: targetModel,
               durationMinutes: safeDuration,
+              practiceQuestionCount,
+              slideCount,
               includePracticeTest,
               includePresentation,
               includeVideoPlan,
@@ -2140,6 +2178,8 @@ async function generateLessonPlan({
               audience: targetAudience,
               lessonModel: targetModel,
               durationMinutes: safeDuration,
+              practiceQuestionCount,
+              slideCount,
               includePracticeTest,
               includePresentation,
               includeVideoPlan,
@@ -2155,6 +2195,8 @@ async function generateLessonPlan({
               audience: targetAudience,
               lessonModel: targetModel,
               durationMinutes: safeDuration,
+              practiceQuestionCount,
+              slideCount,
               includePracticeTest,
               includePresentation,
               includeVideoPlan,
@@ -2466,6 +2508,8 @@ io.on("connection", (socket) => {
     audience,
     lessonModel,
     durationMinutes,
+    slideCount,
+    practiceQuestionCount,
     teamNames,
     includePracticeTest,
     includePresentation,
@@ -2476,6 +2520,8 @@ io.on("connection", (socket) => {
 
     const safeDuration = Math.max(20, Math.min(90, Number(durationMinutes) || 45))
     const safeLessonModel = String(lessonModel ?? "edi").trim() || "edi"
+    const safeSlideCount = Math.max(4, Math.min(7, Number(slideCount) || 6))
+    const safePracticeQuestionCount = Math.max(6, Math.min(24, Number(practiceQuestionCount) || 8))
     const wantsPracticeTest = Boolean(includePracticeTest)
     const wantsPresentation = Boolean(includePresentation)
     const wantsVideoPlan = Boolean(includePresentation && includeVideoPlan)
@@ -2494,6 +2540,8 @@ io.on("connection", (socket) => {
           audience,
           lessonModel: safeLessonModel,
           durationMinutes: safeDuration,
+          slideCount: safeSlideCount,
+          practiceQuestionCount: safePracticeQuestionCount,
           includePracticeTest: false,
           includePresentation: false,
           includeVideoPlan: false,
@@ -2531,7 +2579,7 @@ io.on("connection", (socket) => {
           generateQuestions({
             topic: `${String(topic ?? "").trim()}\nMaak hier een korte oefentoets van met afwisselende controlevragen.`,
             audience,
-            questionCount: 8,
+            questionCount: safePracticeQuestionCount,
           }),
           AI_ROUND_GENERATION_TIMEOUT_MS
         )
@@ -2547,14 +2595,14 @@ io.on("connection", (socket) => {
         practiceTest = {
           title: `Oefentoets over ${String(topic ?? "").trim() || "dit onderwerp"}`,
           instructions: "Maak deze oefentoets zelfstandig en bespreek daarna de antwoorden.",
-          questions: buildFallbackQuestions({ topic, questionCount: 8 }).slice(0, 8),
+          questions: buildFallbackQuestions({ topic, questionCount: safePracticeQuestionCount }).slice(0, safePracticeQuestionCount),
           providerLabel: "Lokale reserve",
         }
       }
     }
 
     const presentation = wantsPresentation
-      ? normalizePresentationPackage({}, lessonResult.lesson, { includeVideoPlan: wantsVideoPlan })
+      ? normalizePresentationPackage({}, lessonResult.lesson, { includeVideoPlan: wantsVideoPlan, slideCount: safeSlideCount })
       : null
 
     room.questions = []
