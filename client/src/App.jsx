@@ -150,7 +150,7 @@ function HostPage() {
     sessionMode === "battle" ? "battle" : includePresentation ? "presentation" : includePracticeTest ? "practice" : "lesson"
   const buildActionLabel =
     sessionMode === "battle"
-      ? "Ronde starten"
+      ? "Ronde klaarzetten"
       : selectedSuiteMode === "presentation"
         ? "Presentatie opbouwen"
         : selectedSuiteMode === "practice"
@@ -218,7 +218,7 @@ function HostPage() {
     }
     const onSuccess = ({ count, providerLabel }) =>
       setStatus(
-        `${count} AI-vragen klaar${providerLabel ? ` via ${providerLabel}` : ""}. De eerste vraag staat klaar in preview.`
+        `${count} AI-vragen klaar${providerLabel ? ` via ${providerLabel}` : ""}. De eerste vraag staat klaar in docent-preview. Klik op Start vraag om hem live te zetten.`
       )
     const onLessonSuccess = ({ count, providerLabel, lessonModel: nextLessonModel, hasPracticeTest, hasPresentation }) =>
       setStatus(
@@ -744,6 +744,26 @@ function HostPage() {
             >
               {activeMode === "lesson" ? buildActionLabel : "Ronde starten"}
             </button>
+            {game.mode === "battle" && game.source !== "practice" && game.question && game.status === "preview" ? (
+              <button
+                className="button-primary"
+                disabled={!hostSession.authenticated}
+                onClick={startBattleQuestion}
+                type="button"
+              >
+                Start vraag
+              </button>
+            ) : null}
+            {game.mode === "battle" && game.source !== "practice" && game.question && game.status === "live" ? (
+              <button
+                className="button-secondary"
+                disabled={!hostSession.authenticated}
+                onClick={showBattleAnswer}
+                type="button"
+              >
+                Toon antwoord
+              </button>
+            ) : null}
             <button
               className="button-secondary"
               disabled={!hostSession.authenticated}
@@ -1125,7 +1145,7 @@ function PlayerPage() {
                     ? `Fase ${game.currentPhaseIndex + 1}`
                     : "Wachten"
                   : game.status === "preview"
-                    ? "Vraag komt zo"
+                    ? "De docent zet zo de vraag live"
                   : game.status === "live"
                     ? `Vraag ${game.currentQuestionIndex + 1}`
                     : game.status === "revealed"
@@ -1224,7 +1244,7 @@ function PlayerPage() {
               <p>
                 {game.mode === "lesson"
                   ? "De huidige lesstap verschijnt hier vanzelf zodra die live staat."
-                  : "De volgende vraag verschijnt hier vanzelf zodra die start."}
+                  : "De docent bekijkt de vraag eerst en zet hem daarna live voor jou."}
               </p>
             </div>
           )}
