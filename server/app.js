@@ -71,6 +71,7 @@ function createIdleGameState() {
     questionDurationSec: 20,
     questionStartedAt: null,
     status: "idle",
+    answerRevealed: false,
     source: "idle",
     providerLabel: null,
     generatedAt: null,
@@ -370,6 +371,76 @@ function currentPresentationScene(lesson) {
   return lesson.presentation.video.scenes[sceneIndex] ?? lesson.presentation.video.scenes[0] ?? null
 }
 
+function sanitizePresentationSlide(slide, viewer = "host") {
+  if (!slide) return null
+  const safeSlide = {
+    id: slide.id,
+    title: slide.title,
+    content: slide.content || slide.studentViewText || slide.focus || "",
+    studentViewText: slide.studentViewText || slide.content || slide.focus || "",
+    focus: slide.focus || slide.studentViewText || slide.content || "",
+    bullets: [...(slide.bullets || [])],
+    imagePrompt: slide.imagePrompt || "",
+    imageAlt: slide.imageAlt || slide.title || "Presentatiedia",
+  }
+
+  if (viewer === "player") return safeSlide
+  return {
+    ...safeSlide,
+    speakerNotes: slide.speakerNotes || "",
+  }
+}
+
+function sanitizePresentationScene(scene, viewer = "host") {
+  if (!scene) return null
+  const safeScene = {
+    id: scene.id,
+    title: scene.title,
+    narration: scene.studentNarration || scene.narration || "",
+    studentNarration: scene.studentNarration || scene.narration || "",
+    visualHint: scene.visualHint || "",
+  }
+
+  if (viewer === "player") return safeScene
+  return {
+    ...safeScene,
+    teacherCue: scene.teacherCue || "",
+  }
+}
+
+function normalizeStudentFacingText(text, fallback = "Beantwoord de volgende vraag.") {
+  const source = String(text || "").trim()
+  if (!source) return fallback
+
+  const replacements = [
+    [/^de leerlingen moeten nu\s+/i, "Je gaat nu "],
+    [/^de leerlingen moeten\s+/i, "Je gaat nu "],
+    [/^de leerlingen gaan nu\s+/i, "Je gaat nu "],
+    [/^de leerlingen gaan\s+/i, "Je gaat nu "],
+    [/^laat leerlingen nadenken over\s+/i, "Denk na over "],
+    [/^laat de leerlingen nadenken over\s+/i, "Denk na over "],
+    [/^laat leerlingen\s+/i, ""],
+    [/^laat de leerlingen\s+/i, ""],
+    [/^de docent vraagt de klas om\s+/i, "Beantwoord deze opdracht: "],
+    [/^de docent vraagt de klas\s+/i, "Beantwoord deze vraag: "],
+    [/^vraag de klas om\s+/i, "Beantwoord deze opdracht: "],
+    [/^vraag de klas\s+/i, "Beantwoord deze vraag: "],
+  ]
+
+  let normalized = source
+  for (const [pattern, replacement] of replacements) {
+    normalized = normalized.replace(pattern, replacement)
+  }
+
+  normalized = normalized.replace(/\s+/g, " ").trim()
+  return normalized || fallback
+}
+
+function buildStudentPhasePrompt(lesson, currentPhase, activePrompt) {
+  const candidate = activePrompt || currentPhase?.studentActivity || currentPhase?.goal || currentPhase?.interactivePrompt || ""
+  return normalizeStudentFacingText(candidate, "Volg de uitleg en beantwoord de volgende opdracht.")
+}
+
 function withLessonPhaseContext(lesson, phaseIndex = lesson?.currentPhaseIndex ?? -1) {
   const phase = phaseIndex >= 0 ? lesson?.phases?.[phaseIndex] ?? null : null
   return {
@@ -383,16 +454,37 @@ function withLessonPhaseContext(lesson, phaseIndex = lesson?.currentPhaseIndex ?
   }
 }
 
-function sanitizeQuestion(question) {
+function sanitizeQuestion(question, viewer = "host", room = null) {
   if (!question) return null
-  return {
+  const prompt = String(question.prompt || question.question_text || "").trim()
+  const baseQuestion = {
     id: question.id,
-    prompt: question.prompt,
-    options: question.options,
-    explanation: question.explanation,
+    prompt,
+    question_text: prompt,
+    options: [...(question.options || [])],
     category: question.category,
     imagePrompt: question.imagePrompt,
-    imageAlt: question.imageAlt || question.prompt,
+    imageAlt: question.imageAlt || prompt,
+    durationSec: Number(question.durationSec) || room?.game?.questionDurationSec || 20,
+  }
+
+  if (viewer === "player") {
+    const isBattle = room?.game?.mode === "battle" && room?.game?.source !== "practice"
+    const isPractice = room?.game?.source === "practice"
+    if (isBattle && room?.game?.status === "preview") return null
+    if (isBattle && room?.game?.status !== "revealed") return baseQuestion
+    if (isPractice) return baseQuestion
+    return {
+      ...baseQuestion,
+      explanation: question.explanation,
+      correctIndex: question.correctIndex,
+    }
+  }
+
+  return {
+    ...baseQuestion,
+    explanation: question.explanation,
+    correctIndex: question.correctIndex,
   }
 }
 
@@ -404,6 +496,9 @@ function sanitizeLesson(lesson, viewer = "host") {
   const activeExpectedAnswer = getActiveLessonExpectedAnswer(lesson)
 
   if (viewer === "player") {
+    const safeSlide = sanitizePresentationSlide(currentPresentationSlide(lesson), "player")
+    const safeScene = sanitizePresentationScene(currentPresentationScene(lesson), "player")
+    const playerPrompt = buildStudentPhasePrompt(lesson, currentPhase, activePrompt)
     return {
       title: lesson.title,
       model: lesson.model,
@@ -415,7 +510,8 @@ function sanitizeLesson(lesson, viewer = "host") {
             id: currentPhase.id,
             title: currentPhase.title,
             minutes: currentPhase.minutes,
-            prompt: activePrompt,
+            prompt: playerPrompt,
+            studentActivity: normalizeStudentFacingText(currentPhase.studentActivity || playerPrompt, playerPrompt),
             promptVersion: lesson.promptVersion || 0,
           }
         : null,
@@ -424,12 +520,12 @@ function sanitizeLesson(lesson, viewer = "host") {
             title: lesson.presentation.title,
             style: lesson.presentation.style,
             slideCount: lesson.presentation.slides.length,
-            currentSlide: currentPresentationSlide(lesson),
+            currentSlide: safeSlide,
             video: lesson.presentation.video
               ? {
                   title: lesson.presentation.video.title,
                   summary: lesson.presentation.video.studentViewText || lesson.presentation.video.summary,
-                  currentScene: currentPresentationScene(lesson),
+                  currentScene: safeScene,
                 }
               : null,
           }
@@ -461,13 +557,13 @@ function sanitizeLesson(lesson, viewer = "host") {
           title: lesson.presentation.title,
           style: lesson.presentation.style,
           slideCount: lesson.presentation.slides.length,
-          currentSlide: currentPresentationSlide(lesson),
+          currentSlide: sanitizePresentationSlide(currentPresentationSlide(lesson), "host"),
           video: lesson.presentation.video
             ? {
                 title: lesson.presentation.video.title,
                 summary: lesson.presentation.video.summary,
                 sceneCount: lesson.presentation.video.scenes.length,
-                currentScene: currentPresentationScene(lesson),
+                currentScene: sanitizePresentationScene(currentPresentationScene(lesson), "host"),
               }
             : null,
         }
@@ -518,12 +614,16 @@ function buildStatePayload(room, viewer = "host") {
   const answeredCount =
     room.game.mode === "lesson" && lessonPhase ? room.lessonResponses.size : room.answeredPlayers.size
   const totalPlayers = room.players.length
+  const activeQuestion = currentQuestion(room)
+  const questionDurationSec =
+    Number(activeQuestion?.durationSec) || Number(room.game.questionDurationSec) || 20
   return {
     players: room.players,
     teams: room.teams,
     leaderboard: leaderboard(room),
     game: {
       ...room.game,
+      questionDurationSec,
       currentQuestionIndex: room.currentQuestionIndex,
       totalQuestions: room.questions.length,
       currentPhaseIndex: room.lesson?.currentPhaseIndex ?? -1,
@@ -532,7 +632,7 @@ function buildStatePayload(room, viewer = "host") {
       answeredCount,
       totalPlayers,
       allAnswered: totalPlayers > 0 && answeredCount >= totalPlayers,
-      question: sanitizeQuestion(currentQuestion(room)),
+      question: sanitizeQuestion(activeQuestion, viewer, room),
       lesson: sanitizeLesson(room.lesson, viewer),
     },
   }
@@ -708,6 +808,21 @@ function buildHostInsights(room) {
   const answeredCount = room.answeredPlayers.size
   const totalPlayers = room.players.length
   const allAnswered = totalPlayers > 0 && answeredCount >= totalPlayers
+  const distribution = (question.options || []).map((option, index) => {
+    const playersForOption = room.players.filter((player) => room.playerAnswers.get(player.id)?.answerIndex === index)
+    return {
+      index,
+      key: String.fromCharCode(65 + index),
+      option,
+      count: playersForOption.length,
+      players: playersForOption.map((player) => ({
+        playerId: player.id,
+        name: player.name,
+        teamId: player.teamId,
+        teamName: room.teams.find((team) => team.id === player.teamId)?.name || "",
+      })),
+    }
+  })
 
   return {
     mode: "battle",
@@ -715,10 +830,11 @@ function buildHostInsights(room) {
     answeredCount,
     totalPlayers,
     allAnswered,
-    canAdvance: Boolean(question) && allAnswered,
-    correctIndex: allAnswered && question ? question.correctIndex : null,
-    correctOption: allAnswered && question ? question.options[question.correctIndex] : null,
-    explanation: allAnswered && question ? question.explanation : "",
+    canAdvance: Boolean(question) && (allAnswered || room.game.status === "revealed"),
+    correctIndex: question ? question.correctIndex : null,
+    correctOption: question ? question.options[question.correctIndex] : null,
+    explanation: question ? question.explanation : "",
+    distribution,
     responses: room.players.map((player) => {
       const answer = room.playerAnswers.get(player.id)
 
@@ -728,9 +844,9 @@ function buildHostInsights(room) {
         teamId: player.teamId,
         teamName: room.teams.find((team) => team.id === player.teamId)?.name || "",
         answered: Boolean(answer),
-        answerIndex: allAnswered ? answer?.answerIndex ?? null : null,
-        answerText: allAnswered && answer ? question?.options?.[answer.answerIndex] ?? null : null,
-        isCorrect: allAnswered && answer ? answer.isCorrect : null,
+        answerIndex: answer?.answerIndex ?? null,
+        answerText: answer ? question?.options?.[answer.answerIndex] ?? null : null,
+        isCorrect: answer ? answer.isCorrect : null,
       }
     }),
   }
@@ -786,26 +902,47 @@ function emitStateToSocket(socket, room) {
           questionDurationSec: 20,
           questionStartedAt: null,
           status: "idle",
+          answerRevealed: false,
           source: "idle",
           providerLabel: null,
-      generatedAt: null,
-      mode: "battle",
-      lessonModel: "edi",
-      lessonDurationMinutes: 45,
-      currentQuestionIndex: -1,
-      totalQuestions: 0,
-      currentPhaseIndex: -1,
-      totalPhases: 0,
-      roomCodeActive: false,
-      question: null,
-      lesson: null,
-    },
-  }
+          generatedAt: null,
+          mode: "battle",
+          lessonModel: "edi",
+          lessonDurationMinutes: 45,
+          currentQuestionIndex: -1,
+          totalQuestions: 0,
+          currentPhaseIndex: -1,
+          totalPhases: 0,
+          roomCodeActive: false,
+          question: null,
+          lesson: null,
+        },
+      }
   socket.emit("state:init", payload)
 }
 
 function stampQuestionStart(room) {
-  room.game = { ...room.game, questionStartedAt: new Date().toISOString() }
+  room.game = {
+    ...room.game,
+    questionStartedAt: new Date().toISOString(),
+    status: "live",
+    answerRevealed: false,
+  }
+}
+
+function setCurrentQuestionPreview(room, questionIndex) {
+  const nextQuestion = room.questions[questionIndex] ?? null
+  room.currentQuestionIndex = nextQuestion ? questionIndex : -1
+  room.answeredPlayers = new Set()
+  room.playerAnswers = new Map()
+  room.game = {
+    ...room.game,
+    questionStartedAt: null,
+    questionDurationSec: Number(nextQuestion?.durationSec) || room.game.questionDurationSec || 20,
+    status: nextQuestion ? "preview" : room.questions.length ? "finished" : "idle",
+    answerRevealed: false,
+    mode: "battle",
+  }
 }
 
 function clearRoomClosingTimeout(room) {
@@ -2450,7 +2587,13 @@ io.on("connection", (socket) => {
         generateQuestions({ topic, audience, questionCount }),
         AI_ROUND_GENERATION_TIMEOUT_MS
       )
-      room.questions = generationResult.questions
+      room.questions = generationResult.questions.map((question, index) => ({
+        ...question,
+        id: question.id || `battle-${index + 1}`,
+        prompt: String(question.prompt || question.question_text || "").trim(),
+        options: [...(question.options || [])],
+        durationSec: safeDuration,
+      }))
       console.info(
         `[AI] ronde voor room ${room.code} gegenereerd via ${generationResult.providerLabel}`
       )
@@ -2476,8 +2619,6 @@ io.on("connection", (socket) => {
       return
     }
 
-    room.currentQuestionIndex = 0
-    room.answeredPlayers = new Set()
     room.playerAnswers = new Map()
     room.lessonResponses = new Map()
     room.lesson = createEmptyLessonState()
@@ -2487,13 +2628,15 @@ io.on("connection", (socket) => {
       audience: audience?.trim() || "vmbo",
       questionCount: room.questions.length,
       questionDurationSec: safeDuration,
-      questionStartedAt: new Date().toISOString(),
-      status: "live",
+      questionStartedAt: null,
+      status: room.questions.length ? "preview" : "idle",
+      answerRevealed: false,
       source: generationResult?.provider || "ai",
       providerLabel: generationResult?.providerLabel || "AI",
       generatedAt: new Date().toISOString(),
       mode: "battle",
     }
+    setCurrentQuestionPreview(room, room.questions.length ? 0 : -1)
 
     emitStateToRoom(room)
     socket.emit("host:generate:success", {
@@ -2661,7 +2804,9 @@ io.on("connection", (socket) => {
     room.questions = practiceTest.questions.map((question, index) => ({
       ...question,
       id: `practice-${index + 1}`,
+      prompt: String(question.prompt || question.question_text || "").trim(),
       options: [...(question.options || [])],
+      durationSec: 25,
     }))
     room.currentQuestionIndex = 0
     room.answeredPlayers = new Set()
@@ -2675,6 +2820,7 @@ io.on("connection", (socket) => {
       questionDurationSec: 25,
       questionStartedAt: new Date().toISOString(),
       status: "live",
+      answerRevealed: false,
       source: "practice",
       providerLabel: "Oefentoets",
       generatedAt: new Date().toISOString(),
@@ -2807,18 +2953,69 @@ io.on("connection", (socket) => {
     if (!room) return
 
     if (room.currentQuestionIndex + 1 >= room.questions.length) {
-      room.currentQuestionIndex = -1
+      setCurrentQuestionPreview(room, -1)
       room.answeredPlayers = new Set()
       room.playerAnswers = new Map()
-      room.game = { ...room.game, status: room.questions.length ? "finished" : "idle", questionStartedAt: null }
+      room.game = {
+        ...room.game,
+        status: room.questions.length ? "finished" : "idle",
+        questionStartedAt: null,
+        answerRevealed: false,
+      }
       emitStateToRoom(room)
       return
     }
 
-    room.currentQuestionIndex += 1
+    if (room.game.source === "practice") {
+      room.currentQuestionIndex += 1
+      room.answeredPlayers = new Set()
+      room.playerAnswers = new Map()
+      stampQuestionStart(room)
+      emitStateToRoom(room)
+      return
+    }
+
+    setCurrentQuestionPreview(room, room.currentQuestionIndex + 1)
+    room.answeredPlayers = new Set()
+    room.playerAnswers = new Map()
+    emitStateToRoom(room)
+  })
+
+  socket.on("host:start-question", ({ durationSec }) => {
+    const room = requireHostRoom(socket)
+    if (!room || room.game.mode !== "battle" || room.game.source === "practice") return
+
+    const question = currentQuestion(room)
+    if (!question) {
+      socket.emit("host:error", { message: "Er staat nog geen vraag klaar in preview." })
+      return
+    }
+
+    const safeDuration = Math.max(5, Math.min(180, Number(durationSec) || Number(question.durationSec) || 20))
+    question.durationSec = safeDuration
+    room.game = {
+      ...room.game,
+      questionDurationSec: safeDuration,
+      status: "preview",
+      answerRevealed: false,
+    }
     room.answeredPlayers = new Set()
     room.playerAnswers = new Map()
     stampQuestionStart(room)
+    emitStateToRoom(room)
+  })
+
+  socket.on("host:show-answer", () => {
+    const room = requireHostRoom(socket)
+    if (!room || room.game.mode !== "battle" || room.game.source === "practice") return
+    if (!currentQuestion(room)) return
+
+    room.game = {
+      ...room.game,
+      status: "revealed",
+      questionStartedAt: null,
+      answerRevealed: true,
+    }
     emitStateToRoom(room)
   })
 
@@ -2830,7 +3027,8 @@ io.on("connection", (socket) => {
     if (!question) return
 
     const startTime = room.game.questionStartedAt ? new Date(room.game.questionStartedAt).getTime() : 0
-    const answerWindowEnded = !startTime || Date.now() > startTime + room.game.questionDurationSec * 1000
+    const currentDuration = Number(question.durationSec) || room.game.questionDurationSec
+    const answerWindowEnded = !startTime || Date.now() > startTime + currentDuration * 1000
     const alreadyAnswered = room.answeredPlayers.has(socket.id)
 
     if (!alreadyAnswered && !answerWindowEnded) {
@@ -2842,7 +3040,12 @@ io.on("connection", (socket) => {
       room.currentQuestionIndex = -1
       room.answeredPlayers = new Set()
       room.playerAnswers = new Map()
-      room.game = { ...room.game, status: room.questions.length ? "finished" : "idle", questionStartedAt: null }
+      room.game = {
+        ...room.game,
+        status: room.questions.length ? "finished" : "idle",
+        questionStartedAt: null,
+        answerRevealed: false,
+      }
       emitStateToRoom(room)
       return
     }
@@ -2960,26 +3163,43 @@ io.on("connection", (socket) => {
     const player = room.players.find((entry) => entry.id === socket.id)
     if (!question || !player || room.answeredPlayers.has(socket.id)) return
 
+    if (room.game.status !== "live") return
+
     const startTime = room.game.questionStartedAt ? new Date(room.game.questionStartedAt).getTime() : 0
-    const withinAnswerWindow = startTime && Date.now() <= startTime + room.game.questionDurationSec * 1000
+    const currentDuration = Number(question.durationSec) || room.game.questionDurationSec
+    const now = Date.now()
+    const withinAnswerWindow = startTime && now <= startTime + currentDuration * 1000
     if (!withinAnswerWindow) return
 
     room.answeredPlayers.add(socket.id)
     const isCorrect = answer === question.correctIndex
+    const elapsedMs = Math.max(0, now - startTime)
+    const speedBonus = Math.max(0, Math.round(((currentDuration * 1000 - elapsedMs) / (currentDuration * 1000)) * 50))
+    const awardedPoints = isCorrect ? 100 + speedBonus : 0
     room.playerAnswers.set(socket.id, {
       answerIndex: answer,
       isCorrect,
+      elapsedMs,
+      awardedPoints,
     })
-    if (isCorrect) player.score += 100
+    if (isCorrect) player.score += awardedPoints
 
     syncTeamScores(room)
-    socket.emit("player:answer:result", {
-      correct: isCorrect,
-      correctIndex: question.correctIndex,
-      explanation: question.explanation,
-      playerScore: player.score,
-      teamScore: room.teams.find((team) => team.id === player.teamId)?.score ?? 0,
-    })
+    if (room.game.source === "practice") {
+      socket.emit("player:answer:result", {
+        correct: isCorrect,
+        correctIndex: question.correctIndex,
+        explanation: question.explanation,
+        playerScore: player.score,
+        teamScore: room.teams.find((team) => team.id === player.teamId)?.score ?? 0,
+      })
+    } else {
+      socket.emit("player:answer:result", {
+        waitingForReveal: true,
+        playerScore: player.score,
+        teamScore: room.teams.find((team) => team.id === player.teamId)?.score ?? 0,
+      })
+    }
     emitStateToRoom(room)
   })
 

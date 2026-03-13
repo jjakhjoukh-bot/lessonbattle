@@ -218,7 +218,7 @@ function HostPage() {
     }
     const onSuccess = ({ count, providerLabel }) =>
       setStatus(
-        `${count} AI-vragen klaar${providerLabel ? ` via ${providerLabel}` : ""}. De ronde is live.`
+        `${count} AI-vragen klaar${providerLabel ? ` via ${providerLabel}` : ""}. De eerste vraag staat klaar in preview.`
       )
     const onLessonSuccess = ({ count, providerLabel, lessonModel: nextLessonModel, hasPracticeTest, hasPresentation }) =>
       setStatus(
@@ -300,6 +300,7 @@ function HostPage() {
 
   const timeLeft = useQuestionCountdown(game)
   const [presenterMode, setPresenterMode] = useState(false)
+  const [battleDurationDraft, setBattleDurationDraft] = useState(questionDurationSec)
 
   const toggleFullscreen = async () => {
     if (!document.fullscreenElement) {
@@ -317,6 +318,11 @@ function HostPage() {
     document.addEventListener("fullscreenchange", syncFullscreen)
     return () => document.removeEventListener("fullscreenchange", syncFullscreen)
   }, [])
+
+  useEffect(() => {
+    if (game.mode !== "battle" || !game.question) return
+    setBattleDurationDraft(game.question.durationSec || game.questionDurationSec || 20)
+  }, [game.mode, game.question?.id, game.question?.durationSec, game.questionDurationSec])
 
   const preparedTeamNames = useMemo(
     () =>
@@ -378,6 +384,16 @@ function HostPage() {
       questionDurationSec,
       teamNames: preparedTeamNames,
     })
+  }
+
+  const startBattleQuestion = () => {
+    setStatus("Vraag wordt live gezet...")
+    socket.emit("host:start-question", { durationSec: battleDurationDraft })
+  }
+
+  const showBattleAnswer = () => {
+    setStatus("Juiste antwoord wordt getoond...")
+    socket.emit("host:show-answer")
   }
 
   const generateLesson = () => {
@@ -762,9 +778,13 @@ function HostPage() {
                   ? game.lesson?.currentPhase
                     ? `${game.lesson.currentPhase.minutes} min`
                     : "Les"
+                  : game.status === "preview"
+                    ? "Preview"
                   : game.status === "live"
                     ? `${timeLeft}s`
-                    : "Klaar"}
+                    : game.status === "revealed"
+                      ? "Antwoord"
+                      : "Klaar"}
               </span>
               <span className="pill">
                 {game.mode === "lesson"
@@ -773,8 +793,12 @@ function HostPage() {
                     : game.status === "finished"
                       ? "Les afgerond"
                       : "Nog niet gestart"
+                  : game.status === "preview"
+                    ? `Preview ${game.currentQuestionIndex + 1} / ${game.totalQuestions}`
                   : game.status === "live"
                     ? `Vraag ${game.currentQuestionIndex + 1} / ${game.totalQuestions}`
+                    : game.status === "revealed"
+                      ? `Antwoord ${game.currentQuestionIndex + 1} / ${game.totalQuestions}`
                     : game.status === "finished"
                       ? "Ronde klaar"
                       : "Nog niet gestart"}
@@ -811,6 +835,15 @@ function HostPage() {
           ) : game.question ? (
             <>
               <QuestionCard question={game.question} />
+              {game.mode === "battle" && game.source !== "practice" ? (
+                <BattleQuestionControls
+                  duration={battleDurationDraft}
+                  onDurationChange={setBattleDurationDraft}
+                  onReveal={showBattleAnswer}
+                  onStart={startBattleQuestion}
+                  status={game.status}
+                />
+              ) : null}
               <HostInsightsCard insights={hostInsights} />
             </>
           ) : game.status === "finished" ? (
@@ -913,7 +946,11 @@ function PlayerPage() {
     }
     const onAnswerResult = (payload) => {
       setResult(payload)
-      setStatus(payload.correct ? "Goed antwoord. Je team pakt punten." : "Niet correct. Probeer de volgende vraag.")
+      if (payload.waitingForReveal) {
+        setStatus("Je antwoord is opgeslagen. Wacht tot het juiste antwoord wordt getoond.")
+        return
+      }
+      setStatus(payload.correct ? "Goed antwoord. Je team pakt punten." : "Niet correct. Kijk naar de uitleg en ga daarna verder.")
     }
     const onLessonResponseResult = (payload) => {
       setLessonResult(payload)
@@ -1014,6 +1051,12 @@ function PlayerPage() {
     isPracticeTestLive &&
     game.question &&
     (Boolean(result) || timeLeft === 0)
+  const battleRevealVisible =
+    game.mode === "battle" &&
+    game.source !== "practice" &&
+    game.status === "revealed" &&
+    game.question &&
+    typeof game.question.correctIndex === "number"
 
   return (
     <main className="page-shell player-shell">
@@ -1068,17 +1111,25 @@ function PlayerPage() {
                   ? game.lesson?.currentPhase
                     ? `${game.lesson.currentPhase.minutes} min`
                     : "Wachten"
+                  : game.status === "preview"
+                    ? "Wacht"
                   : game.status === "live"
                     ? `${timeLeft}s`
-                    : "Wachten"}
+                    : game.status === "revealed"
+                      ? "Uitleg"
+                      : "Wacht"}
               </span>
               <span className="pill">
                 {game.mode === "lesson"
                   ? game.status === "live"
                     ? `Fase ${game.currentPhaseIndex + 1}`
                     : "Wachten"
+                  : game.status === "preview"
+                    ? "Vraag komt zo"
                   : game.status === "live"
                     ? `Vraag ${game.currentQuestionIndex + 1}`
+                    : game.status === "revealed"
+                      ? "Antwoord"
                     : "Wachten"}
               </span>
             </div>
@@ -1086,7 +1137,6 @@ function PlayerPage() {
 
           {game.mode === "lesson" && game.lesson?.currentPhase ? (
             <>
-              <LessonProgress lesson={game.lesson} />
               <LessonStageCard lesson={game.lesson} />
               <LessonPresentationPanel compact presentation={game.lesson?.presentation} />
               <LessonResponsePanel
@@ -1103,14 +1153,18 @@ function PlayerPage() {
               <QuestionCard question={game.question} compact={false} showOptions={false} />
               <div className="answer-grid">
                 {game.question.options.map((option, index) => {
-                  const isCorrectChoice = result && index === result.correctIndex
-                  const isWrongChosen = result && !result.correct && index === chosenAnswer
+                  const isCorrectChoice =
+                    (result && typeof result.correctIndex === "number" && index === result.correctIndex) ||
+                    (battleRevealVisible && index === game.question.correctIndex)
+                  const isWrongChosen =
+                    Boolean(result && result.correct === false && index === chosenAnswer) ||
+                    Boolean(battleRevealVisible && chosenAnswer === index && index !== game.question.correctIndex)
 
                   return (
                     <button
                       key={`${game.question.id}-${index}`}
                       className={`answer-button ${isCorrectChoice ? "is-correct" : ""} ${isWrongChosen ? "is-wrong" : ""}`}
-                      disabled={!joined || Boolean(result)}
+                      disabled={!joined || Boolean(result) || battleRevealVisible}
                       onClick={() => {
                         setChosenAnswer(index)
                         socket.emit("player:answer", { answer: index })
@@ -1123,7 +1177,22 @@ function PlayerPage() {
                   )
                 })}
               </div>
-              {result ? (
+              {result?.waitingForReveal && !battleRevealVisible ? (
+                <div className="answer-result">
+                  <strong>Antwoord ontvangen</strong>
+                  <p>Wacht tot de beheerder het juiste antwoord laat zien.</p>
+                </div>
+              ) : null}
+              {battleRevealVisible ? (
+                <div className={`answer-result ${chosenAnswer === game.question.correctIndex ? "ok" : "bad"}`}>
+                  <strong>{chosenAnswer === game.question.correctIndex ? "Goed antwoord" : "Juiste antwoord"}</strong>
+                  <p>
+                    {game.question.options[game.question.correctIndex]}
+                    {game.question.explanation ? ` — ${game.question.explanation}` : ""}
+                  </p>
+                </div>
+              ) : null}
+              {result && !result.waitingForReveal ? (
                 <div className={`answer-result ${result.correct ? "ok" : "bad"}`}>
                   <strong>{result.correct ? "Correct" : "Niet correct"}</strong>
                   <p>{result.explanation}</p>
@@ -1151,11 +1220,11 @@ function PlayerPage() {
             )
           ) : (
             <div className="empty-state">
-              <h3>{game.mode === "lesson" ? "De les start zo" : "De ronde start zo"}</h3>
+              <h3>{game.mode === "lesson" ? "De les verschijnt zo" : "Wacht op de volgende vraag"}</h3>
               <p>
                 {game.mode === "lesson"
-                  ? "Zodra de beheerder de les start, verschijnt de huidige lesstap hier automatisch."
-                  : "Zodra de beheerder de ronde start, verschijnt de vraag hier automatisch."}
+                  ? "De huidige lesstap verschijnt hier vanzelf zodra die live staat."
+                  : "De volgende vraag verschijnt hier vanzelf zodra die start."}
               </p>
             </div>
           )}
@@ -1171,6 +1240,8 @@ function PlayerPage() {
 }
 
 function QuestionCard({ question, compact = false, showOptions = true }) {
+  const prompt = getQuestionPrompt(question)
+
   return (
     <article className={`question-card ${compact ? "compact" : ""}`}>
       <div className="question-visual-wrap">
@@ -1178,7 +1249,7 @@ function QuestionCard({ question, compact = false, showOptions = true }) {
       </div>
       <div className="question-body">
         <span className="category-badge">{question.category}</span>
-        <h3>{question.prompt}</h3>
+        <h3>{prompt}</h3>
         {showOptions ? (
           <ul className="option-list">
             {question.options.map((option, index) => (
@@ -1294,11 +1365,11 @@ function LessonStageCard({ lesson, hostView = false }) {
     return (
       <article className="lesson-stage-card student-stage-card">
         <div className="student-stage-top">
-          <span className="category-badge">{lesson.model}</span>
+          <span className="category-badge">Live les</span>
           <span className="lesson-minutes">{phase.minutes} min</span>
         </div>
-        <div className="student-stage-kicker">Waar zijn we nu?</div>
-        <h3>{phase.title}</h3>
+        <div className="student-stage-kicker">Wat ga je nu doen?</div>
+        <h3>{phase.studentActivity || "Werk mee met deze lesstap."}</h3>
         <div className="student-stage-prompt">
           <strong>Opdracht</strong>
           <p>{currentPrompt}</p>
@@ -1544,6 +1615,66 @@ function LessonPromptComposer({
       <button className="button-secondary" disabled={!text.trim()} onClick={onSubmit} type="button">
         Toon vraag live
       </button>
+    </section>
+  )
+}
+
+function BattleQuestionControls({ status, duration, onDurationChange, onStart, onReveal }) {
+  const durationPresets = [10, 20, 30, 45, 60]
+
+  return (
+    <section className="lesson-response-panel battle-preview-panel">
+      <div className="section-head">
+        <h3>{status === "preview" ? "Docent preview" : status === "revealed" ? "Antwoord getoond" : "Vraag loopt live"}</h3>
+        <span className="pill">
+          {status === "preview"
+            ? "Bekijk de vraag en start daarna"
+            : status === "revealed"
+              ? "Het antwoord is zichtbaar voor leerlingen"
+              : "De klas antwoordt nu"}
+        </span>
+      </div>
+
+      {status === "preview" ? (
+        <>
+          <div className="duration-preset-row">
+            {durationPresets.map((preset) => (
+              <button
+                key={preset}
+                className={`button-ghost duration-chip ${Number(duration) === preset ? "is-active" : ""}`}
+                onClick={() => onDurationChange(preset)}
+                type="button"
+              >
+                {preset}s
+              </button>
+            ))}
+          </div>
+          <label className="field inline-field">
+            <span>Tijd voor deze vraag (sec)</span>
+            <input
+              type="number"
+              min="5"
+              max="180"
+              value={duration}
+              onChange={(event) => onDurationChange(Number(event.target.value))}
+            />
+          </label>
+          <button className="button-primary" onClick={onStart} type="button">
+            Start vraag
+          </button>
+        </>
+      ) : status === "live" ? (
+        <div className="battle-preview-actions">
+          <p>De vraag staat live. Je ziet hieronder direct het juiste antwoord en de antwoordverdeling.</p>
+          <button className="button-secondary" onClick={onReveal} type="button">
+            Toon antwoord
+          </button>
+        </div>
+      ) : (
+        <div className="battle-preview-actions">
+          <p>Het antwoord is getoond. Bespreek de vraag en ga daarna door naar de volgende previewvraag.</p>
+        </div>
+      )}
     </section>
   )
 }
@@ -1814,40 +1945,93 @@ function HostInsightsCard({ insights }) {
         </span>
       </div>
 
-      {insights.allAnswered ? (
-        <div className="answer-result ok">
-          <strong>Iedereen is klaar. Juiste antwoord: {insights.correctOption}</strong>
-          <p>{insights.explanation}</p>
-        </div>
-      ) : (
-        <div className="answer-result">
-          <strong>Nog niet iedereen heeft geantwoord.</strong>
-          <p>Je kunt wachten of handmatig doorgaan naar de volgende vraag.</p>
-        </div>
-      )}
+      <div className="answer-result ok">
+        <strong>Juiste antwoord: {insights.correctOption}</strong>
+        <p>{insights.explanation || "De docent kan dit antwoord direct bespreken."}</p>
+      </div>
+
+      <BattleDistributionChart distribution={insights.distribution || []} totalPlayers={insights.totalPlayers} />
+
+      <div className="answer-result">
+        <strong>{insights.allAnswered ? "Iedereen is klaar." : "De vraag loopt nog."}</strong>
+        <p>
+          {insights.allAnswered
+            ? "Je kunt nu het antwoord tonen of doorgaan naar de volgende vraag."
+            : "Je ziet de verdeling al live terwijl de rest nog antwoordt."}
+        </p>
+      </div>
 
       <div className="insight-grid">
         {insights.responses.map((response) => (
           <div
             className={`insight-row ${response.answered ? "answered" : "pending"} ${response.isCorrect ? "correct" : ""}`}
             key={response.playerId}
-          >
+            >
             <div>
               <strong>{response.name}</strong>
               <span>{response.teamName || "Zonder team"}</span>
             </div>
             <div className="insight-answer">
-              {insights.allAnswered ? (
+              {response.answered ? (
                 <>
-                  <span>{response.answerText || "Nog geen antwoord"}</span>
-                  <b>{response.isCorrect ? "Goed" : response.answered ? "Fout" : "Open"}</b>
+                  <span>{response.answerText || "Geen antwoordtekst"}</span>
+                  <b>{response.isCorrect ? "Goed" : "Fout"}</b>
                 </>
               ) : (
-                <b>{response.answered ? "Geantwoord" : "Wacht nog"}</b>
+                <b>Wacht nog</b>
               )}
             </div>
           </div>
         ))}
+      </div>
+    </section>
+  )
+}
+
+function BattleDistributionChart({ distribution, totalPlayers }) {
+  const safeTotal = Math.max(1, totalPlayers || 1)
+
+  return (
+    <section className="lesson-distribution">
+      <div className="section-head">
+        <h3>Live verdeling</h3>
+        <span className="pill">A/B/C/D</span>
+      </div>
+      <div className="distribution-grid">
+        {distribution.map((bucket) => {
+          const percentage = Math.round((bucket.count / safeTotal) * 100)
+          return (
+            <div className="distribution-card battle-distribution-card" key={bucket.index}>
+              <div className="distribution-meta">
+                <strong>{bucket.key}</strong>
+                <span>{bucket.option}</span>
+              </div>
+              <div className="distribution-bar-track">
+                <div className="distribution-bar-fill" style={{ width: `${percentage}%` }} />
+              </div>
+              <div className="distribution-stats">
+                <b>{bucket.count}</b>
+                <span>{percentage}%</span>
+              </div>
+
+              <div className="distribution-tooltip">
+                <strong>Optie {bucket.key}</strong>
+                {bucket.players.length ? (
+                  <ul>
+                    {bucket.players.map((player) => (
+                      <li key={player.playerId}>
+                        <span>{player.name}</span>
+                        <b>{player.teamName || "Zonder team"}</b>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p>Nog geen antwoorden op deze optie.</p>
+                )}
+              </div>
+            </div>
+          )
+        })}
       </div>
     </section>
   )
@@ -1878,7 +2062,7 @@ function useQuestionCountdown(game) {
 
 function useSoundEffects(result, status) {
   useEffect(() => {
-    if (!result) return
+    if (!result || result.waitingForReveal) return
 
     playTone(result.correct ? 880 : 240, result.correct ? 0.12 : 0.18, result.correct ? "triangle" : "sawtooth")
   }, [result])
@@ -1914,7 +2098,8 @@ function playTone(frequency, duration, type = "sine") {
 
 function QuestionVisual({ question }) {
   const [hasImageError, setHasImageError] = useState(false)
-  const imageUrl = buildQuestionImageUrl(question.imagePrompt || question.prompt, question.category)
+  const prompt = getQuestionPrompt(question)
+  const imageUrl = buildQuestionImageUrl(question.imagePrompt || prompt, question.category)
 
   useEffect(() => {
     setHasImageError(false)
@@ -1924,20 +2109,24 @@ function QuestionVisual({ question }) {
     return (
       <div className="visual-fallback">
         <span className="visual-label">{question.category}</span>
-        <strong>{question.imageAlt || question.prompt}</strong>
-        <p>{question.prompt}</p>
+        <strong>{question.imageAlt || prompt}</strong>
+        <p>{prompt}</p>
       </div>
     )
   }
 
   return (
     <img
-      alt={question.imageAlt || question.prompt}
+      alt={question.imageAlt || prompt}
       className="question-visual"
       onError={() => setHasImageError(true)}
       src={imageUrl}
     />
   )
+}
+
+function getQuestionPrompt(question) {
+  return question?.prompt || question?.question_text || "Beantwoord de volgende vraag."
 }
 
 function ResultsCard({ teams, leaderboard }) {
