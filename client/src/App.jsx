@@ -137,6 +137,7 @@ function HostPage() {
   const [lessonPromptDraft, setLessonPromptDraft] = useState("")
   const [lessonExpectedAnswerDraft, setLessonExpectedAnswerDraft] = useState("")
   const [teamNamesInput, setTeamNamesInput] = useState("Team Zon\nTeam Oceaan")
+  const [isEditingTeams, setIsEditingTeams] = useState(false)
   const [status, setStatus] = useState("Vul het onderwerp in, stel de teams in en start de ronde.")
   const [hostInsights, setHostInsights] = useState(null)
   const [lessonLibrary, setLessonLibrary] = useState([])
@@ -158,10 +159,10 @@ function HostPage() {
           : "Les opbouwen"
 
   useEffect(() => {
-    if (teams.length > 0) {
+    if (teams.length > 0 && !isEditingTeams) {
       setTeamNamesInput(teams.map((team) => team.name).join("\n"))
     }
-  }, [teams])
+  }, [teams, isEditingTeams])
 
   useEffect(() => {
     if (game.lessonModel) setLessonModel(game.lessonModel)
@@ -192,6 +193,10 @@ function HostPage() {
     }
     const onConfigureSuccess = ({ teams: nextTeams }) => {
       const teamCount = Array.isArray(nextTeams) ? nextTeams.length : teams.length
+      if (Array.isArray(nextTeams) && nextTeams.length > 0) {
+        setTeamNamesInput(nextTeams.map((team) => team.name).join("\n"))
+      }
+      setIsEditingTeams(false)
       setStatus(`${teamCount} teams opgeslagen.`)
     }
     const onRoomUpdate = ({ roomCode }) => {
@@ -714,7 +719,10 @@ function HostPage() {
             <textarea
               rows="4"
               value={teamNamesInput}
-              onChange={(event) => setTeamNamesInput(event.target.value)}
+              onChange={(event) => {
+                setIsEditingTeams(true)
+                setTeamNamesInput(event.target.value)
+              }}
               placeholder="Eén team per regel"
             />
           </label>
