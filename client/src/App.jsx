@@ -1085,6 +1085,13 @@ function PlayerPage() {
     game.status === "revealed" &&
     game.question &&
     typeof game.question.correctIndex === "number"
+  const canAnswerLiveQuestion =
+    joined &&
+    game.mode === "battle" &&
+    game.status === "live" &&
+    game.question &&
+    !battleRevealVisible &&
+    !result
 
   return (
     <main className="page-shell player-shell">
@@ -1179,32 +1186,39 @@ function PlayerPage() {
             <>
               <ProgressBar current={game.currentQuestionIndex + 1} total={game.totalQuestions} timeLeft={timeLeft} duration={game.questionDurationSec} />
               <QuestionCard question={game.question} compact={false} showOptions={false} />
-              <div className="answer-grid">
-                {game.question.options.map((option, index) => {
-                  const isCorrectChoice =
-                    (result && typeof result.correctIndex === "number" && index === result.correctIndex) ||
-                    (battleRevealVisible && index === game.question.correctIndex)
-                  const isWrongChosen =
-                    Boolean(result && result.correct === false && index === chosenAnswer) ||
-                    Boolean(battleRevealVisible && chosenAnswer === index && index !== game.question.correctIndex)
+              {game.status === "live" || isPracticeTestLive || battleRevealVisible || result ? (
+                <div className="answer-grid">
+                  {game.question.options.map((option, index) => {
+                    const isCorrectChoice =
+                      (result && typeof result.correctIndex === "number" && index === result.correctIndex) ||
+                      (battleRevealVisible && index === game.question.correctIndex)
+                    const isWrongChosen =
+                      Boolean(result && result.correct === false && index === chosenAnswer) ||
+                      Boolean(battleRevealVisible && chosenAnswer === index && index !== game.question.correctIndex)
 
-                  return (
-                    <button
-                      key={`${game.question.id}-${index}`}
-                      className={`answer-button ${isCorrectChoice ? "is-correct" : ""} ${isWrongChosen ? "is-wrong" : ""}`}
-                      disabled={!joined || Boolean(result) || battleRevealVisible}
-                      onClick={() => {
-                        setChosenAnswer(index)
-                        socket.emit("player:answer", { answer: index })
-                      }}
-                      type="button"
-                    >
-                      <span>{String.fromCharCode(65 + index)}</span>
-                      <strong>{option}</strong>
-                    </button>
-                  )
-                })}
-              </div>
+                    return (
+                      <button
+                        key={`${game.question.id}-${index}`}
+                        className={`answer-button ${isCorrectChoice ? "is-correct" : ""} ${isWrongChosen ? "is-wrong" : ""}`}
+                        disabled={!canAnswerLiveQuestion && !isPracticeTestLive}
+                        onClick={() => {
+                          setChosenAnswer(index)
+                          socket.emit("player:answer", { answer: index })
+                        }}
+                        type="button"
+                      >
+                        <span>{String.fromCharCode(65 + index)}</span>
+                        <strong>{option}</strong>
+                      </button>
+                    )
+                  })}
+                </div>
+              ) : (
+                <div className="answer-result">
+                  <strong>De vraag wordt zo gestart</strong>
+                  <p>Wacht tot de beheerder de vraag live zet. Daarna kun je direct een antwoord kiezen.</p>
+                </div>
+              )}
               {result?.waitingForReveal && !battleRevealVisible ? (
                 <div className="answer-result">
                   <strong>Antwoord ontvangen</strong>
