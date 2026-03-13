@@ -323,8 +323,7 @@ function HostPage() {
       teamNamesInput
         .split(/\n|,/)
         .map((name) => name.trim())
-        .filter(Boolean)
-        .slice(0, 4),
+        .filter(Boolean),
     [teamNamesInput]
   )
 

@@ -290,7 +290,7 @@ function buildQuestionSvg({ prompt, category }) {
 }
 
 function createTeams(teamNames = DEFAULT_TEAMS) {
-  const cleanedNames = teamNames.map((name) => String(name).trim()).filter(Boolean).slice(0, 4)
+  const cleanedNames = teamNames.map((name) => String(name).trim()).filter(Boolean)
   const uniqueNames = [...new Set(cleanedNames.length ? cleanedNames : DEFAULT_TEAMS)]
   return uniqueNames.map((name, index) => ({
     id: `team-${index + 1}`,
