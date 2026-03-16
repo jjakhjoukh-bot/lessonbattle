@@ -21,6 +21,7 @@ const activeRoomsPath = path.join(sharedDataPath, "active-rooms.json")
 const teacherAccountsPath = path.join(sharedDataPath, "teacher-accounts.json")
 const generatedImagesPath = path.join(sharedDataPath, "generated-images")
 const manualImagesPath = path.join(sharedDataPath, "manual-images")
+const MAX_SOCKET_PAYLOAD_BYTES = 8 * 1024 * 1024
 
 if (fs.existsSync(envPath)) {
   const envLines = fs.readFileSync(envPath, "utf8").split(/\r?\n/)
@@ -37,7 +38,11 @@ if (fs.existsSync(envPath)) {
 
 const app = express()
 const server = http.createServer(app)
-const io = new Server(server, { cors: { origin: "*" } })
+app.set("trust proxy", true)
+const io = new Server(server, {
+  cors: { origin: "*" },
+  maxHttpBufferSize: MAX_SOCKET_PAYLOAD_BYTES,
+})
 
 const apiKey = process.env.GEMINI_API_KEY
 const modelName = process.env.GEMINI_MODEL || "gemini-2.5-flash"
@@ -59,6 +64,21 @@ const geminiImageClient = apiKey
       baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/",
     })
   : null
+const imageSigningSecret =
+  process.env.IMAGE_SIGNING_SECRET ||
+  crypto
+    .createHash("sha256")
+    .update(
+      [
+        teacherUsername,
+        teacherPassword,
+        openAIApiKey || "",
+        apiKey || "",
+        openAIImageModel,
+        geminiImageModel,
+      ].join("|")
+    )
+    .digest("hex")
 
 const TEAM_COLORS = ["#ff8c42", "#3dd6d0", "#8f7cff", "#ff5d8f"]
 const DEFAULT_TEAMS = ["Team Zon", "Team Oceaan"]
@@ -70,6 +90,10 @@ const AI_RESPONSE_EVALUATION_TIMEOUT_MS = 12000
 const AI_IMAGE_TIMEOUT_MS = 20000
 const LESSON_EVALUATION_CACHE_LIMIT = 500
 const SESSION_HISTORY_LIMIT = 120
+const MAX_MANUAL_IMAGE_BYTES = 4 * 1024 * 1024
+const MAX_REMOTE_IMAGE_BYTES = 5 * 1024 * 1024
+const INVALID_IMAGE_SIGNATURE_LIMIT = 12
+const INVALID_IMAGE_SIGNATURE_WINDOW_MS = 10 * 60 * 1000
 const BASE_CORRECT_POINTS = 100
 const MAX_SPEED_BONUS = 100
 const FINAL_SPRINT_QUESTIONS = 2
@@ -80,6 +104,7 @@ const hostSessions = new Map()
 const socketToRoom = new Map()
 const rooms = new Map()
 const lessonEvaluationCache = new Map()
+const invalidImageSignatureAttempts = new Map()
 let roomPersistenceTimer = null
 
 function generateEntityId(prefix = "item") {
@@ -230,6 +255,67 @@ function sanitizeManualImageUrl(value = "") {
   return ""
 }
 
+function isLocalManualImageUrl(value = "") {
+  return String(value || "").startsWith("/manual-images/")
+}
+
+function manualImageFilePathFromUrl(value = "") {
+  if (!isLocalManualImageUrl(value)) return null
+  const fileName = path.basename(String(value || ""))
+  return path.join(manualImagesPath, fileName)
+}
+
+function buildImageSignature({ prompt = "", category = "", kind = "question" }) {
+  return crypto
+    .createHmac("sha256", imageSigningSecret)
+    .update(
+      JSON.stringify({
+        prompt: sanitizeVisualPrompt(prompt),
+        category: sanitizeVisualPrompt(category),
+        kind: kind === "slide" ? "slide" : "question",
+      })
+    )
+    .digest("hex")
+}
+
+function buildSignedImageUrl({ prompt = "", category = "", kind = "question" }) {
+  const cleanPrompt = sanitizeVisualPrompt(prompt)
+  if (!cleanPrompt) return ""
+
+  const cleanCategory = sanitizeVisualPrompt(category)
+  const safeKind = kind === "slide" ? "slide" : "question"
+  const searchParams = new URLSearchParams({
+    prompt: cleanPrompt,
+    category: cleanCategory,
+    kind: safeKind,
+    sig: buildImageSignature({ prompt: cleanPrompt, category: cleanCategory, kind: safeKind }),
+  })
+
+  return `/api/question-image?${searchParams.toString()}`
+}
+
+function noteInvalidImageSignature(ipAddress = "unknown") {
+  const now = Date.now()
+  const existing = invalidImageSignatureAttempts.get(ipAddress) || []
+  const recentAttempts = existing.filter((timestamp) => now - timestamp < INVALID_IMAGE_SIGNATURE_WINDOW_MS)
+  recentAttempts.push(now)
+  invalidImageSignatureAttempts.set(ipAddress, recentAttempts)
+  return recentAttempts.length
+}
+
+function hasTooManyInvalidImageSignatures(ipAddress = "unknown") {
+  const now = Date.now()
+  const recentAttempts = (invalidImageSignatureAttempts.get(ipAddress) || []).filter(
+    (timestamp) => now - timestamp < INVALID_IMAGE_SIGNATURE_WINDOW_MS
+  )
+  if (recentAttempts.length) {
+    invalidImageSignatureAttempts.set(ipAddress, recentAttempts)
+  } else {
+    invalidImageSignatureAttempts.delete(ipAddress)
+  }
+  return recentAttempts.length >= INVALID_IMAGE_SIGNATURE_LIMIT
+}
+
 function saveManualImageFromDataUrl({ dataUrl = "", entityId = "slide" }) {
   const match = String(dataUrl).match(/^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i)
   if (!match) {
@@ -245,6 +331,44 @@ function saveManualImageFromDataUrl({ dataUrl = "", entityId = "slide" }) {
   const imageBuffer = Buffer.from(match[2], "base64")
   if (!imageBuffer.length) {
     throw new Error("De geuploade afbeelding is leeg.")
+  }
+  if (imageBuffer.length > MAX_MANUAL_IMAGE_BYTES) {
+    throw new Error("De afbeelding is te groot. Gebruik een bestand tot 4 MB.")
+  }
+
+  ensureManualImagesDir()
+  const fileName = `${String(entityId || "slide").replace(/[^a-z0-9-_]/gi, "-")}-${Date.now().toString(36)}.${extension}`
+  const filePath = path.join(manualImagesPath, fileName)
+  fs.writeFileSync(filePath, imageBuffer)
+  return `/manual-images/${fileName}`
+}
+
+async function saveManualImageFromRemoteUrl({ imageUrl = "", entityId = "slide" }) {
+  const normalizedUrl = sanitizeManualImageUrl(imageUrl)
+  if (!normalizedUrl || isLocalManualImageUrl(normalizedUrl)) return normalizedUrl
+
+  const response = await fetchWithTimeout(normalizedUrl, {}, AI_IMAGE_TIMEOUT_MS)
+  if (!response.ok) {
+    throw new Error(`De afbeelding kon niet worden opgehaald (${response.status}).`)
+  }
+
+  const mimeType = String(response.headers.get("content-type") || "").split(";")[0].trim().toLowerCase()
+  const extension = mimeTypeToExtension(mimeType)
+  if (!extension) {
+    throw new Error("De link verwijst niet naar een ondersteunde afbeelding.")
+  }
+
+  const declaredLength = Number(response.headers.get("content-length") || 0)
+  if (declaredLength > MAX_REMOTE_IMAGE_BYTES) {
+    throw new Error("De afbeelding achter de link is te groot. Gebruik maximaal 5 MB.")
+  }
+
+  const imageBuffer = Buffer.from(await response.arrayBuffer())
+  if (!imageBuffer.length) {
+    throw new Error("De afbeelding achter de link is leeg.")
+  }
+  if (imageBuffer.length > MAX_REMOTE_IMAGE_BYTES) {
+    throw new Error("De afbeelding achter de link is te groot. Gebruik maximaal 5 MB.")
   }
 
   ensureManualImagesDir()
@@ -800,6 +924,7 @@ function currentPresentationScene(lesson) {
 
 function sanitizePresentationSlide(slide, viewer = "host") {
   if (!slide) return null
+  const imagePrompt = slide.imagePrompt || `${slide.title || ""} ${slide.focus || slide.studentViewText || ""}`.trim()
   const safeSlide = {
     id: slide.id,
     title: slide.title,
@@ -807,9 +932,14 @@ function sanitizePresentationSlide(slide, viewer = "host") {
     studentViewText: slide.studentViewText || slide.content || slide.focus || "",
     focus: slide.focus || slide.studentViewText || slide.content || "",
     bullets: [...(slide.bullets || [])],
-    imagePrompt: slide.imagePrompt || "",
+    imagePrompt,
     imageAlt: slide.imageAlt || slide.title || "Presentatiedia",
     manualImageUrl: sanitizeManualImageUrl(slide.manualImageUrl || ""),
+    imageUrl: buildSignedImageUrl({
+      prompt: imagePrompt,
+      category: slide.title || "Presentatie",
+      kind: "slide",
+    }),
   }
 
   if (viewer === "player") return safeSlide
@@ -914,15 +1044,21 @@ function withLessonPhaseContext(lesson, phaseIndex = lesson?.currentPhaseIndex ?
 function sanitizeQuestion(question, viewer = "host", room = null) {
   if (!question) return null
   const prompt = String(question.prompt || question.question_text || "").trim()
+  const imagePrompt = question.imagePrompt || prompt
   const baseQuestion = {
     id: question.id,
     prompt,
     question_text: prompt,
     options: [...(question.options || [])],
     category: question.category,
-    imagePrompt: question.imagePrompt,
+    imagePrompt,
     imageAlt: question.imageAlt || prompt,
     durationSec: Number(question.durationSec) || room?.game?.questionDurationSec || 20,
+    imageUrl: buildSignedImageUrl({
+      prompt: imagePrompt,
+      category: question.category,
+      kind: "question",
+    }),
   }
 
   if (viewer === "player") {
@@ -1444,6 +1580,49 @@ function cloneLessonForRoom(lesson, libraryId = null) {
             : null,
         }
       : null,
+  }
+}
+
+function collectManualImageUrlsFromLesson(lesson) {
+  if (!lesson?.presentation?.slides?.length) return []
+  return lesson.presentation.slides
+    .map((slide) => sanitizeManualImageUrl(slide?.manualImageUrl || ""))
+    .filter(Boolean)
+}
+
+function isManualImageUrlStillReferenced(targetUrl = "") {
+  const normalizedTarget = sanitizeManualImageUrl(targetUrl)
+  if (!normalizedTarget || !isLocalManualImageUrl(normalizedTarget)) return false
+
+  for (const room of rooms.values()) {
+    if (collectManualImageUrlsFromLesson(room.lesson).includes(normalizedTarget)) return true
+  }
+
+  for (const entry of lessonLibrary) {
+    if (collectManualImageUrlsFromLesson(entry.lesson).includes(normalizedTarget)) return true
+  }
+
+  for (const entry of sessionHistory) {
+    if (collectManualImageUrlsFromLesson(entry.lesson).includes(normalizedTarget)) return true
+  }
+
+  return false
+}
+
+function removeManualImageFileIfUnused(targetUrl = "") {
+  const normalizedTarget = sanitizeManualImageUrl(targetUrl)
+  if (!normalizedTarget || !isLocalManualImageUrl(normalizedTarget)) return
+  if (isManualImageUrlStillReferenced(normalizedTarget)) return
+
+  const filePath = manualImageFilePathFromUrl(normalizedTarget)
+  if (!filePath) return
+
+  try {
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath)
+    }
+  } catch (error) {
+    console.warn("[manual-images] cleanup failed:", error instanceof Error ? error.message : error)
   }
 }
 
@@ -3508,8 +3687,24 @@ app.get("/api/question-image", async (req, res) => {
   const prompt = String(req.query.prompt ?? "").trim()
   const category = String(req.query.category ?? "").trim()
   const kind = String(req.query.kind ?? "question").trim().toLowerCase() === "slide" ? "slide" : "question"
+  const signature = String(req.query.sig ?? "").trim()
+  const ipAddress = String(req.ip || req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "unknown")
   if (!prompt) {
     res.status(400).json({ error: "prompt is verplicht" })
+    return
+  }
+  if (hasTooManyInvalidImageSignatures(ipAddress)) {
+    res.status(429).json({ error: "Te veel ongeldige afbeeldingsverzoeken. Probeer het later opnieuw." })
+    return
+  }
+  const expectedSignature = buildImageSignature({ prompt, category, kind })
+  const signatureIsValid =
+    signature &&
+    signature.length === expectedSignature.length &&
+    crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSignature))
+  if (!signatureIsValid) {
+    noteInvalidImageSignature(ipAddress)
+    res.status(403).json({ error: "Ongeldige afbeeldingshandtekening." })
     return
   }
 
@@ -4181,7 +4376,7 @@ io.on("connection", (socket) => {
     socket.emit("host:lesson-prompt:success", { prompt: room.lesson.activePrompt })
   })
 
-  socket.on("host:presentation-image:update", ({ slideId, imageUrl, imageAlt, uploadDataUrl }) => {
+  socket.on("host:presentation-image:update", async ({ slideId, imageUrl, imageAlt, uploadDataUrl }) => {
     const room = requireHostRoom(socket)
     if (!room || room.game.mode !== "lesson" || !room.lesson?.presentation?.slides?.length) return
 
@@ -4197,11 +4392,18 @@ io.on("connection", (socket) => {
       return
     }
 
+    const previousSlide = room.lesson.presentation.slides.find((slide) => slide.id === normalizedSlideId) || null
+    const previousManualImageUrl = sanitizeManualImageUrl(previousSlide?.manualImageUrl || "")
     let nextManualImageUrl = sanitizeManualImageUrl(imageUrl)
     try {
       if (String(uploadDataUrl || "").trim()) {
         nextManualImageUrl = saveManualImageFromDataUrl({
           dataUrl: uploadDataUrl,
+          entityId: normalizedSlideId,
+        })
+      } else if (nextManualImageUrl && !isLocalManualImageUrl(nextManualImageUrl)) {
+        nextManualImageUrl = await saveManualImageFromRemoteUrl({
+          imageUrl: nextManualImageUrl,
           entityId: normalizedSlideId,
         })
       }
@@ -4233,6 +4435,10 @@ io.on("connection", (socket) => {
       },
     }
 
+    if (previousManualImageUrl && previousManualImageUrl !== nextManualImageUrl) {
+      removeManualImageFileIfUnused(previousManualImageUrl)
+    }
+
     emitStateToRoom(room)
     socket.emit("host:presentation-image:success", {
       slideId: normalizedSlideId,
@@ -4250,6 +4456,9 @@ io.on("connection", (socket) => {
       return
     }
 
+    const previousSlide = room.lesson.presentation.slides.find((slide) => slide.id === normalizedSlideId) || null
+    const previousManualImageUrl = sanitizeManualImageUrl(previousSlide?.manualImageUrl || "")
+
     room.lesson = {
       ...room.lesson,
       presentation: {
@@ -4263,6 +4472,10 @@ io.on("connection", (socket) => {
             : slide
         ),
       },
+    }
+
+    if (previousManualImageUrl) {
+      removeManualImageFileIfUnused(previousManualImageUrl)
     }
 
     emitStateToRoom(room)

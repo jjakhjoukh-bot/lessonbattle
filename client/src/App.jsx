@@ -6,6 +6,8 @@ const socket = io(window.location.origin.startsWith("http://localhost:5173") ? "
 const HOST_SESSION_KEY = "lessonbattle-host-session"
 const PLAYER_SESSION_KEY = "lessonbattle-player-session"
 const IMAGE_RENDER_VERSION = "20260316b"
+const MAX_MANUAL_UPLOAD_FILE_BYTES = 10 * 1024 * 1024
+const MAX_MANUAL_UPLOAD_DATA_BYTES = 4 * 1024 * 1024
 const DEFAULT_HOST_SESSION = {
   authenticated: false,
   username: "",
@@ -117,6 +119,11 @@ function readFileAsDataUrl(file) {
   })
 }
 
+function estimateDataUrlBytes(dataUrl) {
+  const base64Payload = String(dataUrl || "").split(",")[1] || ""
+  return Math.floor((base64Payload.length * 3) / 4)
+}
+
 function loadImageElement(dataUrl) {
   return new Promise((resolve, reject) => {
     const image = new Image()
@@ -127,8 +134,17 @@ function loadImageElement(dataUrl) {
 }
 
 async function optimizeImageFile(file) {
+  if (Number(file?.size) > MAX_MANUAL_UPLOAD_FILE_BYTES) {
+    throw new Error("De afbeelding is te groot. Gebruik maximaal 10 MB.")
+  }
+
   const dataUrl = await readFileAsDataUrl(file)
-  if (String(file?.type || "").toLowerCase() === "image/svg+xml") return dataUrl
+  if (String(file?.type || "").toLowerCase() === "image/svg+xml") {
+    if (estimateDataUrlBytes(dataUrl) > MAX_MANUAL_UPLOAD_DATA_BYTES) {
+      throw new Error("De SVG is te groot. Gebruik maximaal 4 MB.")
+    }
+    return dataUrl
+  }
 
   const image = await loadImageElement(dataUrl)
   const maxWidth = 1600
@@ -140,9 +156,18 @@ async function optimizeImageFile(file) {
   canvas.width = width
   canvas.height = height
   const context = canvas.getContext("2d")
-  if (!context) return dataUrl
+  if (!context) {
+    if (estimateDataUrlBytes(dataUrl) > MAX_MANUAL_UPLOAD_DATA_BYTES) {
+      throw new Error("De afbeelding is te groot om veilig te uploaden.")
+    }
+    return dataUrl
+  }
   context.drawImage(image, 0, 0, width, height)
-  return canvas.toDataURL("image/jpeg", 0.86)
+  const optimizedDataUrl = canvas.toDataURL("image/jpeg", 0.86)
+  if (estimateDataUrlBytes(optimizedDataUrl) > MAX_MANUAL_UPLOAD_DATA_BYTES) {
+    throw new Error("De afbeelding blijft te groot na verkleinen. Kies een kleinere afbeelding.")
+  }
+  return optimizedDataUrl
 }
 
 function App() {
@@ -1878,7 +1903,7 @@ function SlideVisual({ slide, compact = false }) {
   const [hasImageError, setHasImageError] = useState(false)
   const [manualFallbackUsed, setManualFallbackUsed] = useState(false)
   const prompt = slide?.imagePrompt || `${slide?.title || ""} ${slide?.focus || slide?.studentViewText || ""}`.trim()
-  const generatedImageUrl = prompt ? buildQuestionImageUrl(prompt, slide?.title || "Presentatie", { kind: "slide" }) : ""
+  const generatedImageUrl = slide?.imageUrl || (prompt ? buildQuestionImageUrl(prompt, slide?.title || "Presentatie", { kind: "slide" }) : "")
   const manualImageUrl = slide?.manualImageUrl || ""
   const imageUrl = manualImageUrl && !manualFallbackUsed ? manualImageUrl : generatedImageUrl
 
@@ -2900,7 +2925,8 @@ function playTone(frequency, duration, type = "sine") {
 function QuestionVisual({ question }) {
   const [hasImageError, setHasImageError] = useState(false)
   const prompt = getQuestionPrompt(question)
-  const imageUrl = buildQuestionImageUrl(question.imagePrompt || prompt, question.category, { kind: "question" })
+  const imageUrl =
+    question.imageUrl || buildQuestionImageUrl(question.imagePrompt || prompt, question.category, { kind: "question" })
 
   useEffect(() => {
     setHasImageError(false)
