@@ -1345,14 +1345,52 @@ body::after {
   padding: 16px;
 }
 
+.presentation-panel-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.presentation-open-button {
+  white-space: nowrap;
+}
+
 .presentation-stage {
   display: grid;
-  grid-template-columns: 1.2fr 0.8fr;
   gap: 14px;
+}
+
+.presentation-stage.has-video {
+  grid-template-columns: minmax(0, 1.18fr) minmax(280px, 0.82fr);
+}
+
+.presentation-stage.is-single {
+  grid-template-columns: 1fr;
 }
 
 .presentation-stage.compact {
   grid-template-columns: 1fr;
+}
+
+.presentation-preview-button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+}
+
+.presentation-preview-button .presentation-slide-canvas {
+  transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+}
+
+.presentation-preview-button:hover .presentation-slide-canvas,
+.presentation-preview-button:focus-visible .presentation-slide-canvas {
+  transform: translateY(-3px);
+  border-color: rgba(255, 255, 255, 0.18);
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.18);
 }
 
 .presentation-slide-canvas {
@@ -1376,6 +1414,21 @@ body::after {
   padding: 18px;
 }
 
+.presentation-slide-canvas.is-stacked {
+  grid-template-columns: 1fr;
+}
+
+.presentation-slide-canvas.is-stacked .presentation-slide-visual-wrap {
+  order: -1;
+  min-height: 280px;
+}
+
+.presentation-slide-canvas.is-board {
+  grid-template-columns: minmax(0, 1.1fr) minmax(340px, 0.9fr);
+  min-height: 0;
+  padding: 28px;
+}
+
 .presentation-slide-copy {
   display: grid;
   align-content: start;
@@ -1387,6 +1440,8 @@ body::after {
   font-family: "Avenir Next Condensed", "Trebuchet MS", sans-serif;
   font-size: clamp(2rem, 2.8vw, 3.2rem);
   line-height: 0.96;
+  max-width: 14ch;
+  text-wrap: balance;
 }
 
 .presentation-slide-copy p {
@@ -1394,6 +1449,7 @@ body::after {
   color: #eff7ff;
   font-size: 1.04rem;
   line-height: 1.6;
+  max-width: 42rem;
 }
 
 .presentation-bullet-list {
@@ -1409,6 +1465,19 @@ body::after {
   border-radius: 22px;
   overflow: hidden;
   background: rgba(5, 12, 22, 0.58);
+}
+
+.presentation-slide-canvas.is-board .presentation-slide-visual-wrap {
+  min-height: 360px;
+}
+
+.presentation-slide-canvas.is-board .presentation-slide-copy h4 {
+  font-size: clamp(3rem, 4vw, 5.4rem);
+}
+
+.presentation-slide-canvas.is-board .presentation-slide-copy p,
+.presentation-slide-canvas.is-board .presentation-bullet-list {
+  font-size: clamp(1.08rem, 1.45vw, 1.38rem);
 }
 
 .slide-visual,
@@ -1545,8 +1614,8 @@ body::after {
 
 .presenter-main {
   display: grid;
-  grid-template-columns: 1.25fr 0.75fr;
-  gap: 18px;
+  grid-template-columns: 1fr;
+  gap: 20px;
   min-height: 0;
 }
 
@@ -1598,6 +1667,12 @@ body::after {
   gap: 14px;
   font-size: clamp(1.1rem, 1.8vw, 1.6rem);
   color: #eef7ff;
+}
+
+.presenter-support-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px;
 }
 
 .presenter-side-panel {
@@ -1759,6 +1834,24 @@ body::after {
   font-size: 1.08rem;
   line-height: 1.6;
   color: #f4fbff;
+}
+
+.lesson-response-callout {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 14px;
+  padding: 16px 18px;
+  border-radius: 18px;
+  background: linear-gradient(135deg, rgba(255, 166, 77, 0.12), rgba(73, 182, 255, 0.12));
+}
+
+.lesson-response-callout strong {
+  color: #ffcf95;
+}
+
+.lesson-response-callout p {
+  margin: 0;
+  color: #f2f8ff;
 }
 
 .lesson-library-section {
@@ -2078,6 +2171,13 @@ body::after {
   .presentation-slide-canvas {
     grid-template-columns: 1fr;
   }
+
+  .presentation-stage.has-video,
+  .presentation-stage.is-single,
+  .presentation-slide-canvas,
+  .presentation-slide-canvas.is-board {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 720px) {
@@ -2135,7 +2235,8 @@ body::after {
   .presenter-bottombar,
   .presenter-pills,
   .presenter-actions,
-  .battle-race-banner {
+  .battle-race-banner,
+  .presentation-panel-actions {
     display: grid;
   }
 
@@ -2145,5 +2246,13 @@ body::after {
 
   .presentation-slide-canvas {
     padding: 16px;
+  }
+
+  .presentation-stage.has-video,
+  .presentation-stage.is-single,
+  .presentation-slide-canvas,
+  .presentation-slide-canvas.is-board,
+  .presenter-support-grid {
+    grid-template-columns: 1fr;
   }
 }

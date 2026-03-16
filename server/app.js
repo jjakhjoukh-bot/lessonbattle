@@ -40,6 +40,7 @@ const io = new Server(server, { cors: { origin: "*" } })
 
 const apiKey = process.env.GEMINI_API_KEY
 const modelName = process.env.GEMINI_MODEL || "gemini-2.5-flash"
+const geminiImageModel = process.env.GEMINI_IMAGE_MODEL || "gemini-2.0-flash-preview-image-generation"
 const groqApiKey = process.env.GROQ_API_KEY
 const groqModel = process.env.GROQ_MODEL || "llama-3.3-70b-versatile"
 const openAIApiKey = process.env.OPENAI_API_KEY
@@ -217,6 +218,14 @@ function isIslamicTopic(prompt, category) {
 function pickVisualTheme(prompt, category) {
   const source = `${prompt} ${category}`.toLowerCase()
 
+  if (/(oekra[iï]ne|ukraine|aardrijkskunde|kaart|wereldkaart|land|werelddeel|hoofdstad|grens|europa|continent|geografie|oost-europa|zee)/.test(source)) {
+    return {
+      gradient: ["#0b132b", "#1c2541", "#5bc0be"],
+      accent: "#9bf6ff",
+      icon: "globe",
+      label: "Aardrijkskunde",
+    }
+  }
   if (/(bank|rekening|pin|pinnen|spaargeld|sparen|rente|pas|geldautomaat|betaal)/.test(source)) {
     return {
       gradient: ["#0f172a", "#123560", "#2dd4bf"],
@@ -249,7 +258,7 @@ function pickVisualTheme(prompt, category) {
       label: "Markt",
     }
   }
-  if (/(euro|prijs|korting|geld|koop|winkel|betaal|kost)/.test(source)) {
+  if (/(^|[^a-z])(euro|euro's|prijs|korting|koop|winkel|betaal|kost)([^a-z]|$)/.test(source)) {
     return {
       gradient: ["#0f172a", "#134e4a", "#f59e0b"],
       accent: "#fde68a",
@@ -263,14 +272,6 @@ function pickVisualTheme(prompt, category) {
       accent: "#ffd166",
       icon: "pie",
       label: "Rekenen",
-    }
-  }
-  if (/(aardrijkskunde|kaart|land|wereld|europa|planeet|geografie)/.test(source)) {
-    return {
-      gradient: ["#0b132b", "#1c2541", "#5bc0be"],
-      accent: "#9bf6ff",
-      icon: "globe",
-      label: "Aardrijkskunde",
     }
   }
   if (/(geschiedenis|vroeger|romein|middeleeuw|oorlog|histor)/.test(source)) {
@@ -425,8 +426,8 @@ function buildVisualPrompt({ prompt, category = "", kind = "question" }) {
   const domain = detectTopicDomain(`${cleanCategory} ${cleanPrompt}`)
   const compositionHint =
     kind === "slide"
-      ? "Create a landscape classroom presentation illustration with one clear subject and strong contrast."
-      : "Create a vivid educational quiz illustration with one clear focal point."
+      ? "Create a polished 16:9 classroom slide illustration with cinematic lighting, one clear subject, natural depth, and a modern semi-realistic style."
+      : "Create a polished educational illustration with cinematic lighting, one clear focal point, natural depth, and a modern semi-realistic style."
   const domainHints = {
     tijd: "Use clocks, timelines, or clear time-based objects that match the concept.",
     meten: "Use rulers, measuring tapes, scales, containers, or concrete measurement visuals.",
@@ -447,6 +448,7 @@ function buildVisualPrompt({ prompt, category = "", kind = "question" }) {
     cleanCategory ? `Topic area: ${cleanCategory}.` : "",
     cleanPrompt ? `Main subject: ${cleanPrompt}.` : "",
     domainHints[domain] || domainHints.general,
+    "Show a real scene or object instead of a flat icon, badge, infographic, UI card, or logo.",
     "No words, no labels, no interface elements, no watermarks.",
   ]
     .filter(Boolean)
@@ -469,9 +471,19 @@ function ensureSlideImagePrompt({ lessonTitle = "", slideTitle = "", focus = "",
 }
 
 function imageCacheFilePath({ prompt, category, kind }) {
+  const providerSignature = [openAI ? `openai:${openAIImageModel}` : "", genAI ? `gemini:${geminiImageModel}` : ""]
+    .filter(Boolean)
+    .join("|") || "fallback"
   const cacheKey = crypto
     .createHash("sha1")
-    .update(JSON.stringify({ prompt: sanitizeVisualPrompt(prompt), category: sanitizeVisualPrompt(category), kind, model: openAIImageModel }))
+    .update(
+      JSON.stringify({
+        prompt: sanitizeVisualPrompt(prompt),
+        category: sanitizeVisualPrompt(category),
+        kind,
+        providers: providerSignature,
+      })
+    )
     .digest("hex")
 
   return path.join(generatedImagesPath, `${cacheKey}.png`)
@@ -498,7 +510,7 @@ function writeCachedImageBuffer(cachePath, imageBuffer) {
   }
 }
 
-async function generateAIImageBuffer({ prompt, category, kind = "question" }) {
+async function generateOpenAIImageBuffer({ prompt, category, kind = "question" }) {
   if (!openAI) return null
 
   const size = kind === "slide" ? "1536x1024" : "1024x1024"
@@ -543,6 +555,62 @@ async function generateAIImageBuffer({ prompt, category, kind = "question" }) {
       throw new Error(`Kon AI-afbeelding niet ophalen (${imageResponse.status}).`)
     }
     return Buffer.from(await imageResponse.arrayBuffer())
+  }
+
+  return null
+}
+
+function extractGeminiInlineImageBuffer(responseLike) {
+  const candidates = responseLike?.response?.candidates || responseLike?.candidates || []
+
+  for (const candidate of candidates) {
+    const parts = candidate?.content?.parts || []
+    for (const part of parts) {
+      const inlineData = part?.inlineData || part?.inline_data || null
+      const mimeType = inlineData?.mimeType || inlineData?.mime_type || ""
+      const data = inlineData?.data || ""
+      if (!data) continue
+      if (mimeType && !String(mimeType).toLowerCase().startsWith("image/")) continue
+      return Buffer.from(data, "base64")
+    }
+  }
+
+  return null
+}
+
+async function generateGeminiImageBuffer({ prompt, category, kind = "question" }) {
+  if (!genAI) return null
+
+  const imagePrompt = buildVisualPrompt({ prompt, category, kind })
+  const model = genAI.getGenerativeModel({
+    model: geminiImageModel,
+    generationConfig: {
+      responseModalities: ["TEXT", "IMAGE"],
+      temperature: 0.8,
+    },
+  })
+
+  const response = await withTimeout(model.generateContent([{ text: imagePrompt }]), AI_IMAGE_TIMEOUT_MS)
+  return extractGeminiInlineImageBuffer(response)
+}
+
+async function generateAIImageResult({ prompt, category, kind = "question" }) {
+  if (openAI) {
+    try {
+      const buffer = await generateOpenAIImageBuffer({ prompt, category, kind })
+      if (buffer) return { buffer, source: "openai" }
+    } catch (error) {
+      console.warn("[images] OpenAI image generation failed:", error instanceof Error ? error.message : error)
+    }
+  }
+
+  if (genAI) {
+    try {
+      const buffer = await generateGeminiImageBuffer({ prompt, category, kind })
+      if (buffer) return { buffer, source: "gemini" }
+    } catch (error) {
+      console.warn("[images] Gemini image generation failed:", error instanceof Error ? error.message : error)
+    }
   }
 
   return null
@@ -702,6 +770,19 @@ function normalizeStudentFacingText(text, fallback = "Beantwoord de volgende vra
   if (!source) return fallback
 
   const replacements = [
+    [/^leerlingen kijken naar\s+/i, "Kijk naar "],
+    [/^leerlingen kijken\s+/i, "Kijk "],
+    [/^leerlingen luisteren naar\s+/i, "Luister naar "],
+    [/^leerlingen luisteren\s+/i, "Luister "],
+    [/^leerlingen bespreken\s+/i, "Bespreek "],
+    [/^leerlingen werken aan\s+/i, "Werk aan "],
+    [/^leerlingen werken\s+/i, "Werk "],
+    [/^leerlingen beantwoorden\s+/i, "Beantwoord "],
+    [/^leerlingen schrijven op\s+/i, "Schrijf op "],
+    [/^leerlingen schrijven\s+/i, "Schrijf "],
+    [/^leerlingen geven aan\s+/i, "Geef aan "],
+    [/^leerlingen wijzen aan\s+/i, "Wijs aan "],
+    [/^leerlingen vullen in\s+/i, "Vul in "],
     [/^de leerlingen moeten nu\s+/i, "Je gaat nu "],
     [/^de leerlingen moeten\s+/i, "Je gaat nu "],
     [/^de leerlingen gaan nu\s+/i, "Je gaat nu "],
@@ -726,7 +807,7 @@ function normalizeStudentFacingText(text, fallback = "Beantwoord de volgende vra
 }
 
 function buildStudentPhasePrompt(lesson, currentPhase, activePrompt) {
-  const candidate = activePrompt || currentPhase?.studentActivity || currentPhase?.goal || currentPhase?.interactivePrompt || ""
+  const candidate = activePrompt || currentPhase?.interactivePrompt || currentPhase?.goal || currentPhase?.studentActivity || ""
   return normalizeStudentFacingText(candidate, "Volg de uitleg en beantwoord de volgende opdracht.")
 }
 
@@ -787,7 +868,9 @@ function sanitizeLesson(lesson, viewer = "host") {
   if (viewer === "player") {
     const safeSlide = sanitizePresentationSlide(currentPresentationSlide(lesson), "player")
     const safeScene = sanitizePresentationScene(currentPresentationScene(lesson), "player")
-    const playerPrompt = buildStudentPhasePrompt(lesson, currentPhase, activePrompt)
+    const rawPlayerPrompt = normalizeStudentFacingText(activePrompt || currentPhase?.interactivePrompt || "", "")
+    const playerPrompt = rawPlayerPrompt || buildStudentPhasePrompt(lesson, currentPhase, activePrompt)
+    const playerActivity = normalizeStudentFacingText(currentPhase?.studentActivity || currentPhase?.goal || playerPrompt, playerPrompt)
     return {
       title: lesson.title,
       model: lesson.model,
@@ -800,7 +883,8 @@ function sanitizeLesson(lesson, viewer = "host") {
             title: currentPhase.title,
             minutes: currentPhase.minutes,
             prompt: playerPrompt,
-            studentActivity: normalizeStudentFacingText(currentPhase.studentActivity || playerPrompt, playerPrompt),
+            studentActivity: playerActivity,
+            hasPrompt: Boolean(rawPlayerPrompt),
             promptVersion: lesson.promptVersion || 0,
           }
         : null,
@@ -1700,13 +1784,22 @@ function emitHostInsights(room) {
 
 function emitLessonPromptUpdate(room) {
   if (room.game.mode !== "lesson") return
+  const promptVersion = room.lesson?.promptVersion ?? Date.now()
+
+  if (room.hostSocketId) {
+    io.to(room.hostSocketId).emit("lesson:prompt:update", {
+      lesson: sanitizeLesson(room.lesson, "host"),
+      currentPhaseIndex: room.lesson?.currentPhaseIndex ?? -1,
+      promptVersion,
+    })
+  }
+
   const lessonForPlayer = sanitizeLesson(room.lesson, "player")
-  const recipients = [room.hostSocketId, ...getOnlinePlayers(room).map((player) => player.socketId)].filter(Boolean)
-  for (const recipient of recipients) {
-    io.to(recipient).emit("lesson:prompt:update", {
+  for (const player of getOnlinePlayers(room)) {
+    io.to(player.socketId).emit("lesson:prompt:update", {
       lesson: lessonForPlayer,
       currentPhaseIndex: room.lesson?.currentPhaseIndex ?? -1,
-      promptVersion: room.lesson?.promptVersion ?? Date.now(),
+      promptVersion,
     })
   }
 }
@@ -3336,17 +3429,19 @@ app.get("/api/question-image", async (req, res) => {
   if (cachedBuffer) {
     res.setHeader("Content-Type", "image/png")
     res.setHeader("Cache-Control", "public, max-age=86400")
+    res.setHeader("X-Image-Source", "cache")
     res.status(200).send(cachedBuffer)
     return
   }
 
   try {
-    const aiImageBuffer = await generateAIImageBuffer({ prompt, category, kind })
-    if (aiImageBuffer) {
-      writeCachedImageBuffer(cachePath, aiImageBuffer)
+    const aiImage = await generateAIImageResult({ prompt, category, kind })
+    if (aiImage?.buffer) {
+      writeCachedImageBuffer(cachePath, aiImage.buffer)
       res.setHeader("Content-Type", "image/png")
       res.setHeader("Cache-Control", "public, max-age=86400")
-      res.status(200).send(aiImageBuffer)
+      res.setHeader("X-Image-Source", aiImage.source || "ai")
+      res.status(200).send(aiImage.buffer)
       return
     }
   } catch (error) {
@@ -3355,6 +3450,7 @@ app.get("/api/question-image", async (req, res) => {
 
   res.setHeader("Content-Type", "image/svg+xml; charset=utf-8")
   res.setHeader("Cache-Control", "public, max-age=3600")
+  res.setHeader("X-Image-Source", "fallback")
   res.status(200).send(buildQuestionSvg({ prompt, category }))
 })
 

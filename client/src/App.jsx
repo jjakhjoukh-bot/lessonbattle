@@ -5,6 +5,7 @@ import "./App.css"
 const socket = io(window.location.origin.startsWith("http://localhost:5173") ? "http://localhost:3001" : window.location.origin)
 const HOST_SESSION_KEY = "lessonbattle-host-session"
 const PLAYER_SESSION_KEY = "lessonbattle-player-session"
+const IMAGE_RENDER_VERSION = "20260316"
 const DEFAULT_HOST_SESSION = {
   authenticated: false,
   username: "",
@@ -1046,7 +1047,11 @@ function HostPage() {
           {game.mode === "lesson" && game.lesson?.currentPhase ? (
             <>
               <LessonStageCard lesson={game.lesson} hostView />
-              <LessonPresentationPanel presentation={game.lesson?.presentation} />
+              <LessonPresentationPanel
+                interactive={Boolean(game.lesson?.presentation?.currentSlide)}
+                onOpen={openPresenterMode}
+                presentation={game.lesson?.presentation}
+              />
               <LessonPromptComposer
                 expectedAnswer={lessonExpectedAnswerDraft}
                 onExpectedAnswerChange={setLessonExpectedAnswerDraft}
@@ -1319,6 +1324,8 @@ function PlayerPage() {
     isPracticeTestLive &&
     game.question &&
     (Boolean(result) || timeLeft === 0)
+  const hasLessonPresentation = Boolean(game.lesson?.presentation?.currentSlide)
+  const hasLessonPrompt = Boolean(game.lesson?.currentPhase?.hasPrompt && game.lesson?.currentPhase?.prompt?.trim())
   const battleRevealVisible =
     game.mode === "battle" &&
     game.source !== "practice" &&
@@ -1430,15 +1437,21 @@ function PlayerPage() {
 
           {game.mode === "lesson" && game.lesson?.currentPhase ? (
             <>
-              <LessonStageCard lesson={game.lesson} />
-              <LessonPresentationPanel compact presentation={game.lesson?.presentation} />
-              <LessonResponsePanel
-                answer={lessonAnswer}
-                disabled={!joined}
-                onChange={setLessonAnswer}
-                onSubmit={submitLessonAnswer}
-                result={lessonResult}
-              />
+              {hasLessonPresentation ? (
+                <LessonPresentationPanel compact presentation={game.lesson?.presentation} />
+              ) : (
+                <LessonStageCard lesson={game.lesson} />
+              )}
+              {hasLessonPrompt ? (
+                <LessonResponsePanel
+                  answer={lessonAnswer}
+                  disabled={!joined}
+                  onChange={setLessonAnswer}
+                  onSubmit={submitLessonAnswer}
+                  prompt={game.lesson?.currentPhase?.prompt}
+                  result={lessonResult}
+                />
+              ) : null}
             </>
           ) : game.question ? (
             <>
@@ -1782,11 +1795,14 @@ function SlideVisual({ slide, compact = false }) {
   )
 }
 
-function PresentationSlideCanvas({ presentation, slide, compact = false }) {
+function PresentationSlideCanvas({ presentation, slide, compact = false, variant = "default" }) {
   if (!slide) return null
+  const stackedLayout = compact || variant === "preview" || variant === "student"
 
   return (
-    <article className={`presentation-slide-canvas ${compact ? "compact" : ""}`}>
+    <article
+      className={`presentation-slide-canvas ${compact ? "compact" : ""} ${stackedLayout ? "is-stacked" : ""} ${variant === "board" ? "is-board" : ""}`}
+    >
       <div className="presentation-slide-copy">
         <span className="eyebrow">{presentation?.title || "Presentatieweergave"}</span>
         <h4>{slide.title}</h4>
@@ -1806,20 +1822,47 @@ function PresentationSlideCanvas({ presentation, slide, compact = false }) {
   )
 }
 
-function LessonPresentationPanel({ presentation, compact = false }) {
+function LessonPresentationPanel({ presentation, compact = false, interactive = false, onOpen = null }) {
   if (!presentation?.currentSlide) return null
+  const hasVideo = !compact && Boolean(presentation.video)
+  const canvas = (
+    <PresentationSlideCanvas
+      compact={compact}
+      presentation={presentation}
+      slide={presentation.currentSlide}
+      variant={compact ? "student" : interactive ? "preview" : "default"}
+    />
+  )
 
   return (
-    <section className={`lesson-presentation-panel ${compact ? "compact" : ""}`}>
+    <section className={`lesson-presentation-panel ${compact ? "compact" : ""} ${interactive ? "is-interactive" : ""}`}>
       <div className="section-head">
         <h3>{compact ? "Live dia" : "Presentatieweergave"}</h3>
-        <span className="pill">
-          {presentation.slideCount ? `${presentation.slideCount} dia's` : presentation.style || "Interactief"}
-        </span>
+        <div className="presentation-panel-actions">
+          <span className="pill">
+            {presentation.slideCount ? `${presentation.slideCount} dia's` : presentation.style || "Interactief"}
+          </span>
+          {interactive && onOpen ? (
+            <button className="button-ghost presentation-open-button" onClick={onOpen} type="button">
+              Open op digibord
+            </button>
+          ) : null}
+        </div>
       </div>
-      <div className={`presentation-stage ${compact ? "compact" : ""}`}>
-        <PresentationSlideCanvas compact={compact} presentation={presentation} slide={presentation.currentSlide} />
-        {!compact && presentation.video ? (
+      <div className={`presentation-stage ${compact ? "compact" : ""} ${hasVideo ? "has-video" : "is-single"}`}>
+        {interactive && onOpen ? (
+          <button
+            aria-label="Open presentatieweergave op digibord"
+            className="presentation-preview-button"
+            onClick={onOpen}
+            type="button"
+          >
+            {canvas}
+          </button>
+        ) : (
+          canvas
+        )}
+        {hasVideo ? (
           <div className="presentation-video-card">
             <span className="eyebrow">Video-opzet</span>
             <h4>{presentation.video.title}</h4>
@@ -1863,34 +1906,34 @@ function LessonPresenterOverlay({ lesson, insights, onNext, onClose }) {
         <div className="presenter-main">
           <article className="presenter-slide-card">
             <span className="presenter-kicker">{lesson.currentPhase.title}</span>
-            <PresentationSlideCanvas presentation={lesson.presentation} slide={slide} />
+            <PresentationSlideCanvas presentation={lesson.presentation} slide={slide} variant="board" />
           </article>
-
-          <aside className="presenter-side-panel">
-            <div className="presenter-side-card">
-              <span className="presenter-kicker">Live opdracht</span>
-              <p>{lesson.currentPhase.prompt || lesson.currentPhase.goal}</p>
-            </div>
-
-            {videoScene ? (
-              <div className="presenter-side-card video-card">
-                <span className="presenter-kicker">Video-opzet</span>
-                <strong>{videoScene.title}</strong>
-                <p>{videoScene.narration}</p>
-              </div>
-            ) : null}
-
-            <div className="presenter-side-card">
-              <span className="presenter-kicker">Klasreacties</span>
-              <strong>{answeredCount}/{totalPlayers}</strong>
-              <p>
-                {insights?.allAnswered
-                  ? "Iedereen heeft gereageerd. Je kunt nu door."
-                  : "Reacties lopen nog binnen."}
-              </p>
-            </div>
-          </aside>
         </div>
+
+        <aside className="presenter-support-grid">
+          <div className="presenter-side-card">
+            <span className="presenter-kicker">Live opdracht</span>
+            <p>{lesson.currentPhase.prompt || lesson.currentPhase.goal}</p>
+          </div>
+
+          {videoScene ? (
+            <div className="presenter-side-card video-card">
+              <span className="presenter-kicker">Video-opzet</span>
+              <strong>{videoScene.title}</strong>
+              <p>{videoScene.narration}</p>
+            </div>
+          ) : null}
+
+          <div className="presenter-side-card">
+            <span className="presenter-kicker">Klasreacties</span>
+            <strong>{answeredCount}/{totalPlayers}</strong>
+            <p>
+              {insights?.allAnswered
+                ? "Iedereen heeft gereageerd. Je kunt nu door."
+                : "Reacties lopen nog binnen."}
+            </p>
+          </div>
+        </aside>
 
         <div className="presenter-bottombar">
           <span className="presenter-hint">ESC of klik buiten de kaart om de presentatieweergave te sluiten</span>
@@ -2015,13 +2058,20 @@ function BattleQuestionControls({ status, duration, onDurationChange, onStart, o
   )
 }
 
-function LessonResponsePanel({ answer, onChange, onSubmit, result, disabled }) {
+function LessonResponsePanel({ answer, onChange, onSubmit, prompt = "", result, disabled }) {
   return (
     <section className="lesson-response-panel">
       <div className="section-head">
         <h3>Jouw antwoord</h3>
         <span className="pill">{result?.label || "Nog niet verstuurd"}</span>
       </div>
+
+      {prompt ? (
+        <div className="lesson-response-callout">
+          <strong>Vraag in deze dia</strong>
+          <p>{prompt}</p>
+        </div>
+      ) : null}
 
       <label className="field">
         <span>Typ je reactie</span>
@@ -2872,6 +2922,7 @@ function buildQuestionImageUrl(prompt, category, options = {}) {
     prompt,
     category: category || "",
     kind: options.kind || "question",
+    v: IMAGE_RENDER_VERSION,
   })
 
   return `/api/question-image?${searchParams.toString()}`
