@@ -5,7 +5,14 @@ import "./App.css"
 const socket = io(window.location.origin.startsWith("http://localhost:5173") ? "http://localhost:3001" : window.location.origin)
 const HOST_SESSION_KEY = "lessonbattle-host-session"
 const PLAYER_SESSION_KEY = "lessonbattle-player-session"
-const DEFAULT_HOST_SESSION = { authenticated: false, username: "", roomCode: "" }
+const DEFAULT_HOST_SESSION = {
+  authenticated: false,
+  username: "",
+  displayName: "",
+  role: "",
+  canManageAccounts: false,
+  roomCode: "",
+}
 
 function readStoredHostSession() {
   try {
@@ -18,11 +25,14 @@ function readStoredHostSession() {
     }
     const parsed = JSON.parse(stored)
     return {
-      hostSession: {
-        authenticated: Boolean(parsed?.authenticated && parsed?.username && parsed?.password),
-        username: parsed?.username || "",
-        roomCode: parsed?.roomCode || "",
-      },
+        hostSession: {
+          authenticated: Boolean(parsed?.authenticated && parsed?.username && parsed?.password),
+          username: parsed?.username || "",
+          displayName: parsed?.displayName || parsed?.username || "",
+          role: parsed?.role || "",
+          canManageAccounts: Boolean(parsed?.canManageAccounts),
+          roomCode: parsed?.roomCode || "",
+        },
       loginForm: {
         username: parsed?.username || "",
         password: parsed?.password || "",
@@ -160,6 +170,14 @@ function HostPage() {
   const [hostInsights, setHostInsights] = useState(null)
   const [lessonLibrary, setLessonLibrary] = useState([])
   const [sessionHistory, setSessionHistory] = useState([])
+  const [teacherAccounts, setTeacherAccounts] = useState([])
+  const [teacherAccountForm, setTeacherAccountForm] = useState({
+    username: "",
+    displayName: "",
+    password: "",
+    role: "teacher",
+  })
+  const [teacherPasswordDrafts, setTeacherPasswordDrafts] = useState({})
   const [loginForm, setLoginForm] = useState(storedHostSession.loginForm)
   const [hostSession, setHostSession] = useState(storedHostSession.hostSession)
 
@@ -206,8 +224,16 @@ function HostPage() {
   }, [game.lesson?.currentPhase?.id, game.lesson?.currentPhase?.prompt, game.lesson?.currentPhase?.expectedAnswer, game.mode])
 
   useEffect(() => {
-    const onLoginSuccess = ({ username, roomCode }) => {
-      setHostSession((current) => ({ ...current, authenticated: true, username, roomCode }))
+    const onLoginSuccess = ({ username, displayName, role, canManageAccounts, roomCode }) => {
+      setHostSession((current) => ({
+        ...current,
+        authenticated: true,
+        username,
+        displayName: displayName || username,
+        role: role || "",
+        canManageAccounts: Boolean(canManageAccounts),
+        roomCode,
+      }))
       setStatus("Beheeraccount verbonden.")
     }
     const onConfigureSuccess = ({ teams: nextTeams }) => {
@@ -225,6 +251,7 @@ function HostPage() {
     const onLessonStarted = ({ message }) => setStatus(message)
     const onLibraryUpdate = ({ lessons }) => setLessonLibrary(Array.isArray(lessons) ? lessons : [])
     const onHistoryUpdate = ({ entries }) => setSessionHistory(Array.isArray(entries) ? entries : [])
+    const onTeacherAccountsUpdate = ({ accounts }) => setTeacherAccounts(Array.isArray(accounts) ? accounts : [])
     const onInsights = (payload) => {
       setHostInsights(payload)
       if (payload?.allAnswered && payload.totalPlayers > 0) {
@@ -238,7 +265,7 @@ function HostPage() {
     const onError = ({ message }) => {
       setStatus(`Fout: ${message}`)
       if (/onjuiste docentgegevens|log eerst in als docent/i.test(String(message))) {
-        setHostSession((current) => ({ ...current, authenticated: false, roomCode: "" }))
+        setHostSession(DEFAULT_HOST_SESSION)
       }
     }
     const onSuccess = ({ count, providerLabel }) =>
@@ -259,6 +286,11 @@ function HostPage() {
     const onHistoryLoadSuccess = ({ title, type }) =>
       setStatus(`${type === "lesson" ? "Les" : type === "practice" ? "Oefentoets" : "Quiz"} geladen uit geschiedenis: ${title}.`)
     const onHistoryDeleteSuccess = () => setStatus("Geschiedenis-item verwijderd.")
+    const onTeacherAccountsSuccess = ({ message }) => {
+      setTeacherAccountForm((current) => ({ ...current, username: "", displayName: "", password: "" }))
+      setTeacherPasswordDrafts({})
+      setStatus(message || "Docentaccounts bijgewerkt.")
+    }
 
     socket.on("host:login:success", onLoginSuccess)
     socket.on("host:configure:success", onConfigureSuccess)
@@ -267,6 +299,7 @@ function HostPage() {
     socket.on("host:generate-lesson:started", onLessonStarted)
     socket.on("host:lesson-library:update", onLibraryUpdate)
     socket.on("host:session-history:update", onHistoryUpdate)
+    socket.on("host:teacher-accounts:update", onTeacherAccountsUpdate)
     socket.on("host:question:insights", onInsights)
     socket.on("host:error", onError)
     socket.on("host:generate:success", onSuccess)
@@ -277,6 +310,7 @@ function HostPage() {
     socket.on("host:delete-lesson:success", onDeleteLessonSuccess)
     socket.on("host:history:load:success", onHistoryLoadSuccess)
     socket.on("host:history:delete:success", onHistoryDeleteSuccess)
+    socket.on("host:teacher-accounts:success", onTeacherAccountsSuccess)
 
     return () => {
       socket.off("host:login:success", onLoginSuccess)
@@ -286,6 +320,7 @@ function HostPage() {
       socket.off("host:generate-lesson:started", onLessonStarted)
       socket.off("host:lesson-library:update", onLibraryUpdate)
       socket.off("host:session-history:update", onHistoryUpdate)
+      socket.off("host:teacher-accounts:update", onTeacherAccountsUpdate)
       socket.off("host:question:insights", onInsights)
       socket.off("host:error", onError)
       socket.off("host:generate:success", onSuccess)
@@ -296,6 +331,7 @@ function HostPage() {
       socket.off("host:delete-lesson:success", onDeleteLessonSuccess)
       socket.off("host:history:load:success", onHistoryLoadSuccess)
       socket.off("host:history:delete:success", onHistoryDeleteSuccess)
+      socket.off("host:teacher-accounts:success", onTeacherAccountsSuccess)
     }
   }, [])
 
@@ -305,11 +341,22 @@ function HostPage() {
       JSON.stringify({
         authenticated: hostSession.authenticated,
         username: hostSession.username,
+        displayName: hostSession.displayName,
+        role: hostSession.role,
+        canManageAccounts: hostSession.canManageAccounts,
         password: loginForm.password,
         roomCode: hostSession.roomCode,
       })
     )
-  }, [hostSession.authenticated, hostSession.roomCode, hostSession.username, loginForm.password])
+  }, [
+    hostSession.authenticated,
+    hostSession.canManageAccounts,
+    hostSession.displayName,
+    hostSession.role,
+    hostSession.roomCode,
+    hostSession.username,
+    loginForm.password,
+  ])
 
   useEffect(() => {
     const reconnectHost = () => {
@@ -410,6 +457,7 @@ function HostPage() {
     window.sessionStorage.removeItem(HOST_SESSION_KEY)
     setHostSession(DEFAULT_HOST_SESSION)
     setLoginForm({ username: "", password: "" })
+    setTeacherAccounts([])
     setStatus("Je bent uitgelogd.")
   }
 
@@ -488,6 +536,26 @@ function HostPage() {
     socket.emit("host:history:delete", { entryId })
   }
 
+  const createTeacherAccount = () => {
+    setStatus("Docentaccount wordt toegevoegd...")
+    socket.emit("host:teacher-accounts:create", teacherAccountForm)
+  }
+
+  const updateTeacherAccount = (account) => {
+    setStatus("Docentaccount wordt bijgewerkt...")
+    socket.emit("host:teacher-accounts:update", {
+      accountId: account.id,
+      displayName: account.displayName,
+      role: account.role,
+      password: teacherPasswordDrafts[account.id] || "",
+    })
+  }
+
+  const deleteTeacherAccount = (accountId) => {
+    setStatus("Docentaccount wordt verwijderd...")
+    socket.emit("host:teacher-accounts:delete", { accountId })
+  }
+
   const updateLessonPrompt = () => {
     setStatus("Live lesvraag wordt bijgewerkt...")
     socket.emit("host:lesson-prompt:update", {
@@ -500,20 +568,19 @@ function HostPage() {
     <main className="page-shell host-shell">
       <section className="hero-card">
         <div className="hero-copy">
-          <span className="eyebrow">Lesson Battle Live</span>
-          <h1>Bouw van elk onderwerp een live quiz of complete les.</h1>
+          <span className="eyebrow">Lesson Battle Arcade</span>
+          <h1>Maak van je les een kleurrijke battle waar leerlingen direct in duiken.</h1>
           <p>
-            Gebruik Battle voor tempo en competitie, of kies in de lessuite voor Lesmodus,
-            Presentatieweergave of Oefentoets. Jij kiest de vorm; de sessie wordt daarna live
-            opgebouwd voor docent en deelnemers.
+            Minder dashboardgevoel, meer spelgevoel: snelle battles, vrolijke presentaties en oefentoetsen
+            die op iPad meteen duidelijk en aantrekkelijk aanvoelen voor leerlingen.
           </p>
           <div className="hero-tags">
-            <span>Live battle</span>
-            <span>Lesmodus</span>
-            <span>Presentatieweergave</span>
+            <span>Snelle battle</span>
+            <span>Quiz vibes</span>
+            <span>Presentatie slides</span>
             <span>Oefentoets</span>
-            <span>Open antwoorden</span>
-            <span>Lesfasen</span>
+            <span>Live reacties</span>
+            <span>Teamenergie</span>
           </div>
         </div>
         <div className="hero-panel glass">
@@ -527,10 +594,10 @@ function HostPage() {
           </div>
           <div className="hero-stat">
             <strong>{game.mode === "lesson" ? game.totalPhases || 0 : game.totalQuestions || questionCount}</strong>
-            <span>{game.mode === "lesson" ? "Lesfasen live" : "Vragen in ronde"}</span>
+            <span>{game.mode === "lesson" ? "Lesstappen klaar" : "Battlevragen klaar"}</span>
           </div>
           <button className="button-secondary present-button" onClick={toggleFullscreen} type="button">
-            {presenterMode ? "Verlaat fullscreen" : "Presentatiemodus"}
+            {presenterMode ? "Verlaat schermvullend" : "Digibordmodus"}
           </button>
         </div>
       </section>
@@ -538,7 +605,7 @@ function HostPage() {
       {!hostSession.authenticated ? (
         <section className="glass control-card login-card">
           <div className="section-head">
-            <h2>Beheerlogin</h2>
+            <h2>Docentenlogin</h2>
             <span className="pill">{status}</span>
           </div>
           <div className="field-row">
@@ -547,7 +614,7 @@ function HostPage() {
               <input
                 value={loginForm.username}
                 onChange={(event) => setLoginForm((current) => ({ ...current, username: event.target.value }))}
-                placeholder="gebruikersnaam"
+                placeholder="bijv. j.devries"
               />
             </label>
             <label className="field">
@@ -578,7 +645,8 @@ function HostPage() {
           <div className="host-meta-bar">
             <div className="meta-card">
               <span>Account</span>
-              <strong>{hostSession.username || "Niet verbonden"}</strong>
+              <strong>{hostSession.displayName || hostSession.username || "Niet verbonden"}</strong>
+              {hostSession.role ? <small className="meta-role">{hostSession.role === "owner" ? "Hoofdbeheer" : hostSession.role === "manager" ? "Beheerder" : "Docent"}</small> : null}
             </div>
             <div className="meta-card">
               <span>Spelcode</span>
@@ -952,6 +1020,22 @@ function HostPage() {
         />
       ) : null}
 
+      {hostSession.authenticated && hostSession.canManageAccounts ? (
+        <TeacherAccountsSection
+          accounts={teacherAccounts}
+          canAssignManagerRole={hostSession.role === "owner"}
+          form={teacherAccountForm}
+          onCreate={createTeacherAccount}
+          onDelete={deleteTeacherAccount}
+          onDraftPasswordChange={(accountId, value) =>
+            setTeacherPasswordDrafts((current) => ({ ...current, [accountId]: value }))
+          }
+          onFormChange={setTeacherAccountForm}
+          onUpdate={updateTeacherAccount}
+          passwordDrafts={teacherPasswordDrafts}
+        />
+      ) : null}
+
       {presenterMode && game.mode === "lesson" && game.lesson?.presentation?.currentSlide ? (
         <LessonPresenterOverlay
           insights={hostInsights}
@@ -1163,7 +1247,7 @@ function PlayerPage() {
       <section className="player-layout">
         <div className="glass join-card">
           <span className="eyebrow">Deelnemen</span>
-          <h1>Sluit aan bij de sessie</h1>
+          <h1>Join de battle</h1>
           <p className="muted">{status}</p>
 
           <label className="field">
@@ -1192,7 +1276,7 @@ function PlayerPage() {
           </label>
 
           <button className="button-primary" disabled={!roomPreview.valid} onClick={join} type="button">
-            {joined ? "Bijwerken" : "Verbinden"}
+            {joined ? "Opnieuw koppelen" : "Ik doe mee"}
           </button>
 
           {selectedTeam ? (
@@ -1204,7 +1288,7 @@ function PlayerPage() {
 
         <div className="glass battle-card">
           <div className="section-head">
-            <h2>{game.mode === "lesson" ? "Huidige lesstap" : "Huidige vraag"}</h2>
+            <h2>{game.mode === "lesson" ? "Jouw lesstap" : "Jouw battlevraag"}</h2>
             <div className="pill-row">
               <span className="pill timer-pill">
                 {game.mode === "lesson"
@@ -1953,6 +2037,128 @@ function SessionHistorySection({ entries, onLoad, onDelete }) {
           <p>Nieuwe lessen, quizzen en oefentoetsen verschijnen hier automatisch en worden direct op onderwerp gegroepeerd.</p>
         </div>
       )}
+    </section>
+  )
+}
+
+function TeacherAccountsSection({
+  accounts,
+  canAssignManagerRole,
+  form,
+  onCreate,
+  onDelete,
+  onDraftPasswordChange,
+  onFormChange,
+  onUpdate,
+  passwordDrafts,
+}) {
+  return (
+    <section className="glass board-card teacher-accounts-section">
+      <div className="section-head">
+        <h2>Docentaccounts</h2>
+        <span className="pill">{accounts.length + 1} totaal incl. hoofdaccount</span>
+      </div>
+
+      <div className="teacher-accounts-layout">
+        <article className="teacher-account-form-card">
+          <span className="eyebrow">Nieuwe collega</span>
+          <h3>Voeg een docent toe</h3>
+          <p>Geef een collega een eigen login zodat jullie dezelfde omgeving kunnen gebruiken.</p>
+          <div className="field-row teacher-form-grid">
+            <label className="field">
+              <span>Naam</span>
+              <input
+                value={form.displayName}
+                onChange={(event) => onFormChange((current) => ({ ...current, displayName: event.target.value }))}
+                placeholder="Bijv. Mevr. Smit"
+              />
+            </label>
+            <label className="field">
+              <span>Gebruikersnaam</span>
+              <input
+                value={form.username}
+                onChange={(event) => onFormChange((current) => ({ ...current, username: event.target.value }))}
+                placeholder="bijv. m.smit"
+              />
+            </label>
+            <label className="field">
+              <span>Wachtwoord</span>
+              <input
+                type="password"
+                value={form.password}
+                onChange={(event) => onFormChange((current) => ({ ...current, password: event.target.value }))}
+                placeholder="Minimaal 6 tekens"
+              />
+            </label>
+            {canAssignManagerRole ? (
+              <label className="field">
+                <span>Rol</span>
+                <select
+                  value={form.role}
+                  onChange={(event) => onFormChange((current) => ({ ...current, role: event.target.value }))}
+                >
+                  <option value="teacher">Docent</option>
+                  <option value="manager">Beheerder</option>
+                </select>
+              </label>
+            ) : null}
+          </div>
+          <button
+            className="button-primary"
+            disabled={!form.username.trim() || !form.password.trim()}
+            onClick={onCreate}
+            type="button"
+          >
+            Account toevoegen
+          </button>
+        </article>
+
+        <div className="teacher-account-list">
+          {accounts.length ? (
+            accounts.map((account) => (
+              <article className="teacher-account-card" key={account.id}>
+                <div className="teacher-account-head">
+                  <div>
+                    <span className="eyebrow">{account.role === "manager" ? "Beheerder" : "Docent"}</span>
+                    <h3>{account.displayName || account.username}</h3>
+                  </div>
+                  <span className="pill">@{account.username}</span>
+                </div>
+                <p>Laatst bijgewerkt: {formatHistoryDate(account.updatedAt)}</p>
+                <div className="teacher-account-actions">
+                  <label className="field inline-field">
+                    <span>Nieuw wachtwoord</span>
+                    <input
+                      type="password"
+                      value={passwordDrafts[account.id] || ""}
+                      onChange={(event) => onDraftPasswordChange(account.id, event.target.value)}
+                      placeholder="Laat leeg als het niet hoeft"
+                    />
+                  </label>
+                  <div className="teacher-account-button-row">
+                    <button
+                      className="button-secondary"
+                      disabled={!passwordDrafts[account.id]?.trim()}
+                      onClick={() => onUpdate(account)}
+                      type="button"
+                    >
+                      Wachtwoord opslaan
+                    </button>
+                    <button className="button-ghost subtle-danger" onClick={() => onDelete(account.id)} type="button">
+                      Verwijder
+                    </button>
+                  </div>
+                </div>
+              </article>
+            ))
+          ) : (
+            <div className="empty-state compact-empty">
+              <h3>Nog geen extra docentaccounts</h3>
+              <p>Voeg hier collega’s toe. Het hoofdaccount uit je `.env` blijft gewoon bestaan.</p>
+            </div>
+          )}
+        </div>
+      </div>
     </section>
   )
 }

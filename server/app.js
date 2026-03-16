@@ -1,3 +1,4 @@
+import crypto from "crypto"
 import express from "express"
 import fs from "fs"
 import Groq from "groq-sdk"
@@ -17,6 +18,7 @@ const sharedDataPath = path.join(projectRoot, "shared")
 const lessonLibraryPath = path.join(sharedDataPath, "lesson-library.json")
 const sessionHistoryPath = path.join(sharedDataPath, "session-history.json")
 const activeRoomsPath = path.join(sharedDataPath, "active-rooms.json")
+const teacherAccountsPath = path.join(sharedDataPath, "teacher-accounts.json")
 
 if (fs.existsSync(envPath)) {
   const envLines = fs.readFileSync(envPath, "utf8").split(/\r?\n/)
@@ -58,6 +60,7 @@ const AI_RESPONSE_EVALUATION_TIMEOUT_MS = 12000
 const LESSON_EVALUATION_CACHE_LIMIT = 500
 const SESSION_HISTORY_LIMIT = 120
 const hostSocketIds = new Set()
+const hostSessions = new Map()
 const socketToRoom = new Map()
 const rooms = new Map()
 const lessonEvaluationCache = new Map()
@@ -87,6 +90,23 @@ function createPlayerRecord({
     score: Number(score) || 0,
     connected: Boolean(connected && socketId),
   }
+}
+
+function normalizeTeacherUsername(value) {
+  return String(value ?? "").trim().toLowerCase()
+}
+
+function hashTeacherPassword(password, salt = crypto.randomBytes(16).toString("hex")) {
+  const normalizedPassword = String(password ?? "")
+  const passwordHash = crypto.scryptSync(normalizedPassword, salt, 64).toString("hex")
+  return { salt, passwordHash }
+}
+
+function verifyTeacherPassword(password, account) {
+  if (!account?.salt || !account?.passwordHash) return false
+  const candidate = crypto.scryptSync(String(password ?? ""), account.salt, 64)
+  const stored = Buffer.from(account.passwordHash, "hex")
+  return stored.length === candidate.length && crypto.timingSafeEqual(stored, candidate)
 }
 
 function createIdleGameState() {
@@ -367,6 +387,22 @@ function getOnlinePlayers(room) {
 function markRoomUpdated(room) {
   if (!room) return
   room.updatedAt = new Date().toISOString()
+}
+
+function getHostSession(socketId) {
+  return hostSessions.get(socketId) ?? null
+}
+
+function clearHostSession(socketId) {
+  hostSessions.delete(socketId)
+}
+
+function isHostOwner(socketId) {
+  return getHostSession(socketId)?.role === "owner"
+}
+
+function canManageTeacherAccounts(socketId) {
+  return Boolean(getHostSession(socketId)?.canManageAccounts)
 }
 
 function requireHostRoom(socket) {
@@ -723,6 +759,102 @@ function normalizeLessonLibraryEntry(rawEntry) {
     providerLabel: String(rawEntry.providerLabel ?? "Lesbibliotheek").trim() || "Lesbibliotheek",
     createdAt: String(rawEntry.createdAt ?? new Date().toISOString()),
     updatedAt: String(rawEntry.updatedAt ?? new Date().toISOString()),
+  }
+}
+
+function normalizeTeacherAccount(rawEntry) {
+  if (!rawEntry || typeof rawEntry !== "object") return null
+  const username = normalizeTeacherUsername(rawEntry.username)
+  if (!username || !rawEntry.passwordHash || !rawEntry.salt) return null
+
+  return {
+    id: String(rawEntry.id ?? generateEntityId("teacher")),
+    username,
+    displayName: String(rawEntry.displayName ?? rawEntry.username ?? username).trim() || username,
+    salt: String(rawEntry.salt),
+    passwordHash: String(rawEntry.passwordHash),
+    role: rawEntry.role === "manager" ? "manager" : "teacher",
+    createdAt: String(rawEntry.createdAt ?? new Date().toISOString()),
+    updatedAt: String(rawEntry.updatedAt ?? new Date().toISOString()),
+  }
+}
+
+function loadTeacherAccounts() {
+  try {
+    ensureSharedDataDir()
+    if (!fs.existsSync(teacherAccountsPath)) return []
+    const parsed = JSON.parse(fs.readFileSync(teacherAccountsPath, "utf8"))
+    if (!Array.isArray(parsed)) return []
+    return parsed.map(normalizeTeacherAccount).filter(Boolean)
+  } catch (error) {
+    console.error("Kon docentaccounts niet laden:", error instanceof Error ? error.message : error)
+    return []
+  }
+}
+
+let teacherAccounts = loadTeacherAccounts()
+
+function persistTeacherAccounts() {
+  try {
+    ensureSharedDataDir()
+    fs.writeFileSync(teacherAccountsPath, JSON.stringify(teacherAccounts, null, 2), "utf8")
+  } catch (error) {
+    console.error("Kon docentaccounts niet opslaan:", error instanceof Error ? error.message : error)
+    throw new Error("Opslaan van docentaccounts is mislukt.")
+  }
+}
+
+function teacherAccountSummaries() {
+  return [...teacherAccounts]
+    .sort((left, right) => left.username.localeCompare(right.username))
+    .map((account) => ({
+      id: account.id,
+      username: account.username,
+      displayName: account.displayName,
+      role: account.role,
+      createdAt: account.createdAt,
+      updatedAt: account.updatedAt,
+    }))
+}
+
+function emitTeacherAccountsToSocket(socket) {
+  if (!canManageTeacherAccounts(socket.id)) return
+  socket.emit("host:teacher-accounts:update", { accounts: teacherAccountSummaries() })
+}
+
+function emitTeacherAccountsToOwners() {
+  for (const socketId of hostSocketIds) {
+    if (!canManageTeacherAccounts(socketId)) continue
+    io.to(socketId).emit("host:teacher-accounts:update", { accounts: teacherAccountSummaries() })
+  }
+}
+
+function authenticateTeacherAccount(username, password) {
+  const normalizedUsername = normalizeTeacherUsername(username)
+  if (!normalizedUsername) return null
+
+  if (
+    normalizedUsername === normalizeTeacherUsername(teacherUsername) &&
+    String(password ?? "") === teacherPassword
+  ) {
+    return {
+      username: normalizeTeacherUsername(teacherUsername),
+      displayName: teacherUsername,
+      role: "owner",
+      canManageAccounts: true,
+      source: "env",
+    }
+  }
+
+  const account = teacherAccounts.find((entry) => entry.username === normalizedUsername)
+  if (!account || !verifyTeacherPassword(password, account)) return null
+
+  return {
+    username: account.username,
+    displayName: account.displayName,
+    role: account.role,
+    canManageAccounts: account.role === "manager",
+    source: "stored",
   }
 }
 
@@ -2832,7 +2964,8 @@ io.on("connection", (socket) => {
   emitStateToSocket(socket, getRoomBySocketId(socket.id))
 
   socket.on("host:login", ({ username, password, roomCode }) => {
-    if (String(username ?? "").trim() !== teacherUsername || String(password ?? "") !== teacherPassword) {
+    const account = authenticateTeacherAccount(username, password)
+    if (!account) {
       socket.emit("host:error", { message: "Onjuiste docentgegevens." })
       return
     }
@@ -2841,7 +2974,14 @@ io.on("connection", (socket) => {
     const reclaimableRoom = requestedCode ? rooms.get(requestedCode) : null
     const room = reclaimableRoom ?? getRoomBySocketId(socket.id) ?? createRoom(socket.id)
     claimRoomForHost(room, socket.id)
-    socket.emit("host:login:success", { username: teacherUsername, roomCode: room.code })
+    hostSessions.set(socket.id, account)
+    socket.emit("host:login:success", {
+      username: account.username,
+      displayName: account.displayName,
+      role: account.role,
+      canManageAccounts: account.canManageAccounts,
+      roomCode: room.code,
+    })
     socket.emit("host:room:update", { roomCode: room.code })
     if (room.game.mode === "lesson" && room.lesson?.phases?.length) {
       socket.emit("host:generate-lesson:success", {
@@ -2861,6 +3001,7 @@ io.on("connection", (socket) => {
     }
     emitLessonLibraryToSocket(socket)
     emitSessionHistoryToSocket(socket)
+    emitTeacherAccountsToSocket(socket)
     emitStateToRoom(room)
     emitStateToSocket(socket, room)
   })
@@ -2877,8 +3018,140 @@ io.on("connection", (socket) => {
     emitSessionHistoryToSocket(socket)
   })
 
+  socket.on("host:teacher-accounts:list", () => {
+    const room = requireHostRoom(socket)
+    if (!room) return
+    if (!canManageTeacherAccounts(socket.id)) {
+      socket.emit("host:error", { message: "Alleen beheerders kunnen docentaccounts bekijken." })
+      return
+    }
+    emitTeacherAccountsToSocket(socket)
+  })
+
+  socket.on("host:teacher-accounts:create", ({ username, password, displayName, role }) => {
+    const room = requireHostRoom(socket)
+    if (!room) return
+    if (!canManageTeacherAccounts(socket.id)) {
+      socket.emit("host:error", { message: "Alleen beheerders kunnen docentaccounts toevoegen." })
+      return
+    }
+
+    const normalizedUsername = normalizeTeacherUsername(username)
+    const cleanDisplayName = String(displayName ?? username ?? "").trim() || normalizedUsername
+    const cleanPassword = String(password ?? "")
+    const requestedRole = String(role ?? "teacher").trim().toLowerCase()
+    const nextRole =
+      requestedRole === "manager" && isHostOwner(socket.id)
+        ? "manager"
+        : "teacher"
+
+    if (!normalizedUsername || normalizedUsername.length < 3) {
+      socket.emit("host:error", { message: "Kies een gebruikersnaam van minimaal 3 tekens." })
+      return
+    }
+    if (!/^[a-z0-9._-]+$/i.test(normalizedUsername)) {
+      socket.emit("host:error", { message: "Gebruik alleen letters, cijfers, punt, liggend streepje of underscore." })
+      return
+    }
+    if (cleanPassword.length < 6) {
+      socket.emit("host:error", { message: "Kies een wachtwoord van minimaal 6 tekens." })
+      return
+    }
+    if (normalizedUsername === normalizeTeacherUsername(teacherUsername)) {
+      socket.emit("host:error", { message: "Deze gebruikersnaam is al gereserveerd voor het hoofdaccount." })
+      return
+    }
+    if (teacherAccounts.some((account) => account.username === normalizedUsername)) {
+      socket.emit("host:error", { message: "Deze docentgebruikersnaam bestaat al." })
+      return
+    }
+
+    const now = new Date().toISOString()
+    const passwordData = hashTeacherPassword(cleanPassword)
+    teacherAccounts = [
+      {
+        id: generateEntityId("teacher"),
+        username: normalizedUsername,
+        displayName: cleanDisplayName,
+        role: nextRole,
+        salt: passwordData.salt,
+        passwordHash: passwordData.passwordHash,
+        createdAt: now,
+        updatedAt: now,
+      },
+      ...teacherAccounts,
+    ]
+
+    persistTeacherAccounts()
+    emitTeacherAccountsToOwners()
+    socket.emit("host:teacher-accounts:success", {
+      message: `Docentaccount ${cleanDisplayName} is toegevoegd.`,
+    })
+  })
+
+  socket.on("host:teacher-accounts:update", ({ accountId, password, displayName, role }) => {
+    const room = requireHostRoom(socket)
+    if (!room) return
+    if (!canManageTeacherAccounts(socket.id)) {
+      socket.emit("host:error", { message: "Alleen beheerders kunnen docentaccounts aanpassen." })
+      return
+    }
+
+    const account = teacherAccounts.find((entry) => entry.id === accountId)
+    if (!account) {
+      socket.emit("host:error", { message: "Dit docentaccount bestaat niet meer." })
+      return
+    }
+
+    const cleanDisplayName = String(displayName ?? account.displayName ?? account.username).trim() || account.username
+    const cleanPassword = String(password ?? "")
+    const nextRole =
+      String(role ?? account.role).trim().toLowerCase() === "manager" && isHostOwner(socket.id)
+        ? "manager"
+        : "teacher"
+
+    account.displayName = cleanDisplayName
+    account.role = nextRole
+    if (cleanPassword) {
+      if (cleanPassword.length < 6) {
+        socket.emit("host:error", { message: "Een nieuw wachtwoord moet minimaal 6 tekens hebben." })
+        return
+      }
+      const passwordData = hashTeacherPassword(cleanPassword)
+      account.salt = passwordData.salt
+      account.passwordHash = passwordData.passwordHash
+    }
+    account.updatedAt = new Date().toISOString()
+
+    persistTeacherAccounts()
+    emitTeacherAccountsToOwners()
+    socket.emit("host:teacher-accounts:success", {
+      message: `Docentaccount ${account.displayName} is bijgewerkt.`,
+    })
+  })
+
+  socket.on("host:teacher-accounts:delete", ({ accountId }) => {
+    const room = requireHostRoom(socket)
+    if (!room) return
+    if (!canManageTeacherAccounts(socket.id)) {
+      socket.emit("host:error", { message: "Alleen beheerders kunnen docentaccounts verwijderen." })
+      return
+    }
+
+    const account = teacherAccounts.find((entry) => entry.id === accountId)
+    if (!account) return
+
+    teacherAccounts = teacherAccounts.filter((entry) => entry.id !== accountId)
+    persistTeacherAccounts()
+    emitTeacherAccountsToOwners()
+    socket.emit("host:teacher-accounts:success", {
+      message: `Docentaccount ${account.displayName} is verwijderd.`,
+    })
+  })
+
   socket.on("host:logout", () => {
     hostSocketIds.delete(socket.id)
+    clearHostSession(socket.id)
     const room = getRoomBySocketId(socket.id)
     socketToRoom.delete(socket.id)
     if (!room) {
@@ -3787,6 +4060,7 @@ io.on("connection", (socket) => {
   socket.on("disconnect", () => {
     const room = getRoomBySocketId(socket.id)
     hostSocketIds.delete(socket.id)
+    clearHostSession(socket.id)
     socketToRoom.delete(socket.id)
     if (!room) return
 
