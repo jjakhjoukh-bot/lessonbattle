@@ -15,6 +15,8 @@ const envPath = path.join(projectRoot, ".env")
 const clientDistPath = path.join(projectRoot, "client", "dist")
 const sharedDataPath = path.join(projectRoot, "shared")
 const lessonLibraryPath = path.join(sharedDataPath, "lesson-library.json")
+const sessionHistoryPath = path.join(sharedDataPath, "session-history.json")
+const activeRoomsPath = path.join(sharedDataPath, "active-rooms.json")
 
 if (fs.existsSync(envPath)) {
   const envLines = fs.readFileSync(envPath, "utf8").split(/\r?\n/)
@@ -54,13 +56,37 @@ const AI_PROVIDER_REPAIR_TIMEOUT_MS = 30000
 const AI_ROUND_GENERATION_TIMEOUT_MS = 120000
 const AI_RESPONSE_EVALUATION_TIMEOUT_MS = 12000
 const LESSON_EVALUATION_CACHE_LIMIT = 500
+const SESSION_HISTORY_LIMIT = 120
 const hostSocketIds = new Set()
 const socketToRoom = new Map()
 const rooms = new Map()
 const lessonEvaluationCache = new Map()
+let roomPersistenceTimer = null
 
 function generateEntityId(prefix = "item") {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+function ensureSharedDataDir() {
+  fs.mkdirSync(sharedDataPath, { recursive: true })
+}
+
+function createPlayerRecord({
+  id = generateEntityId("player"),
+  socketId = null,
+  name = "",
+  teamId = "",
+  score = 0,
+  connected = false,
+} = {}) {
+  return {
+    id: String(id),
+    socketId: socketId ? String(socketId) : null,
+    name: String(name).trim(),
+    teamId: String(teamId).trim(),
+    score: Number(score) || 0,
+    connected: Boolean(connected && socketId),
+  }
 }
 
 function createIdleGameState() {
@@ -307,6 +333,8 @@ function createRoom(hostSocketId) {
     code: roomCode,
     hostSocketId,
     hostOnline: true,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
     players: [],
     teams: createTeams(),
     questions: [],
@@ -326,6 +354,19 @@ function createRoom(hostSocketId) {
 function getRoomBySocketId(socketId) {
   const roomCode = socketToRoom.get(socketId)
   return roomCode ? rooms.get(roomCode) ?? null : null
+}
+
+function getPlayerBySocketId(room, socketId) {
+  return room?.players.find((player) => player.socketId === socketId) ?? null
+}
+
+function getOnlinePlayers(room) {
+  return room?.players.filter((player) => player.connected !== false && player.socketId) ?? []
+}
+
+function markRoomUpdated(room) {
+  if (!room) return
+  room.updatedAt = new Date().toISOString()
 }
 
 function requireHostRoom(socket) {
@@ -600,6 +641,16 @@ function leaderboard(room) {
   return [...room.players].sort((a, b) => b.score - a.score || a.name.localeCompare(b.name))
 }
 
+function sanitizePlayerForClient(player) {
+  return {
+    id: player.id,
+    name: player.name,
+    teamId: player.teamId,
+    score: player.score,
+    connected: player.connected !== false,
+  }
+}
+
 function reassignPlayersToExistingTeams(room) {
   const fallbackTeamId = room.teams[0]?.id ?? "team-1"
   room.players = room.players.map((player) => ({
@@ -611,16 +662,17 @@ function reassignPlayersToExistingTeams(room) {
 function buildStatePayload(room, viewer = "host") {
   syncTeamScores(room)
   const lessonPhase = currentLessonPhase(room)
+  const onlinePlayers = getOnlinePlayers(room)
   const answeredCount =
     room.game.mode === "lesson" && lessonPhase ? room.lessonResponses.size : room.answeredPlayers.size
-  const totalPlayers = room.players.length
+  const totalPlayers = onlinePlayers.length
   const activeQuestion = currentQuestion(room)
   const questionDurationSec =
     Number(activeQuestion?.durationSec) || Number(room.game.questionDurationSec) || 20
   return {
-    players: room.players,
+    players: room.players.map(sanitizePlayerForClient),
     teams: room.teams,
-    leaderboard: leaderboard(room),
+    leaderboard: leaderboard(room).map(sanitizePlayerForClient),
     game: {
       ...room.game,
       questionDurationSec,
@@ -675,7 +727,7 @@ function normalizeLessonLibraryEntry(rawEntry) {
 }
 
 function ensureLessonLibraryDir() {
-  fs.mkdirSync(sharedDataPath, { recursive: true })
+  ensureSharedDataDir()
 }
 
 function loadLessonLibrary() {
@@ -768,12 +820,316 @@ function cloneLessonForRoom(lesson, libraryId = null) {
   }
 }
 
+function cloneQuestionsForStorage(questions = []) {
+  return (questions || []).map((question) => ({
+    ...question,
+    options: [...(question.options || [])],
+  }))
+}
+
+function detectSessionCategory(topic, type = "lesson") {
+  const source = String(topic || "").toLowerCase()
+  if (/(economie|pincode|bank|geld|verzekering|werk|markt|productie|loon|omzet|rente)/.test(source)) return "Economie"
+  if (/(rekenen|wiskunde|breuk|procent|decimal|grafiek|getal)/.test(source)) return "Rekenen"
+  if (/(nederlands|taal|spelling|grammatica|woordenschat|begrijpend lezen)/.test(source)) return "Nederlands"
+  if (/(engels|english|vocabulary|grammar)/.test(source)) return "Engels"
+  if (/(aardrijkskunde|geografie|landschap|kaart|werelddeel|klimaat)/.test(source)) return "Aardrijkskunde"
+  if (/(geschiedenis|histor|romein|middeleeuw|oorlog|gouden eeuw)/.test(source)) return "Geschiedenis"
+  if (/(biologie|lichaam|plant|dier|cel|natuur)/.test(source)) return "Biologie"
+  if (/(islam|koran|moskee|ramadan|profeet)/.test(source)) return "Islamitische kennis"
+  if (type === "practice") return "Oefentoets"
+  if (type === "battle") return "Quiz"
+  return "Algemeen"
+}
+
+function buildSessionTitle({ type, topic, lessonTitle }) {
+  const cleanTopic = String(topic || "").trim() || "algemeen onderwerp"
+  if (type === "lesson") return String(lessonTitle || `Les: ${cleanTopic}`).trim()
+  if (type === "practice") return `Oefentoets: ${cleanTopic}`
+  return `Quiz: ${cleanTopic}`
+}
+
+function normalizeSessionHistoryEntry(rawEntry) {
+  if (!rawEntry || typeof rawEntry !== "object") return null
+  const type = ["lesson", "practice", "battle"].includes(String(rawEntry.type)) ? String(rawEntry.type) : "lesson"
+  const topic = String(rawEntry.topic ?? "").trim()
+  const lesson = rawEntry.lesson ? cloneLessonForRoom(rawEntry.lesson, rawEntry.lesson?.libraryId || null) : null
+  const questions = cloneQuestionsForStorage(rawEntry.questions || [])
+
+  return {
+    id: String(rawEntry.id ?? generateEntityId("history")),
+    type,
+    category: String(rawEntry.category ?? detectSessionCategory(topic, type)).trim() || detectSessionCategory(topic, type),
+    topic,
+    title: String(rawEntry.title ?? buildSessionTitle({ type, topic, lessonTitle: lesson?.title })).trim() || buildSessionTitle({ type, topic, lessonTitle: lesson?.title }),
+    audience: String(rawEntry.audience ?? lesson?.audience ?? "vmbo").trim() || "vmbo",
+    model: String(rawEntry.model ?? lesson?.model ?? "battle").trim() || "battle",
+    durationMinutes: Number(rawEntry.durationMinutes) || Number(lesson?.durationMinutes) || 0,
+    lessonGoal: String(rawEntry.lessonGoal ?? lesson?.lessonGoal ?? "").trim(),
+    questionCount: Number(rawEntry.questionCount) || questions.length || lesson?.practiceTest?.questions?.length || 0,
+    phaseCount: Number(rawEntry.phaseCount) || lesson?.phases?.length || 0,
+    practiceQuestionCount: Number(rawEntry.practiceQuestionCount) || lesson?.practiceTest?.questions?.length || 0,
+    slideCount: Number(rawEntry.slideCount) || lesson?.presentation?.slides?.length || 0,
+    providerLabel: String(rawEntry.providerLabel ?? "Lesson Battle").trim() || "Lesson Battle",
+    source: String(rawEntry.source ?? type).trim() || type,
+    questions,
+    lesson,
+    createdAt: String(rawEntry.createdAt ?? new Date().toISOString()),
+    updatedAt: String(rawEntry.updatedAt ?? new Date().toISOString()),
+  }
+}
+
+function loadSessionHistory() {
+  try {
+    ensureSharedDataDir()
+    if (!fs.existsSync(sessionHistoryPath)) return []
+    const parsed = JSON.parse(fs.readFileSync(sessionHistoryPath, "utf8"))
+    if (!Array.isArray(parsed)) return []
+    return parsed.map(normalizeSessionHistoryEntry).filter(Boolean)
+  } catch (error) {
+    console.error("Kon sessiegeschiedenis niet laden:", error instanceof Error ? error.message : error)
+    return []
+  }
+}
+
+let sessionHistory = loadSessionHistory()
+
+function persistSessionHistory() {
+  try {
+    ensureSharedDataDir()
+    fs.writeFileSync(sessionHistoryPath, JSON.stringify(sessionHistory, null, 2), "utf8")
+  } catch (error) {
+    console.error("Kon sessiegeschiedenis niet opslaan:", error instanceof Error ? error.message : error)
+    throw new Error("Opslaan van de sessiegeschiedenis is mislukt.")
+  }
+}
+
+function sessionHistorySummaries() {
+  return [...sessionHistory]
+    .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime())
+    .map((entry) => ({
+      id: entry.id,
+      type: entry.type,
+      category: entry.category,
+      topic: entry.topic,
+      title: entry.title,
+      audience: entry.audience,
+      model: entry.model,
+      durationMinutes: entry.durationMinutes,
+      lessonGoal: entry.lessonGoal,
+      questionCount: entry.questionCount,
+      phaseCount: entry.phaseCount,
+      practiceQuestionCount: entry.practiceQuestionCount,
+      slideCount: entry.slideCount,
+      providerLabel: entry.providerLabel,
+      updatedAt: entry.updatedAt,
+      createdAt: entry.createdAt,
+    }))
+}
+
+function emitSessionHistoryToSocket(socket) {
+  socket.emit("host:session-history:update", { entries: sessionHistorySummaries() })
+}
+
+function emitSessionHistoryToHosts() {
+  for (const socketId of hostSocketIds) {
+    io.to(socketId).emit("host:session-history:update", { entries: sessionHistorySummaries() })
+  }
+}
+
+function recordSessionHistory(entryInput) {
+  const entry = normalizeSessionHistoryEntry(entryInput)
+  if (!entry) return
+  try {
+    sessionHistory = [entry, ...sessionHistory].slice(0, SESSION_HISTORY_LIMIT)
+    persistSessionHistory()
+    emitSessionHistoryToHosts()
+  } catch (error) {
+    console.error("Sessiegeschiedenis kon niet worden bijgewerkt:", error instanceof Error ? error.message : error)
+  }
+}
+
+function buildSessionHistoryEntryFromRoom(room, type = "lesson") {
+  const lesson = type === "lesson" ? cloneLessonForRoom(room.lesson, null) : null
+  const now = new Date().toISOString()
+
+  return {
+    id: generateEntityId("history"),
+    type,
+    category: detectSessionCategory(room.game.topic, type),
+    topic: room.game.topic,
+    title: buildSessionTitle({
+      type,
+      topic: room.game.topic,
+      lessonTitle: lesson?.title,
+    }),
+    audience: room.game.audience || lesson?.audience || "vmbo",
+    model: lesson?.model || room.game.lessonModel || "battle",
+    durationMinutes: lesson?.durationMinutes || room.game.lessonDurationMinutes || 0,
+    lessonGoal: lesson?.lessonGoal || "",
+    questionCount: type === "lesson" ? lesson?.practiceTest?.questions?.length || 0 : room.questions.length,
+    phaseCount: lesson?.phases?.length || 0,
+    practiceQuestionCount: lesson?.practiceTest?.questions?.length || 0,
+    slideCount: lesson?.presentation?.slides?.length || 0,
+    providerLabel: room.game.providerLabel || "Lesson Battle",
+    source: room.game.source || type,
+    questions: type === "lesson" ? [] : cloneQuestionsForStorage(room.questions),
+    lesson,
+    createdAt: now,
+    updatedAt: now,
+  }
+}
+
+function sanitizePersistedPlayer(rawPlayer) {
+  return createPlayerRecord({
+    id: rawPlayer?.id,
+    name: rawPlayer?.name,
+    teamId: rawPlayer?.teamId,
+    score: rawPlayer?.score,
+    connected: false,
+  })
+}
+
+function serializeRoomSnapshot(room) {
+  return {
+    code: room.code,
+    hostOnline: false,
+    createdAt: room.createdAt || new Date().toISOString(),
+    updatedAt: room.updatedAt || new Date().toISOString(),
+    players: room.players.map((player) => ({
+      id: player.id,
+      name: player.name,
+      teamId: player.teamId,
+      score: player.score,
+      connected: false,
+    })),
+    teams: room.teams.map((team) => ({ ...team })),
+    questions: cloneQuestionsForStorage(room.questions),
+    currentQuestionIndex: room.currentQuestionIndex,
+    answeredPlayers: [...room.answeredPlayers],
+    playerAnswers: [...room.playerAnswers.entries()],
+    lessonResponses: [...room.lessonResponses.entries()],
+    lesson: cloneLessonForRoom(room.lesson, room.lesson?.libraryId || null),
+    game: {
+      ...room.game,
+      questionStartedAt: room.game.questionStartedAt,
+      generatedAt: room.game.generatedAt,
+    },
+  }
+}
+
+function deserializeRoomSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") return null
+  const code = String(snapshot.code ?? "").trim().toUpperCase()
+  if (!code) return null
+
+  const room = {
+    code,
+    hostSocketId: null,
+    hostOnline: false,
+    createdAt: String(snapshot.createdAt ?? new Date().toISOString()),
+    updatedAt: String(snapshot.updatedAt ?? new Date().toISOString()),
+    players: Array.isArray(snapshot.players) ? snapshot.players.map(sanitizePersistedPlayer).filter(Boolean) : [],
+    teams: Array.isArray(snapshot.teams)
+      ? snapshot.teams.map((team, index) => ({
+          id: String(team?.id ?? `team-${index + 1}`),
+          name: String(team?.name ?? `Team ${index + 1}`),
+          color: String(team?.color ?? TEAM_COLORS[index % TEAM_COLORS.length]),
+          score: Number(team?.score) || 0,
+        }))
+      : createTeams(),
+    questions: cloneQuestionsForStorage(snapshot.questions),
+    currentQuestionIndex: Number.isInteger(snapshot.currentQuestionIndex) ? snapshot.currentQuestionIndex : -1,
+    answeredPlayers: new Set(Array.isArray(snapshot.answeredPlayers) ? snapshot.answeredPlayers.map((value) => String(value)) : []),
+    playerAnswers: new Map(
+      Array.isArray(snapshot.playerAnswers)
+        ? snapshot.playerAnswers.map(([playerId, answer]) => [
+            String(playerId),
+            {
+              answerIndex: Number(answer?.answerIndex),
+              isCorrect: Boolean(answer?.isCorrect),
+              elapsedMs: Number(answer?.elapsedMs) || 0,
+              awardedPoints: Number(answer?.awardedPoints) || 0,
+            },
+          ])
+        : []
+    ),
+    lessonResponses: new Map(
+      Array.isArray(snapshot.lessonResponses)
+        ? snapshot.lessonResponses.map(([playerId, response]) => [
+            String(playerId),
+            {
+              text: String(response?.text ?? ""),
+              isCorrect: Boolean(response?.isCorrect),
+              label: String(response?.label ?? ""),
+              feedback: String(response?.feedback ?? ""),
+              submittedAt: String(response?.submittedAt ?? ""),
+            },
+          ])
+        : []
+    ),
+    lesson: cloneLessonForRoom(snapshot.lesson || createEmptyLessonState(), snapshot.lesson?.libraryId || null),
+    closingTimeout: null,
+    game: {
+      ...createIdleGameState(),
+      ...(snapshot.game || {}),
+      questionStartedAt: snapshot.game?.questionStartedAt || null,
+      generatedAt: snapshot.game?.generatedAt || null,
+    },
+  }
+
+  reassignPlayersToExistingTeams(room)
+  syncTeamScores(room)
+  return room
+}
+
+function loadPersistedRooms() {
+  try {
+    ensureSharedDataDir()
+    if (!fs.existsSync(activeRoomsPath)) return []
+    const parsed = JSON.parse(fs.readFileSync(activeRoomsPath, "utf8"))
+    if (!Array.isArray(parsed)) return []
+    return parsed.map(deserializeRoomSnapshot).filter(Boolean)
+  } catch (error) {
+    console.error("Kon actieve rooms niet laden:", error instanceof Error ? error.message : error)
+    return []
+  }
+}
+
+function persistActiveRooms() {
+  try {
+    ensureSharedDataDir()
+    const snapshots = [...rooms.values()].map(serializeRoomSnapshot)
+    fs.writeFileSync(activeRoomsPath, JSON.stringify(snapshots, null, 2), "utf8")
+  } catch (error) {
+    console.error("Kon actieve rooms niet opslaan:", error instanceof Error ? error.message : error)
+  }
+}
+
+function schedulePersistActiveRooms() {
+  if (roomPersistenceTimer) return
+  roomPersistenceTimer = setTimeout(() => {
+    roomPersistenceTimer = null
+    persistActiveRooms()
+  }, 25)
+}
+
+function restoreRoomsFromDisk() {
+  const restoredRooms = loadPersistedRooms()
+  for (const room of restoredRooms) {
+    rooms.set(room.code, room)
+    scheduleRoomClosure(room)
+  }
+}
+
 function buildHostInsights(room) {
+  const onlinePlayers = getOnlinePlayers(room)
+
   if (room.game.mode === "lesson") {
     const phase = currentLessonPhase(room)
     if (!phase) return null
     const answeredCount = room.lessonResponses.size
-    const totalPlayers = room.players.length
+    const totalPlayers = onlinePlayers.length
     const allAnswered = totalPlayers > 0 && answeredCount >= totalPlayers
 
     return {
@@ -793,6 +1149,7 @@ function buildHostInsights(room) {
           name: player.name,
           teamId: player.teamId,
           teamName: room.teams.find((team) => team.id === player.teamId)?.name || "",
+          connected: player.connected !== false,
           answered: Boolean(response),
           answerText: response?.text || "",
           isCorrect: response?.isCorrect ?? null,
@@ -806,7 +1163,7 @@ function buildHostInsights(room) {
   const question = currentQuestion(room)
   if (!question) return null
   const answeredCount = room.answeredPlayers.size
-  const totalPlayers = room.players.length
+  const totalPlayers = onlinePlayers.length
   const allAnswered = totalPlayers > 0 && answeredCount >= totalPlayers
   const distribution = (question.options || []).map((option, index) => {
     const playersForOption = room.players.filter((player) => room.playerAnswers.get(player.id)?.answerIndex === index)
@@ -820,6 +1177,7 @@ function buildHostInsights(room) {
         name: player.name,
         teamId: player.teamId,
         teamName: room.teams.find((team) => team.id === player.teamId)?.name || "",
+        connected: player.connected !== false,
       })),
     }
   })
@@ -843,6 +1201,7 @@ function buildHostInsights(room) {
         name: player.name,
         teamId: player.teamId,
         teamName: room.teams.find((team) => team.id === player.teamId)?.name || "",
+        connected: player.connected !== false,
         answered: Boolean(answer),
         answerIndex: answer?.answerIndex ?? null,
         answerText: answer ? question?.options?.[answer.answerIndex] ?? null : null,
@@ -860,7 +1219,7 @@ function emitHostInsights(room) {
 function emitLessonPromptUpdate(room) {
   if (room.game.mode !== "lesson") return
   const lessonForPlayer = sanitizeLesson(room.lesson, "player")
-  const recipients = [room.hostSocketId, ...room.players.map((player) => player.id)]
+  const recipients = [room.hostSocketId, ...getOnlinePlayers(room).map((player) => player.socketId)].filter(Boolean)
   for (const recipient of recipients) {
     io.to(recipient).emit("lesson:prompt:update", {
       lesson: lessonForPlayer,
@@ -871,21 +1230,25 @@ function emitLessonPromptUpdate(room) {
 }
 
 function emitStateToRoom(room) {
+  markRoomUpdated(room)
   const hostPayload = buildStatePayload(room, "host")
   const playerPayload = buildStatePayload(room, "player")
 
-  io.to(room.hostSocketId).emit("players:update", hostPayload.players)
-  io.to(room.hostSocketId).emit("teams:update", hostPayload.teams)
-  io.to(room.hostSocketId).emit("leaderboard:update", hostPayload.leaderboard)
-  io.to(room.hostSocketId).emit("game:update", hostPayload.game)
+  if (room.hostSocketId) {
+    io.to(room.hostSocketId).emit("players:update", hostPayload.players)
+    io.to(room.hostSocketId).emit("teams:update", hostPayload.teams)
+    io.to(room.hostSocketId).emit("leaderboard:update", hostPayload.leaderboard)
+    io.to(room.hostSocketId).emit("game:update", hostPayload.game)
+  }
 
-  for (const player of room.players) {
-    io.to(player.id).emit("players:update", playerPayload.players)
-    io.to(player.id).emit("teams:update", playerPayload.teams)
-    io.to(player.id).emit("leaderboard:update", playerPayload.leaderboard)
-    io.to(player.id).emit("game:update", playerPayload.game)
+  for (const player of getOnlinePlayers(room)) {
+    io.to(player.socketId).emit("players:update", playerPayload.players)
+    io.to(player.socketId).emit("teams:update", playerPayload.teams)
+    io.to(player.socketId).emit("leaderboard:update", playerPayload.leaderboard)
+    io.to(player.socketId).emit("game:update", playerPayload.game)
   }
   emitHostInsights(room)
+  schedulePersistActiveRooms()
 }
 
 function emitStateToSocket(socket, room) {
@@ -954,13 +1317,18 @@ function clearRoomClosingTimeout(room) {
 function scheduleRoomClosure(room) {
   clearRoomClosingTimeout(room)
   room.hostOnline = false
+  room.hostSocketId = null
   room.closingTimeout = setTimeout(() => {
     for (const player of room.players) {
-      socketToRoom.delete(player.id)
-      io.to(player.id).emit("player:error", { message: "Deze room is gesloten door de docent." })
+      if (player.socketId) {
+        socketToRoom.delete(player.socketId)
+        io.to(player.socketId).emit("player:removed", { message: "Deze room is gesloten door de docent." })
+      }
     }
     rooms.delete(room.code)
+    schedulePersistActiveRooms()
   }, ROOM_HOST_GRACE_MS)
+  schedulePersistActiveRooms()
 }
 
 function claimRoomForHost(room, socketId) {
@@ -969,6 +1337,8 @@ function claimRoomForHost(room, socketId) {
   socketToRoom.set(socketId, room.code)
   room.hostSocketId = socketId
   room.hostOnline = true
+  markRoomUpdated(room)
+  schedulePersistActiveRooms()
 }
 
 function extractJsonArray(text) {
@@ -2433,6 +2803,8 @@ async function generateQuestions({ topic, audience, questionCount }) {
   throw new Error(errors.join(" | "))
 }
 
+restoreRoomsFromDisk()
+
 app.get("/api/question-image", async (req, res) => {
   const prompt = String(req.query.prompt ?? "").trim()
   const category = String(req.query.category ?? "").trim()
@@ -2488,6 +2860,7 @@ io.on("connection", (socket) => {
       })
     }
     emitLessonLibraryToSocket(socket)
+    emitSessionHistoryToSocket(socket)
     emitStateToRoom(room)
     emitStateToSocket(socket, room)
   })
@@ -2496,6 +2869,12 @@ io.on("connection", (socket) => {
     const room = requireHostRoom(socket)
     if (!room) return
     emitLessonLibraryToSocket(socket)
+  })
+
+  socket.on("host:history:list", () => {
+    const room = requireHostRoom(socket)
+    if (!room) return
+    emitSessionHistoryToSocket(socket)
   })
 
   socket.on("host:logout", () => {
@@ -2553,8 +2932,10 @@ io.on("connection", (socket) => {
     socketToRoom.set(room.hostSocketId, room.code)
 
     for (const player of room.players) {
-      socketToRoom.delete(player.id)
-      io.to(player.id).emit("player:error", { message: "De spelcode is vernieuwd. Voer de nieuwe code in." })
+      if (player.socketId) {
+        socketToRoom.delete(player.socketId)
+        io.to(player.socketId).emit("player:removed", { message: "De spelcode is vernieuwd. Voer de nieuwe code in." })
+      }
     }
 
     room.players = []
@@ -2638,6 +3019,7 @@ io.on("connection", (socket) => {
     }
     setCurrentQuestionPreview(room, room.questions.length ? 0 : -1)
 
+    recordSessionHistory(buildSessionHistoryEntryFromRoom(room, "battle"))
     emitStateToRoom(room)
     socket.emit("host:generate:success", {
       count: room.questions.length,
@@ -2781,6 +3163,7 @@ io.on("connection", (socket) => {
       lessonDurationMinutes: safeDuration,
     }
 
+    recordSessionHistory(buildSessionHistoryEntryFromRoom(room, "lesson"))
     emitStateToRoom(room)
     socket.emit("host:generate-lesson:success", {
       count: room.lesson.phases.length,
@@ -2827,6 +3210,7 @@ io.on("connection", (socket) => {
       mode: "battle",
     }
 
+    recordSessionHistory(buildSessionHistoryEntryFromRoom(room, "practice"))
     emitStateToRoom(room)
     socket.emit("host:generate:success", {
       count: room.questions.length,
@@ -2948,6 +3332,98 @@ io.on("connection", (socket) => {
     socket.emit("host:delete-lesson:success", { lessonId })
   })
 
+  socket.on("host:history:load", ({ entryId }) => {
+    const room = requireHostRoom(socket)
+    if (!room) return
+
+    const entry = sessionHistory.find((item) => item.id === entryId)
+    if (!entry) {
+      socket.emit("host:error", { message: "Deze geschiedenis-entry bestaat niet meer." })
+      return
+    }
+
+    room.answeredPlayers = new Set()
+    room.playerAnswers = new Map()
+    room.lessonResponses = new Map()
+
+    if (entry.type === "lesson" && entry.lesson) {
+      room.questions = []
+      room.currentQuestionIndex = -1
+      room.lesson = {
+        ...withLessonPhaseContext(cloneLessonForRoom(entry.lesson, entry.lesson?.libraryId || null), 0),
+      }
+      room.game = {
+        ...createIdleGameState(),
+        topic: entry.topic,
+        audience: entry.audience,
+        status: "live",
+        source: "history",
+        providerLabel: entry.providerLabel || "Geschiedenis",
+        generatedAt: new Date().toISOString(),
+        mode: "lesson",
+        lessonModel: entry.model || room.lesson.model,
+        lessonDurationMinutes: entry.durationMinutes || room.lesson.durationMinutes || 45,
+      }
+    } else {
+      room.questions = cloneQuestionsForStorage(entry.questions)
+      room.lesson = createEmptyLessonState()
+
+      if (entry.type === "practice") {
+        room.currentQuestionIndex = room.questions.length ? 0 : -1
+        room.game = {
+          ...createIdleGameState(),
+          topic: entry.topic,
+          audience: entry.audience,
+          questionCount: room.questions.length,
+          questionDurationSec: Number(room.questions[0]?.durationSec) || 25,
+          questionStartedAt: room.questions.length ? new Date().toISOString() : null,
+          status: room.questions.length ? "live" : "idle",
+          answerRevealed: false,
+          source: "practice",
+          providerLabel: entry.providerLabel || "Geschiedenis",
+          generatedAt: new Date().toISOString(),
+          mode: "battle",
+        }
+      } else {
+        room.game = {
+          ...createIdleGameState(),
+          topic: entry.topic,
+          audience: entry.audience,
+          questionCount: room.questions.length,
+          questionDurationSec: Number(room.questions[0]?.durationSec) || 20,
+          questionStartedAt: null,
+          status: room.questions.length ? "preview" : "idle",
+          answerRevealed: false,
+          source: "history",
+          providerLabel: entry.providerLabel || "Geschiedenis",
+          generatedAt: new Date().toISOString(),
+          mode: "battle",
+        }
+        setCurrentQuestionPreview(room, room.questions.length ? 0 : -1)
+      }
+    }
+
+    emitStateToRoom(room)
+    socket.emit("host:history:load:success", {
+      entryId: entry.id,
+      title: entry.title,
+      type: entry.type,
+    })
+  })
+
+  socket.on("host:history:delete", ({ entryId }) => {
+    const room = requireHostRoom(socket)
+    if (!room) return
+
+    const exists = sessionHistory.some((entry) => entry.id === entryId)
+    if (!exists) return
+
+    sessionHistory = sessionHistory.filter((entry) => entry.id !== entryId)
+    persistSessionHistory()
+    emitSessionHistoryToHosts()
+    socket.emit("host:history:delete:success", { entryId })
+  })
+
   socket.on("host:next", () => {
     const room = requireHostRoom(socket)
     if (!room) return
@@ -3022,6 +3498,8 @@ io.on("connection", (socket) => {
   socket.on("player:practice-next", () => {
     const room = getRoomBySocketId(socket.id)
     if (!room || room.game.source !== "practice" || room.game.mode !== "battle") return
+    const player = getPlayerBySocketId(room, socket.id)
+    if (!player) return
 
     const question = currentQuestion(room)
     if (!question) return
@@ -3029,7 +3507,7 @@ io.on("connection", (socket) => {
     const startTime = room.game.questionStartedAt ? new Date(room.game.questionStartedAt).getTime() : 0
     const currentDuration = Number(question.durationSec) || room.game.questionDurationSec
     const answerWindowEnded = !startTime || Date.now() > startTime + currentDuration * 1000
-    const alreadyAnswered = room.answeredPlayers.has(socket.id)
+    const alreadyAnswered = room.answeredPlayers.has(player.id)
 
     if (!alreadyAnswered && !answerWindowEnded) {
       socket.emit("player:error", { message: "Beantwoord eerst de vraag of wacht tot de tijd voorbij is." })
@@ -3103,28 +3581,28 @@ io.on("connection", (socket) => {
     room.answeredPlayers.delete(playerId)
     room.playerAnswers.delete(playerId)
     room.lessonResponses.delete(playerId)
-    socketToRoom.delete(playerId)
+    if (playerToRemove.socketId) socketToRoom.delete(playerToRemove.socketId)
 
-    io.to(playerId).emit("player:removed", {
-      message: "Je bent verwijderd door de beheerder. Je kunt opnieuw deelnemen met de spelcode.",
-    })
+    if (playerToRemove.socketId) {
+      io.to(playerToRemove.socketId).emit("player:removed", {
+        message: "Je bent verwijderd door de beheerder. Je kunt opnieuw deelnemen met de spelcode.",
+      })
+    }
 
     emitStateToRoom(room)
   })
 
-  socket.on("player:join", ({ name, teamId, roomCode }) => {
+  socket.on("player:join", ({ name, teamId, roomCode, playerSessionId }) => {
+    const requestedPlayerId = String(playerSessionId ?? "").trim()
     const room = rooms.get(String(roomCode ?? "").trim().toUpperCase())
     if (!room) {
       socket.emit("player:error", { message: "De spelcode klopt niet." })
       return
     }
-    if (!room.hostOnline) {
-      socket.emit("player:error", { message: "De docent is tijdelijk offline. Probeer over een paar seconden opnieuw." })
-      return
-    }
 
     const trimmedName = String(name ?? "").trim()
     const selectedTeamId = room.teams.some((team) => team.id === teamId) ? teamId : room.teams[0]?.id
+    const playerId = requestedPlayerId || generateEntityId("player")
     if (!trimmedName || !selectedTeamId) {
       socket.emit("player:error", { message: "Vul een naam in en kies een team." })
       return
@@ -3134,34 +3612,99 @@ io.on("connection", (socket) => {
     if (previousRoomCode && previousRoomCode !== room.code) {
       const previousRoom = rooms.get(previousRoomCode)
       if (previousRoom) {
-        previousRoom.players = previousRoom.players.filter((player) => player.id !== socket.id)
-        previousRoom.answeredPlayers.delete(socket.id)
-        previousRoom.playerAnswers.delete(socket.id)
-        previousRoom.lessonResponses.delete(socket.id)
+        const previousPlayer = getPlayerBySocketId(previousRoom, socket.id)
+        if (previousPlayer) {
+          previousPlayer.socketId = null
+          previousPlayer.connected = false
+        }
         emitStateToRoom(previousRoom)
       }
     }
 
     socketToRoom.set(socket.id, room.code)
-    const existingPlayer = room.players.find((player) => player.id === socket.id)
+    const existingPlayer =
+      room.players.find((player) => player.id === playerId) ??
+      room.players.find((player) => player.socketId === socket.id) ??
+      null
     if (existingPlayer) {
+      existingPlayer.id = playerId
+      existingPlayer.socketId = socket.id
       existingPlayer.name = trimmedName
       existingPlayer.teamId = selectedTeamId
+      existingPlayer.connected = true
     } else {
-      room.players.push({ id: socket.id, name: trimmedName, teamId: selectedTeamId, score: 0 })
+      room.players.push(
+        createPlayerRecord({
+          id: playerId,
+          socketId: socket.id,
+          name: trimmedName,
+          teamId: selectedTeamId,
+          score: 0,
+          connected: true,
+        })
+      )
     }
 
-    socket.emit("player:joined", { playerId: socket.id, teamId: selectedTeamId, roomCode: room.code })
+    const joinedPlayer = room.players.find((player) => player.id === playerId)
+    socket.emit("player:joined", {
+      playerId: joinedPlayer?.id ?? playerId,
+      playerSessionId: joinedPlayer?.id ?? playerId,
+      teamId: selectedTeamId,
+      roomCode: room.code,
+    })
     emitStateToSocket(socket, room)
     emitStateToRoom(room)
+
+    const storedAnswer = room.playerAnswers.get(joinedPlayer?.id ?? playerId)
+    if (storedAnswer) {
+      const activeQuestion = currentQuestion(room)
+      if (room.game.source === "practice" && activeQuestion) {
+        socket.emit("player:answer:result", {
+          answerIndex: storedAnswer.answerIndex,
+          correct: storedAnswer.isCorrect,
+          correctIndex: activeQuestion.correctIndex,
+          explanation: activeQuestion.explanation,
+          playerScore: joinedPlayer?.score ?? 0,
+          teamScore: room.teams.find((team) => team.id === selectedTeamId)?.score ?? 0,
+        })
+      } else {
+        socket.emit(
+          "player:answer:result",
+          room.game.status === "live"
+            ? {
+                answerIndex: storedAnswer.answerIndex,
+                waitingForReveal: true,
+                playerScore: joinedPlayer?.score ?? 0,
+                teamScore: room.teams.find((team) => team.id === selectedTeamId)?.score ?? 0,
+              }
+            : {
+                answerIndex: storedAnswer.answerIndex,
+                correct: storedAnswer.isCorrect,
+                correctIndex: activeQuestion?.correctIndex,
+                explanation: activeQuestion?.explanation || "",
+                playerScore: joinedPlayer?.score ?? 0,
+                teamScore: room.teams.find((team) => team.id === selectedTeamId)?.score ?? 0,
+              }
+        )
+      }
+    }
+
+    const storedLessonResponse = room.lessonResponses.get(joinedPlayer?.id ?? playerId)
+    if (storedLessonResponse) {
+      socket.emit("player:lesson-response:result", {
+        isCorrect: storedLessonResponse.isCorrect,
+        label: storedLessonResponse.label,
+        feedback: storedLessonResponse.feedback,
+      })
+    }
   })
 
   socket.on("player:answer", ({ answer }) => {
     const room = getRoomBySocketId(socket.id)
     if (!room) return
     const question = currentQuestion(room)
-    const player = room.players.find((entry) => entry.id === socket.id)
-    if (!question || !player || room.answeredPlayers.has(socket.id)) return
+    const player = getPlayerBySocketId(room, socket.id)
+    if (!question || !player || room.answeredPlayers.has(player.id)) return
 
     if (room.game.status !== "live") return
 
@@ -3171,12 +3714,12 @@ io.on("connection", (socket) => {
     const withinAnswerWindow = startTime && now <= startTime + currentDuration * 1000
     if (!withinAnswerWindow) return
 
-    room.answeredPlayers.add(socket.id)
+    room.answeredPlayers.add(player.id)
     const isCorrect = answer === question.correctIndex
     const elapsedMs = Math.max(0, now - startTime)
     const speedBonus = Math.max(0, Math.round(((currentDuration * 1000 - elapsedMs) / (currentDuration * 1000)) * 50))
     const awardedPoints = isCorrect ? 100 + speedBonus : 0
-    room.playerAnswers.set(socket.id, {
+    room.playerAnswers.set(player.id, {
       answerIndex: answer,
       isCorrect,
       elapsedMs,
@@ -3187,6 +3730,7 @@ io.on("connection", (socket) => {
     syncTeamScores(room)
     if (room.game.source === "practice") {
       socket.emit("player:answer:result", {
+        answerIndex: answer,
         correct: isCorrect,
         correctIndex: question.correctIndex,
         explanation: question.explanation,
@@ -3195,6 +3739,7 @@ io.on("connection", (socket) => {
       })
     } else {
       socket.emit("player:answer:result", {
+        answerIndex: answer,
         waitingForReveal: true,
         playerScore: player.score,
         teamScore: room.teams.find((team) => team.id === player.teamId)?.score ?? 0,
@@ -3208,7 +3753,7 @@ io.on("connection", (socket) => {
     if (!room || room.game.mode !== "lesson") return
 
     const phase = currentLessonPhase(room)
-    const player = room.players.find((entry) => entry.id === socket.id)
+    const player = getPlayerBySocketId(room, socket.id)
     if (!phase || !player) return
 
     const text = String(response ?? "").trim()
@@ -3219,7 +3764,7 @@ io.on("connection", (socket) => {
 
     try {
       const evaluation = await evaluateLessonResponse(room.lesson, phase, text)
-      room.lessonResponses.set(socket.id, {
+      room.lessonResponses.set(player.id, {
         text,
         isCorrect: evaluation.isCorrect,
         label: evaluation.label,
@@ -3251,10 +3796,11 @@ io.on("connection", (socket) => {
       return
     }
 
-    room.players = room.players.filter((player) => player.id !== socket.id)
-    room.answeredPlayers.delete(socket.id)
-    room.playerAnswers.delete(socket.id)
-    room.lessonResponses.delete(socket.id)
+    const player = getPlayerBySocketId(room, socket.id)
+    if (!player) return
+
+    player.socketId = null
+    player.connected = false
     emitStateToRoom(room)
   })
 })

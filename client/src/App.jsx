@@ -43,6 +43,24 @@ function lessonPackageFromFlags({ includePracticeTest, includePresentation }) {
   return "lesson"
 }
 
+function createPlayerSessionId() {
+  if (window.crypto?.randomUUID) return window.crypto.randomUUID()
+  return `player-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+function formatHistoryDate(value) {
+  if (!value) return "Onbekende datum"
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return "Onbekende datum"
+  return new Intl.DateTimeFormat("nl-NL", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date)
+}
+
 function App() {
   const path = window.location.pathname
 
@@ -141,6 +159,7 @@ function HostPage() {
   const [status, setStatus] = useState("Vul het onderwerp in, stel de teams in en start de ronde.")
   const [hostInsights, setHostInsights] = useState(null)
   const [lessonLibrary, setLessonLibrary] = useState([])
+  const [sessionHistory, setSessionHistory] = useState([])
   const [loginForm, setLoginForm] = useState(storedHostSession.loginForm)
   const [hostSession, setHostSession] = useState(storedHostSession.hostSession)
 
@@ -205,6 +224,7 @@ function HostPage() {
     const onStarted = ({ message }) => setStatus(message)
     const onLessonStarted = ({ message }) => setStatus(message)
     const onLibraryUpdate = ({ lessons }) => setLessonLibrary(Array.isArray(lessons) ? lessons : [])
+    const onHistoryUpdate = ({ entries }) => setSessionHistory(Array.isArray(entries) ? entries : [])
     const onInsights = (payload) => {
       setHostInsights(payload)
       if (payload?.allAnswered && payload.totalPlayers > 0) {
@@ -236,6 +256,9 @@ function HostPage() {
       setStatus(`Les geladen uit de bibliotheek: ${title}.`)
     }
     const onDeleteLessonSuccess = () => setStatus("Les verwijderd uit de bibliotheek.")
+    const onHistoryLoadSuccess = ({ title, type }) =>
+      setStatus(`${type === "lesson" ? "Les" : type === "practice" ? "Oefentoets" : "Quiz"} geladen uit geschiedenis: ${title}.`)
+    const onHistoryDeleteSuccess = () => setStatus("Geschiedenis-item verwijderd.")
 
     socket.on("host:login:success", onLoginSuccess)
     socket.on("host:configure:success", onConfigureSuccess)
@@ -243,6 +266,7 @@ function HostPage() {
     socket.on("host:generate:started", onStarted)
     socket.on("host:generate-lesson:started", onLessonStarted)
     socket.on("host:lesson-library:update", onLibraryUpdate)
+    socket.on("host:session-history:update", onHistoryUpdate)
     socket.on("host:question:insights", onInsights)
     socket.on("host:error", onError)
     socket.on("host:generate:success", onSuccess)
@@ -251,6 +275,8 @@ function HostPage() {
     socket.on("host:save-lesson:success", onSaveLessonSuccess)
     socket.on("host:load-lesson:success", onLoadLessonSuccess)
     socket.on("host:delete-lesson:success", onDeleteLessonSuccess)
+    socket.on("host:history:load:success", onHistoryLoadSuccess)
+    socket.on("host:history:delete:success", onHistoryDeleteSuccess)
 
     return () => {
       socket.off("host:login:success", onLoginSuccess)
@@ -259,6 +285,7 @@ function HostPage() {
       socket.off("host:generate:started", onStarted)
       socket.off("host:generate-lesson:started", onLessonStarted)
       socket.off("host:lesson-library:update", onLibraryUpdate)
+      socket.off("host:session-history:update", onHistoryUpdate)
       socket.off("host:question:insights", onInsights)
       socket.off("host:error", onError)
       socket.off("host:generate:success", onSuccess)
@@ -267,6 +294,8 @@ function HostPage() {
       socket.off("host:save-lesson:success", onSaveLessonSuccess)
       socket.off("host:load-lesson:success", onLoadLessonSuccess)
       socket.off("host:delete-lesson:success", onDeleteLessonSuccess)
+      socket.off("host:history:load:success", onHistoryLoadSuccess)
+      socket.off("host:history:delete:success", onHistoryDeleteSuccess)
     }
   }, [])
 
@@ -306,6 +335,10 @@ function HostPage() {
   const timeLeft = useQuestionCountdown(game)
   const [presenterMode, setPresenterMode] = useState(false)
   const [battleDurationDraft, setBattleDurationDraft] = useState(questionDurationSec)
+  const onlinePlayerCount = useMemo(
+    () => players.filter((player) => player.connected !== false).length,
+    [players]
+  )
 
   const toggleFullscreen = async () => {
     if (!document.fullscreenElement) {
@@ -445,6 +478,16 @@ function HostPage() {
     socket.emit("host:delete-lesson", { lessonId })
   }
 
+  const loadSessionFromHistory = (entryId) => {
+    setStatus("Sessie wordt geladen uit geschiedenis...")
+    socket.emit("host:history:load", { entryId })
+  }
+
+  const deleteSessionFromHistory = (entryId) => {
+    setStatus("Geschiedenis-item wordt verwijderd...")
+    socket.emit("host:history:delete", { entryId })
+  }
+
   const updateLessonPrompt = () => {
     setStatus("Live lesvraag wordt bijgewerkt...")
     socket.emit("host:lesson-prompt:update", {
@@ -479,7 +522,7 @@ function HostPage() {
             <span>Actieve teams</span>
           </div>
           <div className="hero-stat">
-            <strong>{players.length}</strong>
+            <strong>{onlinePlayerCount}</strong>
             <span>Verbonden spelers</span>
           </div>
           <div className="hero-stat">
@@ -877,7 +920,7 @@ function HostPage() {
           ) : game.status === "finished" ? (
             <ResultsCard teams={teams} leaderboard={leaderboard} />
           ) : (
-            <LobbyCard roomCode={hostSession.roomCode} teams={teams} players={players} />
+            <LobbyCard roomCode={hostSession.roomCode} teams={teams} players={players} onlineCount={onlinePlayerCount} />
           )}
         </div>
       </section>
@@ -885,6 +928,7 @@ function HostPage() {
       <section className="dashboard-grid">
         <ScoreBoard teams={teams} leaderboard={leaderboard} />
         <RosterBoard
+          onlineCount={onlinePlayerCount}
           onRemovePlayer={(playerId) => socket.emit("host:remove-player", { playerId })}
           players={players}
           teams={teams}
@@ -897,6 +941,14 @@ function HostPage() {
           lessons={lessonLibrary}
           onDelete={deleteLessonFromLibrary}
           onLoad={loadLessonFromLibrary}
+        />
+      ) : null}
+
+      {hostSession.authenticated ? (
+        <SessionHistorySection
+          entries={sessionHistory}
+          onDelete={deleteSessionFromHistory}
+          onLoad={loadSessionFromHistory}
         />
       ) : null}
 
@@ -917,18 +969,20 @@ function PlayerPage() {
   const [playerSession, setPlayerSession] = useState(() => {
     try {
       const stored = window.localStorage.getItem(PLAYER_SESSION_KEY)
-      return stored ? JSON.parse(stored) : { name: "", teamId: "", roomCode: "", joined: false }
+      return stored ? JSON.parse(stored) : { name: "", teamId: "", roomCode: "", joined: false, playerSessionId: createPlayerSessionId() }
     } catch {
-      return { name: "", teamId: "", roomCode: "", joined: false }
+      return { name: "", teamId: "", roomCode: "", joined: false, playerSessionId: createPlayerSessionId() }
     }
   })
   const [name, setName] = useState(playerSession.name || "")
   const [teamId, setTeamId] = useState(playerSession.teamId || "")
   const [roomCode, setRoomCode] = useState(playerSession.roomCode || "")
+  const [playerSessionId, setPlayerSessionId] = useState(playerSession.playerSessionId || createPlayerSessionId())
   const [roomPreview, setRoomPreview] = useState({ valid: false, teams: [] })
   const [joined, setJoined] = useState(Boolean(playerSession.joined))
   const [result, setResult] = useState(null)
   const [chosenAnswer, setChosenAnswer] = useState(null)
+  const [answerLocked, setAnswerLocked] = useState(false)
   const [lessonAnswer, setLessonAnswer] = useState("")
   const [lessonResult, setLessonResult] = useState(null)
   const [status, setStatus] = useState("Vul je gegevens in en sluit aan.")
@@ -954,6 +1008,10 @@ function PlayerPage() {
       setJoined(true)
       setStatus("Je bent verbonden. Wacht op de volgende vraag.")
     }
+    const onJoinedPayload = ({ playerSessionId: nextPlayerSessionId }) => {
+      if (nextPlayerSessionId) setPlayerSessionId(nextPlayerSessionId)
+      onJoined()
+    }
     const onPlayerError = ({ message }) => setStatus(message)
     const onRoomPreview = (payload) => {
       setRoomPreview(payload)
@@ -970,10 +1028,15 @@ function PlayerPage() {
       setJoined(false)
       setResult(null)
       setChosenAnswer(null)
+      setAnswerLocked(false)
       setStatus(message || "Je bent verwijderd door de beheerder.")
     }
     const onAnswerResult = (payload) => {
+      if (Number.isInteger(payload?.answerIndex)) {
+        setChosenAnswer(payload.answerIndex)
+      }
       setResult(payload)
+      setAnswerLocked(true)
       if (payload.waitingForReveal) {
         setStatus("Je antwoord is opgeslagen. Wacht tot het juiste antwoord wordt getoond.")
         return
@@ -991,7 +1054,7 @@ function PlayerPage() {
       )
     }
 
-    socket.on("player:joined", onJoined)
+    socket.on("player:joined", onJoinedPayload)
     socket.on("player:error", onPlayerError)
     socket.on("player:removed", onRemoved)
     socket.on("player:room:preview", onRoomPreview)
@@ -999,7 +1062,7 @@ function PlayerPage() {
     socket.on("player:lesson-response:result", onLessonResponseResult)
 
     return () => {
-      socket.off("player:joined", onJoined)
+      socket.off("player:joined", onJoinedPayload)
       socket.off("player:error", onPlayerError)
       socket.off("player:removed", onRemoved)
       socket.off("player:room:preview", onRoomPreview)
@@ -1009,10 +1072,10 @@ function PlayerPage() {
   }, [roomCode.length])
 
   useEffect(() => {
-    const nextSession = { name, teamId, roomCode, joined }
+    const nextSession = { name, teamId, roomCode, joined, playerSessionId }
     setPlayerSession(nextSession)
     window.localStorage.setItem(PLAYER_SESSION_KEY, JSON.stringify(nextSession))
-  }, [joined, name, roomCode, teamId])
+  }, [joined, name, roomCode, teamId, playerSessionId])
 
   useEffect(() => {
     if (roomCode.trim().length < 5) {
@@ -1038,6 +1101,7 @@ function PlayerPage() {
   useEffect(() => {
     setResult(null)
     setChosenAnswer(null)
+    setAnswerLocked(false)
     setLessonAnswer("")
     setLessonResult(null)
   }, [game.question?.id])
@@ -1054,16 +1118,16 @@ function PlayerPage() {
         socket.emit("player:lookup-room", { roomCode: normalizedCode })
       }
       if (joined && name.trim() && teamId && normalizedCode.length >= 5) {
-        socket.emit("player:join", { name: name.trim(), teamId, roomCode: normalizedCode })
+        socket.emit("player:join", { name: name.trim(), teamId, roomCode: normalizedCode, playerSessionId })
       }
     }
 
     socket.on("connect", onConnect)
     return () => socket.off("connect", onConnect)
-  }, [joined, name, roomCode, teamId])
+  }, [joined, name, playerSessionId, roomCode, teamId])
 
   const join = () => {
-    socket.emit("player:join", { name: name.trim(), teamId, roomCode: roomCode.trim().toUpperCase() })
+    socket.emit("player:join", { name: name.trim(), teamId, roomCode: roomCode.trim().toUpperCase(), playerSessionId })
   }
 
   const submitLessonAnswer = () => {
@@ -1092,6 +1156,7 @@ function PlayerPage() {
     game.question &&
     !battleRevealVisible &&
     !result
+  const canSubmitAnswer = joined && game.question && (canAnswerLiveQuestion || isPracticeTestLive) && !answerLocked
 
   return (
     <main className="page-shell player-shell">
@@ -1199,10 +1264,13 @@ function PlayerPage() {
                     return (
                       <button
                         key={`${game.question.id}-${index}`}
-                        className={`answer-button ${isCorrectChoice ? "is-correct" : ""} ${isWrongChosen ? "is-wrong" : ""}`}
-                        disabled={!canAnswerLiveQuestion && !isPracticeTestLive}
+                        className={`answer-button ${chosenAnswer === index ? "is-selected" : ""} ${isCorrectChoice ? "is-correct" : ""} ${isWrongChosen ? "is-wrong" : ""}`}
+                        disabled={!canSubmitAnswer}
                         onClick={() => {
+                          if (!canSubmitAnswer) return
                           setChosenAnswer(index)
+                          setAnswerLocked(true)
+                          setStatus("Antwoord verstuurd. Wacht heel even op de bevestiging.")
                           socket.emit("player:answer", { answer: index })
                         }}
                         type="button"
@@ -1836,6 +1904,59 @@ function LessonLibrarySection({ lessons, activeLessonId, onLoad, onDelete }) {
   )
 }
 
+function SessionHistorySection({ entries, onLoad, onDelete }) {
+  return (
+    <section className="glass board-card lesson-library-section session-history-section">
+      <div className="section-head">
+        <h2>Sessiegeschiedenis</h2>
+        <span className="pill">{entries.length} bewaard</span>
+      </div>
+
+      {entries.length ? (
+        <div className="lesson-library-grid">
+          {entries.map((entry) => (
+            <article className="lesson-library-card session-history-card" key={entry.id}>
+              <div className="lesson-library-head">
+                <div>
+                  <div className="history-chip-row">
+                    <span className="eyebrow">{entry.type === "lesson" ? "Les" : entry.type === "practice" ? "Oefentoets" : "Quiz"}</span>
+                    <span className="history-category-chip">{entry.category}</span>
+                  </div>
+                  <h3>{entry.title}</h3>
+                </div>
+                <span className="pill">{formatHistoryDate(entry.updatedAt)}</span>
+              </div>
+              <p>{entry.lessonGoal || entry.topic || "Opgeslagen sessie"}</p>
+              <div className="lesson-library-meta">
+                <span>{entry.topic || "Algemeen thema"}</span>
+                <span>{entry.audience}</span>
+                {entry.questionCount ? <span>{entry.questionCount} vragen</span> : null}
+                {entry.phaseCount ? <span>{entry.phaseCount} fasen</span> : null}
+                {entry.practiceQuestionCount ? <span>{entry.practiceQuestionCount} oefenvragen</span> : null}
+                {entry.slideCount ? <span>{entry.slideCount} dia's</span> : null}
+                <span>{entry.providerLabel}</span>
+              </div>
+              <div className="lesson-library-actions">
+                <button className="button-secondary" onClick={() => onLoad(entry.id)} type="button">
+                  Opnieuw openen
+                </button>
+                <button className="button-ghost" onClick={() => onDelete(entry.id)} type="button">
+                  Verwijder
+                </button>
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <div className="empty-state compact-empty">
+          <h3>Nog geen sessies in de geschiedenis</h3>
+          <p>Nieuwe lessen, quizzen en oefentoetsen verschijnen hier automatisch en worden direct op onderwerp gegroepeerd.</p>
+        </div>
+      )}
+    </section>
+  )
+}
+
 function buildLessonDistribution(responses) {
   const buckets = [
     { key: "goed", label: "Goed", colorClass: "good", match: (response) => response.evaluationLabel === "Goed" },
@@ -2221,7 +2342,7 @@ function ProgressBar({ current, total, timeLeft, duration }) {
   )
 }
 
-function LobbyCard({ roomCode, teams, players }) {
+function LobbyCard({ roomCode, teams, players, onlineCount }) {
   return (
     <div className="lobby-card">
       <span className="eyebrow">Wachtruimte</span>
@@ -2235,7 +2356,7 @@ function LobbyCard({ roomCode, teams, players }) {
         </div>
         <div className="result-tile">
           <span>Spelers online</span>
-          <strong>{players.length}</strong>
+          <strong>{onlineCount}</strong>
         </div>
       </div>
     </div>
@@ -2274,12 +2395,12 @@ function ScoreBoard({ teams, leaderboard, compact = false }) {
   )
 }
 
-function RosterBoard({ players, teams, compact = false, onRemovePlayer }) {
+function RosterBoard({ players, teams, compact = false, onRemovePlayer, onlineCount }) {
   return (
     <section className={`glass board-card ${compact ? "compact" : ""}`}>
       <div className="section-head">
         <h2>Deelnemers per team</h2>
-        <span className="pill">{players.length} online</span>
+        <span className="pill">{onlineCount} online</span>
       </div>
       <div className="roster-grid">
         {teams.map((team) => (
@@ -2291,6 +2412,7 @@ function RosterBoard({ players, teams, compact = false, onRemovePlayer }) {
               <div className="roster-row" key={player.id}>
                 <div className="roster-row-main">
                   <span>{player.name}</span>
+                  {player.connected === false ? <small className="roster-status-offline">offline</small> : null}
                   <strong>{player.score}</strong>
                 </div>
                 {onRemovePlayer && !String(player.id).endsWith("-empty") ? (

@@ -656,6 +656,18 @@
   gap: 12px;
 }
 
+.roster-status-offline {
+  margin-left: auto;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #f8c88a;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
 .button-remove-mini {
   border: 0;
   border-radius: 12px;
@@ -703,6 +715,9 @@
   background: rgba(255, 255, 255, 0.06);
   color: #f5f9ff;
   text-align: left;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .answer-button span {
@@ -714,6 +729,11 @@
   border-radius: 10px;
   background: rgba(61, 214, 208, 0.18);
   color: #aef3ef;
+}
+
+.answer-button.is-selected {
+  background: rgba(69, 104, 255, 0.18);
+  box-shadow: 0 0 0 1px rgba(137, 160, 255, 0.26), 0 12px 28px rgba(69, 104, 255, 0.12);
 }
 
 .answer-button.is-correct {
@@ -1469,6 +1489,10 @@
   margin-top: 22px;
 }
 
+.session-history-section {
+  margin-top: 18px;
+}
+
 .lesson-library-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
@@ -1491,6 +1515,12 @@
   background: linear-gradient(145deg, rgba(255, 157, 67, 0.12), rgba(69, 104, 255, 0.1));
 }
 
+.session-history-card {
+  background:
+    linear-gradient(160deg, rgba(61, 214, 208, 0.08), rgba(255, 157, 67, 0.08)),
+    rgba(255, 255, 255, 0.04);
+}
+
 .lesson-library-head {
   display: flex;
   justify-content: space-between;
@@ -1501,6 +1531,24 @@
 .lesson-library-head h3 {
   margin: 10px 0 0;
   font-family: "Avenir Next Condensed", "Trebuchet MS", sans-serif;
+}
+
+.history-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.history-category-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 7px 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #9fd2ff;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
 }
 
 .lesson-library-card p {
