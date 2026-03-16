@@ -40,7 +40,7 @@ const io = new Server(server, { cors: { origin: "*" } })
 
 const apiKey = process.env.GEMINI_API_KEY
 const modelName = process.env.GEMINI_MODEL || "gemini-2.5-flash"
-const geminiImageModel = process.env.GEMINI_IMAGE_MODEL || "gemini-2.0-flash-preview-image-generation"
+const geminiImageModel = process.env.GEMINI_IMAGE_MODEL || "gemini-2.5-flash-image"
 const groqApiKey = process.env.GROQ_API_KEY
 const groqModel = process.env.GROQ_MODEL || "llama-3.3-70b-versatile"
 const openAIApiKey = process.env.OPENAI_API_KEY
@@ -52,6 +52,12 @@ const teacherPassword = process.env.TEACHER_PASSWORD || "les1234"
 const genAI = apiKey ? new GoogleGenerativeAI(apiKey) : null
 const groq = groqApiKey ? new Groq({ apiKey: groqApiKey }) : null
 const openAI = openAIApiKey ? new OpenAI({ apiKey: openAIApiKey }) : null
+const geminiImageClient = apiKey
+  ? new OpenAI({
+      apiKey,
+      baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/",
+    })
+  : null
 
 const TEAM_COLORS = ["#ff8c42", "#3dd6d0", "#8f7cff", "#ff5d8f"]
 const DEFAULT_TEAMS = ["Team Zon", "Team Oceaan"]
@@ -471,7 +477,7 @@ function ensureSlideImagePrompt({ lessonTitle = "", slideTitle = "", focus = "",
 }
 
 function imageCacheFilePath({ prompt, category, kind }) {
-  const providerSignature = [openAI ? `openai:${openAIImageModel}` : "", genAI ? `gemini:${geminiImageModel}` : ""]
+  const providerSignature = [openAI ? `openai:${openAIImageModel}` : "", geminiImageClient ? `gemini:${geminiImageModel}` : ""]
     .filter(Boolean)
     .join("|") || "fallback"
   const cacheKey = crypto
@@ -560,38 +566,45 @@ async function generateOpenAIImageBuffer({ prompt, category, kind = "question" }
   return null
 }
 
-function extractGeminiInlineImageBuffer(responseLike) {
-  const candidates = responseLike?.response?.candidates || responseLike?.candidates || []
+async function generateGeminiImageBuffer({ prompt, category, kind = "question" }) {
+  if (!geminiImageClient) return null
 
-  for (const candidate of candidates) {
-    const parts = candidate?.content?.parts || []
-    for (const part of parts) {
-      const inlineData = part?.inlineData || part?.inline_data || null
-      const mimeType = inlineData?.mimeType || inlineData?.mime_type || ""
-      const data = inlineData?.data || ""
-      if (!data) continue
-      if (mimeType && !String(mimeType).toLowerCase().startsWith("image/")) continue
-      return Buffer.from(data, "base64")
+  const imagePrompt = buildVisualPrompt({ prompt, category, kind })
+  const baseRequest = {
+    model: geminiImageModel,
+    prompt: imagePrompt,
+    response_format: "b64_json",
+  }
+
+  let response
+
+  try {
+    response = await withTimeout(
+      geminiImageClient.images.generate({
+        ...baseRequest,
+        size: kind === "slide" ? "1536x1024" : "1024x1024",
+      }),
+      AI_IMAGE_TIMEOUT_MS
+    )
+  } catch (error) {
+    response = await withTimeout(geminiImageClient.images.generate(baseRequest), AI_IMAGE_TIMEOUT_MS)
+    console.warn("[images] Gemini size-specific request failed, retried default size:", error instanceof Error ? error.message : error)
+  }
+
+  const firstImage = response?.data?.[0]
+  if (firstImage?.b64_json) {
+    return Buffer.from(firstImage.b64_json, "base64")
+  }
+
+  if (firstImage?.url) {
+    const imageResponse = await fetchWithTimeout(firstImage.url, {}, AI_IMAGE_TIMEOUT_MS)
+    if (!imageResponse.ok) {
+      throw new Error(`Kon Gemini-afbeelding niet ophalen (${imageResponse.status}).`)
     }
+    return Buffer.from(await imageResponse.arrayBuffer())
   }
 
   return null
-}
-
-async function generateGeminiImageBuffer({ prompt, category, kind = "question" }) {
-  if (!genAI) return null
-
-  const imagePrompt = buildVisualPrompt({ prompt, category, kind })
-  const model = genAI.getGenerativeModel({
-    model: geminiImageModel,
-    generationConfig: {
-      responseModalities: ["TEXT", "IMAGE"],
-      temperature: 0.8,
-    },
-  })
-
-  const response = await withTimeout(model.generateContent([{ text: imagePrompt }]), AI_IMAGE_TIMEOUT_MS)
-  return extractGeminiInlineImageBuffer(response)
 }
 
 async function generateAIImageResult({ prompt, category, kind = "question" }) {
@@ -604,7 +617,7 @@ async function generateAIImageResult({ prompt, category, kind = "question" }) {
     }
   }
 
-  if (genAI) {
+  if (geminiImageClient) {
     try {
       const buffer = await generateGeminiImageBuffer({ prompt, category, kind })
       if (buffer) return { buffer, source: "gemini" }
@@ -795,6 +808,8 @@ function normalizeStudentFacingText(text, fallback = "Beantwoord de volgende vra
     [/^de docent vraagt de klas\s+/i, "Beantwoord deze vraag: "],
     [/^vraag de klas om\s+/i, "Beantwoord deze opdracht: "],
     [/^vraag de klas\s+/i, "Beantwoord deze vraag: "],
+    [/^de leerlingen\b/i, "Jullie"],
+    [/^leerlingen\b/i, "Jullie"],
   ]
 
   let normalized = source

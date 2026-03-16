@@ -5,7 +5,7 @@ import "./App.css"
 const socket = io(window.location.origin.startsWith("http://localhost:5173") ? "http://localhost:3001" : window.location.origin)
 const HOST_SESSION_KEY = "lessonbattle-host-session"
 const PLAYER_SESSION_KEY = "lessonbattle-player-session"
-const IMAGE_RENDER_VERSION = "20260316"
+const IMAGE_RENDER_VERSION = "20260316b"
 const DEFAULT_HOST_SESSION = {
   authenticated: false,
   username: "",
@@ -1324,7 +1324,7 @@ function PlayerPage() {
     isPracticeTestLive &&
     game.question &&
     (Boolean(result) || timeLeft === 0)
-  const hasLessonPresentation = Boolean(game.lesson?.presentation?.currentSlide)
+  const hasLessonPresentation = Boolean(game.lesson?.presentation?.currentSlide || game.lesson?.presentation?.slideCount)
   const hasLessonPrompt = Boolean(game.lesson?.currentPhase?.hasPrompt && game.lesson?.currentPhase?.prompt?.trim())
   const battleRevealVisible =
     game.mode === "battle" &&
@@ -1709,7 +1709,7 @@ function LessonStageCard({ lesson, hostView = false }) {
           <span className="lesson-minutes">{phase.minutes} min</span>
         </div>
         <div className="student-stage-kicker">Wat ga je nu doen?</div>
-        <h3>{phase.studentActivity || "Werk mee met deze lesstap."}</h3>
+        <h3>{phase.title || "Volg deze lesstap."}</h3>
         <div className="student-stage-prompt">
           <strong>Opdracht</strong>
           <p>{currentPrompt}</p>
