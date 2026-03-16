@@ -817,6 +817,20 @@ function normalizeStudentFacingText(text, fallback = "Beantwoord de volgende vra
     normalized = normalized.replace(pattern, replacement)
   }
 
+  if (/^jullie\b/i.test(normalized)) {
+    normalized = normalized
+      .replace(/\bhun eigen\b/gi, "jullie eigen")
+      .replace(/\bhun\b/gi, "jullie")
+      .replace(/\bhen\b/gi, "jullie")
+      .replace(/\bze luisteren\b/gi, "Jullie luisteren")
+      .replace(/\bze kijken\b/gi, "Jullie kijken")
+      .replace(/\bze bespreken\b/gi, "Jullie bespreken")
+      .replace(/\bze denken\b/gi, "Jullie denken")
+      .replace(/\bze delen\b/gi, "Jullie delen")
+      .replace(/\bze geven\b/gi, "Jullie geven")
+      .replace(/\bze noemen\b/gi, "Jullie noemen")
+  }
+
   normalized = normalized.replace(/\s+/g, " ").trim()
   return normalized || fallback
 }
