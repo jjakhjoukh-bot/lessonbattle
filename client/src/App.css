@@ -1495,6 +1495,9 @@ body::after {
 .presenter-backdrop {
   position: absolute;
   inset: 0;
+  border: 0;
+  width: 100%;
+  cursor: pointer;
   background:
     radial-gradient(circle at top left, rgba(255, 166, 77, 0.18), transparent 24%),
     radial-gradient(circle at bottom right, rgba(73, 182, 255, 0.22), transparent 28%),

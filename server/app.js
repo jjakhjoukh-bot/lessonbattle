@@ -19,6 +19,7 @@ const lessonLibraryPath = path.join(sharedDataPath, "lesson-library.json")
 const sessionHistoryPath = path.join(sharedDataPath, "session-history.json")
 const activeRoomsPath = path.join(sharedDataPath, "active-rooms.json")
 const teacherAccountsPath = path.join(sharedDataPath, "teacher-accounts.json")
+const generatedImagesPath = path.join(sharedDataPath, "generated-images")
 
 if (fs.existsSync(envPath)) {
   const envLines = fs.readFileSync(envPath, "utf8").split(/\r?\n/)
@@ -43,6 +44,7 @@ const groqApiKey = process.env.GROQ_API_KEY
 const groqModel = process.env.GROQ_MODEL || "llama-3.3-70b-versatile"
 const openAIApiKey = process.env.OPENAI_API_KEY
 const openAIModel = process.env.OPENAI_MODEL || "gpt-4.1-mini"
+const openAIImageModel = process.env.OPENAI_IMAGE_MODEL || "gpt-image-1"
 const port = Number(process.env.PORT || 3001)
 const teacherUsername = process.env.TEACHER_USERNAME || "docent"
 const teacherPassword = process.env.TEACHER_PASSWORD || "les1234"
@@ -57,6 +59,7 @@ const AI_PROVIDER_REQUEST_TIMEOUT_MS = 45000
 const AI_PROVIDER_REPAIR_TIMEOUT_MS = 30000
 const AI_ROUND_GENERATION_TIMEOUT_MS = 120000
 const AI_RESPONSE_EVALUATION_TIMEOUT_MS = 12000
+const AI_IMAGE_TIMEOUT_MS = 20000
 const LESSON_EVALUATION_CACHE_LIMIT = 500
 const SESSION_HISTORY_LIMIT = 120
 const BASE_CORRECT_POINTS = 100
@@ -77,6 +80,11 @@ function generateEntityId(prefix = "item") {
 
 function ensureSharedDataDir() {
   fs.mkdirSync(sharedDataPath, { recursive: true })
+}
+
+function ensureGeneratedImagesDir() {
+  ensureSharedDataDir()
+  fs.mkdirSync(generatedImagesPath, { recursive: true })
 }
 
 function createPlayerRecord({
@@ -209,6 +217,38 @@ function isIslamicTopic(prompt, category) {
 function pickVisualTheme(prompt, category) {
   const source = `${prompt} ${category}`.toLowerCase()
 
+  if (/(bank|rekening|pin|pinnen|spaargeld|sparen|rente|pas|geldautomaat|betaal)/.test(source)) {
+    return {
+      gradient: ["#0f172a", "#123560", "#2dd4bf"],
+      accent: "#b6fff2",
+      icon: "bank-card",
+      label: "Bank en geld",
+    }
+  }
+  if (/(verzeker|polis|premie|eigen risico|risico|dekking|schade)/.test(source)) {
+    return {
+      gradient: ["#182033", "#23426b", "#f59e0b"],
+      accent: "#ffe6a3",
+      icon: "shield",
+      label: "Zekerheid",
+    }
+  }
+  if (/(werk|baan|beroep|vacature|sollicit|loon|salaris|stage|arbeid)/.test(source)) {
+    return {
+      gradient: ["#1b1f35", "#334155", "#fb7185"],
+      accent: "#ffe0e7",
+      icon: "briefcase",
+      label: "Werk",
+    }
+  }
+  if (/(productie|markt|vraag|aanbod|fabriek|ondernemen|product|consument)/.test(source)) {
+    return {
+      gradient: ["#0f172a", "#164e63", "#f97316"],
+      accent: "#ffd0a8",
+      icon: "factory",
+      label: "Markt",
+    }
+  }
   if (/(euro|prijs|korting|geld|koop|winkel|betaal|kost)/.test(source)) {
     return {
       gradient: ["#0f172a", "#134e4a", "#f59e0b"],
@@ -268,6 +308,31 @@ function pickVisualTheme(prompt, category) {
 
 function buildIconMarkup(icon, accent) {
   switch (icon) {
+    case "bank-card":
+      return `
+  <rect x="794" y="198" width="270" height="180" rx="28" fill="#ffffff14" stroke="${accent}" stroke-width="8"/>
+  <rect x="818" y="246" width="222" height="26" rx="13" fill="${accent}" opacity="0.85"/>
+  <rect x="838" y="304" width="66" height="48" rx="10" fill="#ffffffd9"/>
+  <circle cx="984" cy="330" r="18" fill="${accent}"/>
+  <circle cx="1020" cy="330" r="18" fill="${accent}" opacity="0.58"/>`
+    case "shield":
+      return `
+  <path d="M930 168l124 38v102c0 92-66 164-124 198-58-34-124-106-124-198V206z" fill="#ffffff12" stroke="${accent}" stroke-width="8"/>
+  <path d="M930 214v214" stroke="${accent}" stroke-width="10" stroke-linecap="round"/>
+  <path d="M858 286h144" stroke="${accent}" stroke-width="10" stroke-linecap="round"/>`
+    case "briefcase":
+      return `
+  <rect x="812" y="230" width="236" height="152" rx="28" fill="#ffffff12" stroke="${accent}" stroke-width="8"/>
+  <path d="M878 230v-30c0-18 14-32 32-32h40c18 0 32 14 32 32v30" fill="none" stroke="${accent}" stroke-width="8"/>
+  <rect x="910" y="290" width="40" height="24" rx="10" fill="${accent}"/>
+  <path d="M812 296h236" stroke="${accent}" stroke-width="8"/>`
+    case "factory":
+      return `
+  <path d="M804 382V250l88 44v-44l96 48v84z" fill="#ffffff14" stroke="${accent}" stroke-width="8" stroke-linejoin="round"/>
+  <rect x="992" y="192" width="44" height="190" rx="12" fill="#ffffff10" stroke="${accent}" stroke-width="8"/>
+  <rect x="844" y="330" width="34" height="34" rx="8" fill="${accent}"/>
+  <rect x="900" y="330" width="34" height="34" rx="8" fill="${accent}" opacity="0.76"/>
+  <rect x="956" y="330" width="34" height="34" rx="8" fill="${accent}" opacity="0.58"/>`
     case "pie":
       return `
   <circle cx="930" cy="288" r="120" fill="#ffffff12" stroke="${accent}" stroke-width="8"/>
@@ -348,6 +413,139 @@ function buildQuestionSvg({ prompt, category }) {
   <rect x="478" y="470" width="118" height="84" rx="24" fill="#ffffff08"/>
   ${buildIconMarkup(theme.icon, theme.accent)}
 </svg>`
+}
+
+function sanitizeVisualPrompt(value) {
+  return String(value || "").replace(/\s+/g, " ").trim()
+}
+
+function buildVisualPrompt({ prompt, category = "", kind = "question" }) {
+  const cleanPrompt = sanitizeVisualPrompt(prompt)
+  const cleanCategory = sanitizeVisualPrompt(category)
+  const domain = detectTopicDomain(`${cleanCategory} ${cleanPrompt}`)
+  const compositionHint =
+    kind === "slide"
+      ? "Create a landscape classroom presentation illustration with one clear subject and strong contrast."
+      : "Create a vivid educational quiz illustration with one clear focal point."
+  const domainHints = {
+    tijd: "Use clocks, timelines, or clear time-based objects that match the concept.",
+    meten: "Use rulers, measuring tapes, scales, containers, or concrete measurement visuals.",
+    rekenen: "Use pies, blocks, fractions, or number-based objects without written text.",
+    taal: "Use books, speech bubbles without text, reading scenes, or grammar-related symbols.",
+    aardrijkskunde: "Use maps, globes, landscapes, flags without text, or place-related visuals.",
+    geschiedenis: "Use historical objects, buildings, tools, or era-appropriate scenes.",
+    biologie: "Use body parts, plants, cells, organs, or nature details that match the topic.",
+    economie: "Use banks, payment cards, euro coins, contracts, insurance papers, jobs, factories, shops, or market scenes as appropriate.",
+    cultuur: isIslamicTopic(cleanPrompt, cleanCategory)
+      ? "Avoid faces, prophets, people, or living beings; use abstract patterns, books, architecture, crescents, light, prayer rugs, or symbolic objects."
+      : "Use cultural symbols, buildings, objects, or respectful classroom-friendly scenes.",
+    general: "Use one concrete school-friendly visual that clearly matches the topic.",
+  }
+
+  return [
+    compositionHint,
+    cleanCategory ? `Topic area: ${cleanCategory}.` : "",
+    cleanPrompt ? `Main subject: ${cleanPrompt}.` : "",
+    domainHints[domain] || domainHints.general,
+    "No words, no labels, no interface elements, no watermarks.",
+  ]
+    .filter(Boolean)
+    .join(" ")
+}
+
+function ensureQuestionImagePrompt(questionPrompt, category, existingPrompt = "") {
+  return sanitizeVisualPrompt(existingPrompt) || buildVisualPrompt({ prompt: questionPrompt, category, kind: "question" })
+}
+
+function ensureSlideImagePrompt({ lessonTitle = "", slideTitle = "", focus = "", existingPrompt = "" }) {
+  return (
+    sanitizeVisualPrompt(existingPrompt) ||
+    buildVisualPrompt({
+      prompt: [lessonTitle, slideTitle, focus].filter(Boolean).join(". "),
+      category: lessonTitle,
+      kind: "slide",
+    })
+  )
+}
+
+function imageCacheFilePath({ prompt, category, kind }) {
+  const cacheKey = crypto
+    .createHash("sha1")
+    .update(JSON.stringify({ prompt: sanitizeVisualPrompt(prompt), category: sanitizeVisualPrompt(category), kind, model: openAIImageModel }))
+    .digest("hex")
+
+  return path.join(generatedImagesPath, `${cacheKey}.png`)
+}
+
+function readCachedImageBuffer(cachePath) {
+  try {
+    if (fs.existsSync(cachePath)) {
+      return fs.readFileSync(cachePath)
+    }
+  } catch (error) {
+    console.warn("[images] cache read failed:", error instanceof Error ? error.message : error)
+  }
+
+  return null
+}
+
+function writeCachedImageBuffer(cachePath, imageBuffer) {
+  try {
+    ensureGeneratedImagesDir()
+    fs.writeFileSync(cachePath, imageBuffer)
+  } catch (error) {
+    console.warn("[images] cache write failed:", error instanceof Error ? error.message : error)
+  }
+}
+
+async function generateAIImageBuffer({ prompt, category, kind = "question" }) {
+  if (!openAI) return null
+
+  const size = kind === "slide" ? "1536x1024" : "1024x1024"
+  const imagePrompt = buildVisualPrompt({ prompt, category, kind })
+  const isGPTImageModel = /^gpt-image|^chatgpt-image/i.test(openAIImageModel)
+  const nonGptOptions = {
+    model: openAIImageModel,
+    prompt: imagePrompt,
+    size: kind === "slide" ? "1792x1024" : "1024x1024",
+    response_format: "b64_json",
+  }
+
+  if (openAIImageModel === "dall-e-3") {
+    nonGptOptions.quality = "standard"
+    nonGptOptions.style = "natural"
+  }
+
+  const response = await withTimeout(
+    openAI.images.generate(
+      isGPTImageModel
+        ? {
+            model: openAIImageModel,
+            prompt: imagePrompt,
+            size,
+            quality: "low",
+            output_format: "png",
+            background: "opaque",
+          }
+        : nonGptOptions
+    ),
+    AI_IMAGE_TIMEOUT_MS
+  )
+
+  const firstImage = response?.data?.[0]
+  if (firstImage?.b64_json) {
+    return Buffer.from(firstImage.b64_json, "base64")
+  }
+
+  if (firstImage?.url) {
+    const imageResponse = await fetchWithTimeout(firstImage.url, {}, AI_IMAGE_TIMEOUT_MS)
+    if (!imageResponse.ok) {
+      throw new Error(`Kon AI-afbeelding niet ophalen (${imageResponse.status}).`)
+    }
+    return Buffer.from(await imageResponse.arrayBuffer())
+  }
+
+  return null
 }
 
 function createTeams(teamNames = DEFAULT_TEAMS) {
@@ -1662,7 +1860,7 @@ function normalizeQuestions(rawQuestions) {
       correctIndex: Number(question?.correctIndex),
       explanation: String(question?.explanation ?? "").trim(),
       category: String(question?.category ?? "").trim() || "Quiz",
-      imagePrompt: String(question?.imagePrompt ?? "").trim(),
+      imagePrompt: ensureQuestionImagePrompt(question?.prompt, question?.category, question?.imagePrompt),
       imageAlt: String(question?.imageAlt ?? "").trim(),
     }))
     .filter((question) => question.prompt && question.options.length === 4 && question.options.every(Boolean) && Number.isInteger(question.correctIndex) && question.correctIndex >= 0 && question.correctIndex < 4)
@@ -1965,6 +2163,9 @@ Regels:
 - Vermijd te algemene placeholder-vragen die alleen het onderwerp herhalen.
 - Korte uitleg per vraag.
 - Voeg "category", "imagePrompt" en "imageAlt" toe.
+- imagePrompt moet echt het kernbegrip of de situatie uit de vraag zichtbaar maken.
+- Vermijd vage prompts zoals "educational illustration" zonder inhoud.
+- Geen tekst, labels, letters of watermerken in het beeld.
 - Bij islamitische kennis: geen gezichten, personen, profeten of levende wezens afbeelden; kies abstracte, objectgerichte of symbolische visuals.
 - Geen markdown, alleen geldige JSON.
 ${extraRules}
@@ -2011,8 +2212,10 @@ function buildLessonPrompt({
 - Voeg ook een veld "presentation" toe voor een compacte presentatieset die de docent live kan tonen.
 - presentation bevat: title, style, slides.
 - slides is een array met precies ${slideCount} dia's.
-- Elke dia bevat: id, title, focus, bullets, studentViewText, speakerNotes.
+- Elke dia bevat: id, title, focus, bullets, studentViewText, speakerNotes, imagePrompt, imageAlt.
 - studentViewText is compact en bedoeld voor leerlingen.
+- imagePrompt moet per dia een concrete, onderwerpgetrouwe illustratie beschrijven.
+- Geen tekst, labels, letters of watermerken in de afbeelding.
 ${includeVideoPlan ? `
 - Voeg binnen "presentation" ook een veld "video" toe.
 - video bevat: title, summary, studentViewText, scenes.
@@ -2084,7 +2287,18 @@ Formaat:
   "presentation": {
     "title": "titel van de presentatieset",
     "style": "korte stijlomschrijving",
-    "slides": []${includeVideoPlan ? `,
+    "slides": [
+      {
+        "id": "slide-1",
+        "title": "titel",
+        "focus": "kern van de dia",
+        "bullets": ["punt 1", "punt 2"],
+        "studentViewText": "korte leerlingtekst",
+        "speakerNotes": "korte docentnotitie",
+        "imagePrompt": "english image prompt",
+        "imageAlt": "nederlandse alt"
+      }
+    ]${includeVideoPlan ? `,
     "video": {
       "title": "titel van de video-opzet",
       "summary": "korte samenvatting",
@@ -2152,6 +2366,7 @@ Regels:
 - Elke fase moet bevatten: title, goal, teacherScript, studentActivity, interactivePrompt, checkForUnderstanding, expectedAnswer, keywords, minutes.
 - ${includePracticeTest ? `Voeg ook een geldig "practiceTest" veld toe met title, instructions en precies ${practiceQuestionCount} questions.` : 'Laat het veld "practiceTest" weg.'}
 - ${includePresentation ? `Voeg ook een geldig "presentation" veld toe met title, style en precies ${slideCount} slides.` : 'Laat het veld "presentation" weg.'}
+${includePresentation ? '- Elke slide moet bevatten: id, title, focus, bullets, studentViewText, speakerNotes, imagePrompt, imageAlt.' : ""}
 - ${includePresentation && includeVideoPlan ? 'Voeg binnen presentation ook een geldig "video" veld toe met title, summary, studentViewText en scenes.' : 'Laat een eventueel "video" veld weg.'}
 - Houd de les inhoudelijk passend bij het onderwerp.
 - Geen markdown en geen extra tekst.
@@ -2345,12 +2560,15 @@ function normalizePresentationPackage(rawPresentation, lesson, { includeVideoPla
         .slice(0, 4),
       studentViewText: String(slide?.studentViewText ?? "").trim(),
       speakerNotes: String(slide?.speakerNotes ?? "").trim(),
-      imagePrompt:
-        String(slide?.imagePrompt ?? "").trim() ||
-        `${String(slide?.title ?? "").trim()} ${String(slide?.focus ?? "").trim()}`.trim(),
+      imagePrompt: ensureSlideImagePrompt({
+        lessonTitle: lesson.title,
+        slideTitle: slide?.title,
+        focus: slide?.focus || slide?.studentViewText,
+        existingPrompt: slide?.imagePrompt,
+      }),
       imageAlt: String(slide?.imageAlt ?? "").trim() || `${String(slide?.title ?? "").trim()} dia`,
     }))
-    .filter((slide) => slide.title && slide.bullets.length)
+    .filter((slide) => slide.title && (slide.bullets.length || slide.studentViewText || slide.focus))
     .slice(0, safeSlideCount)
 
   const fallbackSlides =
@@ -2363,7 +2581,11 @@ function normalizePresentationPackage(rawPresentation, lesson, { includeVideoPla
           bullets: [phase.goal, phase.studentActivity, phase.checkForUnderstanding].filter(Boolean).slice(0, 3),
           studentViewText: phase.interactivePrompt || phase.goal,
           speakerNotes: phase.teacherScript,
-          imagePrompt: `${lesson.title} ${phase.title} ${phase.goal}`.trim(),
+          imagePrompt: ensureSlideImagePrompt({
+            lessonTitle: lesson.title,
+            slideTitle: phase.title,
+            focus: phase.goal,
+          }),
           imageAlt: `${phase.title} dia`,
         })).slice(0, safeSlideCount)
 
@@ -3103,10 +3325,34 @@ restoreRoomsFromDisk()
 app.get("/api/question-image", async (req, res) => {
   const prompt = String(req.query.prompt ?? "").trim()
   const category = String(req.query.category ?? "").trim()
+  const kind = String(req.query.kind ?? "question").trim().toLowerCase() === "slide" ? "slide" : "question"
   if (!prompt) {
     res.status(400).json({ error: "prompt is verplicht" })
     return
   }
+
+  const cachePath = imageCacheFilePath({ prompt, category, kind })
+  const cachedBuffer = readCachedImageBuffer(cachePath)
+  if (cachedBuffer) {
+    res.setHeader("Content-Type", "image/png")
+    res.setHeader("Cache-Control", "public, max-age=86400")
+    res.status(200).send(cachedBuffer)
+    return
+  }
+
+  try {
+    const aiImageBuffer = await generateAIImageBuffer({ prompt, category, kind })
+    if (aiImageBuffer) {
+      writeCachedImageBuffer(cachePath, aiImageBuffer)
+      res.setHeader("Content-Type", "image/png")
+      res.setHeader("Cache-Control", "public, max-age=86400")
+      res.status(200).send(aiImageBuffer)
+      return
+    }
+  } catch (error) {
+    console.warn("[images] AI image generation failed:", error instanceof Error ? error.message : error)
+  }
+
   res.setHeader("Content-Type", "image/svg+xml; charset=utf-8")
   res.setHeader("Cache-Control", "public, max-age=3600")
   res.status(200).send(buildQuestionSvg({ prompt, category }))
@@ -3504,8 +3750,8 @@ io.on("connection", (socket) => {
           slideCount: safeSlideCount,
           practiceQuestionCount: safePracticeQuestionCount,
           includePracticeTest: false,
-          includePresentation: false,
-          includeVideoPlan: false,
+          includePresentation: wantsPresentation,
+          includeVideoPlan: wantsVideoPlan,
         }),
         AI_ROUND_GENERATION_TIMEOUT_MS
       )
@@ -3562,9 +3808,7 @@ io.on("connection", (socket) => {
       }
     }
 
-    const presentation = wantsPresentation
-      ? normalizePresentationPackage({}, lessonResult.lesson, { includeVideoPlan: wantsVideoPlan, slideCount: safeSlideCount })
-      : null
+    const presentation = wantsPresentation ? lessonResult.lesson.presentation : null
 
     room.questions = []
     room.currentQuestionIndex = -1

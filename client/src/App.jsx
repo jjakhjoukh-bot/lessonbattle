@@ -422,28 +422,74 @@ function HostPage() {
 
   const timeLeft = useQuestionCountdown(game)
   const [presenterMode, setPresenterMode] = useState(false)
+  const [presenterFullscreen, setPresenterFullscreen] = useState(false)
   const [battleDurationDraft, setBattleDurationDraft] = useState(questionDurationSec)
   const onlinePlayerCount = useMemo(
     () => players.filter((player) => player.connected !== false).length,
     [players]
   )
 
-  const toggleFullscreen = async () => {
-    if (!document.fullscreenElement) {
-      await document.documentElement.requestFullscreen()
-      setPresenterMode(true)
+  const openPresenterMode = async () => {
+    if (game.mode !== "lesson" || !game.lesson?.presentation?.currentSlide) {
+      setStatus("Bouw eerst een les of presentatieset met dia's voordat je digibordmodus opent.")
       return
     }
 
-    await document.exitFullscreen()
+    setPresenterMode(true)
+
+    if (document.fullscreenElement) {
+      setPresenterFullscreen(true)
+      return
+    }
+
+    try {
+      await document.documentElement.requestFullscreen()
+      setPresenterFullscreen(true)
+    } catch (error) {
+      console.warn("Fullscreen kon niet worden gestart:", error)
+      setStatus("Presentatie geopend. Schermvullend werd niet gestart, maar de digibordweergave staat wel open.")
+      setPresenterFullscreen(false)
+    }
+  }
+
+  const closePresenterMode = async () => {
+    if (document.fullscreenElement) {
+      try {
+        await document.exitFullscreen()
+      } catch (error) {
+        console.warn("Fullscreen kon niet netjes worden afgesloten:", error)
+      }
+    }
+
     setPresenterMode(false)
+    setPresenterFullscreen(false)
+  }
+
+  const togglePresenterMode = () => {
+    if (presenterMode) {
+      closePresenterMode()
+      return
+    }
+
+    openPresenterMode()
   }
 
   useEffect(() => {
-    const syncFullscreen = () => setPresenterMode(Boolean(document.fullscreenElement))
+    const syncFullscreen = () => setPresenterFullscreen(Boolean(document.fullscreenElement))
     document.addEventListener("fullscreenchange", syncFullscreen)
     return () => document.removeEventListener("fullscreenchange", syncFullscreen)
   }, [])
+
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      if (event.key !== "Escape" || !presenterMode || document.fullscreenElement) return
+      setPresenterMode(false)
+      setPresenterFullscreen(false)
+    }
+
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [presenterMode])
 
   useEffect(() => {
     if (game.mode !== "battle" || !game.question) return
@@ -637,8 +683,8 @@ function HostPage() {
             <strong>{game.mode === "lesson" ? game.totalPhases || 0 : game.totalQuestions || questionCount}</strong>
             <span>{game.mode === "lesson" ? "Lesstappen klaar" : "Battlevragen klaar"}</span>
           </div>
-          <button className="button-secondary present-button" onClick={toggleFullscreen} type="button">
-            {presenterMode ? "Verlaat schermvullend" : "Digibordmodus"}
+          <button className="button-secondary present-button" onClick={togglePresenterMode} type="button">
+            {presenterMode ? presenterFullscreen ? "Sluit digibordmodus" : "Sluit presentatie" : "Digibordmodus"}
           </button>
         </div>
       </section>
@@ -1084,7 +1130,7 @@ function HostPage() {
         <LessonPresenterOverlay
           insights={hostInsights}
           lesson={game.lesson}
-          onClose={toggleFullscreen}
+          onClose={closePresenterMode}
           onNext={goToNextStep}
         />
       ) : null}
@@ -1710,7 +1756,7 @@ function LessonStageCard({ lesson, hostView = false }) {
 function SlideVisual({ slide, compact = false }) {
   const [hasImageError, setHasImageError] = useState(false)
   const prompt = slide?.imagePrompt || `${slide?.title || ""} ${slide?.focus || slide?.studentViewText || ""}`.trim()
-  const imageUrl = prompt ? buildQuestionImageUrl(prompt, "Presentatie") : ""
+  const imageUrl = prompt ? buildQuestionImageUrl(prompt, slide?.title || "Presentatie", { kind: "slide" }) : ""
 
   useEffect(() => {
     setHasImageError(false)
@@ -1801,7 +1847,7 @@ function LessonPresenterOverlay({ lesson, insights, onNext, onClose }) {
 
   return (
     <div className="presenter-overlay">
-      <div className="presenter-backdrop" />
+      <button aria-label="Sluit presentatieweergave" className="presenter-backdrop" onClick={onClose} type="button" />
       <section className="presenter-stage-frame">
         <div className="presenter-topbar">
           <div>
@@ -1847,7 +1893,7 @@ function LessonPresenterOverlay({ lesson, insights, onNext, onClose }) {
         </div>
 
         <div className="presenter-bottombar">
-          <span className="presenter-hint">ESC of knop om fullscreen te verlaten</span>
+          <span className="presenter-hint">ESC of klik buiten de kaart om de presentatieweergave te sluiten</span>
           <div className="presenter-actions">
             <button className="button-ghost" onClick={onClose} type="button">
               Sluit presentatieweergave
@@ -2617,7 +2663,7 @@ function playTone(frequency, duration, type = "sine") {
 function QuestionVisual({ question }) {
   const [hasImageError, setHasImageError] = useState(false)
   const prompt = getQuestionPrompt(question)
-  const imageUrl = buildQuestionImageUrl(question.imagePrompt || prompt, question.category)
+  const imageUrl = buildQuestionImageUrl(question.imagePrompt || prompt, question.category, { kind: "question" })
 
   useEffect(() => {
     setHasImageError(false)
@@ -2821,10 +2867,11 @@ function RosterBoard({ players, teams, compact = false, onRemovePlayer, onlineCo
   )
 }
 
-function buildQuestionImageUrl(prompt, category) {
+function buildQuestionImageUrl(prompt, category, options = {}) {
   const searchParams = new URLSearchParams({
     prompt,
     category: category || "",
+    kind: options.kind || "question",
   })
 
   return `/api/question-image?${searchParams.toString()}`
