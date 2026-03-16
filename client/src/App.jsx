@@ -108,6 +108,43 @@ function buildAnswerStatusText(payload) {
   return "Niet correct. Kijk naar de uitleg en ga daarna verder."
 }
 
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result || ""))
+    reader.onerror = () => reject(new Error("Bestand kon niet worden gelezen."))
+    reader.readAsDataURL(file)
+  })
+}
+
+function loadImageElement(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const image = new Image()
+    image.onload = () => resolve(image)
+    image.onerror = () => reject(new Error("Afbeelding kon niet worden geopend."))
+    image.src = dataUrl
+  })
+}
+
+async function optimizeImageFile(file) {
+  const dataUrl = await readFileAsDataUrl(file)
+  if (String(file?.type || "").toLowerCase() === "image/svg+xml") return dataUrl
+
+  const image = await loadImageElement(dataUrl)
+  const maxWidth = 1600
+  const maxHeight = 1200
+  const scale = Math.min(1, maxWidth / image.width, maxHeight / image.height)
+  const width = Math.max(1, Math.round(image.width * scale))
+  const height = Math.max(1, Math.round(image.height * scale))
+  const canvas = document.createElement("canvas")
+  canvas.width = width
+  canvas.height = height
+  const context = canvas.getContext("2d")
+  if (!context) return dataUrl
+  context.drawImage(image, 0, 0, width, height)
+  return canvas.toDataURL("image/jpeg", 0.86)
+}
+
 function App() {
   const path = window.location.pathname
 
@@ -222,6 +259,9 @@ function HostPage() {
   const [teacherPasswordDrafts, setTeacherPasswordDrafts] = useState({})
   const [loginForm, setLoginForm] = useState(storedHostSession.loginForm)
   const [hostSession, setHostSession] = useState(storedHostSession.hostSession)
+  const [manualSlideImageUrlDraft, setManualSlideImageUrlDraft] = useState("")
+  const [manualSlideImageAltDraft, setManualSlideImageAltDraft] = useState("")
+  const [manualSlideUploadName, setManualSlideUploadName] = useState("")
 
   const activeMode = game.mode === "lesson" ? "lesson" : sessionMode === "battle" ? "battle" : "lesson"
   const includePracticeTest = lessonPackage === "practice" || lessonPackage === "complete"
@@ -236,6 +276,7 @@ function HostPage() {
         : selectedSuiteMode === "practice"
           ? "Oefentoets opbouwen"
           : "Les opbouwen"
+  const currentPresentationSlide = game.lesson?.presentation?.currentSlide || null
 
   useEffect(() => {
     if (teams.length > 0 && !isEditingTeams) {
@@ -333,6 +374,11 @@ function HostPage() {
       setTeacherPasswordDrafts({})
       setStatus(message || "Docentaccounts bijgewerkt.")
     }
+    const onPresentationImageSuccess = ({ manualImageUrl }) => {
+      setManualSlideImageUrlDraft(manualImageUrl || "")
+      setManualSlideUploadName("")
+      setStatus(manualImageUrl ? "Dia-afbeelding bijgewerkt." : "Handmatige dia-afbeelding verwijderd.")
+    }
 
     socket.on("host:login:success", onLoginSuccess)
     socket.on("host:configure:success", onConfigureSuccess)
@@ -353,6 +399,7 @@ function HostPage() {
     socket.on("host:history:load:success", onHistoryLoadSuccess)
     socket.on("host:history:delete:success", onHistoryDeleteSuccess)
     socket.on("host:teacher-accounts:success", onTeacherAccountsSuccess)
+    socket.on("host:presentation-image:success", onPresentationImageSuccess)
 
     return () => {
       socket.off("host:login:success", onLoginSuccess)
@@ -374,8 +421,15 @@ function HostPage() {
       socket.off("host:history:load:success", onHistoryLoadSuccess)
       socket.off("host:history:delete:success", onHistoryDeleteSuccess)
       socket.off("host:teacher-accounts:success", onTeacherAccountsSuccess)
+      socket.off("host:presentation-image:success", onPresentationImageSuccess)
     }
   }, [])
+
+  useEffect(() => {
+    setManualSlideImageUrlDraft(currentPresentationSlide?.manualImageUrl || "")
+    setManualSlideImageAltDraft(currentPresentationSlide?.imageAlt || currentPresentationSlide?.title || "")
+    setManualSlideUploadName("")
+  }, [currentPresentationSlide?.id, currentPresentationSlide?.manualImageUrl, currentPresentationSlide?.imageAlt, currentPresentationSlide?.title])
 
   useEffect(() => {
     window.sessionStorage.setItem(
@@ -650,6 +704,48 @@ function HostPage() {
       prompt: lessonPromptDraft,
       expectedAnswer: lessonExpectedAnswerDraft,
     })
+  }
+
+  const saveManualSlideImageUrl = () => {
+    if (!currentPresentationSlide?.id) {
+      setStatus("Er is nu geen actieve dia om een afbeelding aan te koppelen.")
+      return
+    }
+    setStatus("Dia-afbeelding wordt bijgewerkt...")
+    socket.emit("host:presentation-image:update", {
+      slideId: currentPresentationSlide.id,
+      imageUrl: manualSlideImageUrlDraft,
+      imageAlt: manualSlideImageAltDraft,
+    })
+  }
+
+  const clearManualSlideImage = () => {
+    if (!currentPresentationSlide?.id) {
+      setStatus("Er is nu geen actieve dia om een afbeelding te wissen.")
+      return
+    }
+    setStatus("Handmatige dia-afbeelding wordt verwijderd...")
+    socket.emit("host:presentation-image:clear", {
+      slideId: currentPresentationSlide.id,
+    })
+  }
+
+  const uploadManualSlideImage = async (file) => {
+    if (!currentPresentationSlide?.id || !file) return
+    setManualSlideUploadName(file.name || "upload")
+    setStatus("Afbeelding wordt geoptimaliseerd en geupload...")
+
+    try {
+      const optimizedDataUrl = await optimizeImageFile(file)
+      socket.emit("host:presentation-image:update", {
+        slideId: currentPresentationSlide.id,
+        uploadDataUrl: optimizedDataUrl,
+        imageAlt: manualSlideImageAltDraft,
+      })
+    } catch (error) {
+      setManualSlideUploadName("")
+      setStatus(error instanceof Error ? error.message : "Uploaden van de afbeelding is mislukt.")
+    }
   }
 
   return (
@@ -1051,6 +1147,18 @@ function HostPage() {
                 interactive={Boolean(game.lesson?.presentation?.currentSlide)}
                 onOpen={openPresenterMode}
                 presentation={game.lesson?.presentation}
+              />
+              <ManualSlideImageCard
+                altText={manualSlideImageAltDraft}
+                hasManualImage={Boolean(currentPresentationSlide?.manualImageUrl)}
+                imageUrl={manualSlideImageUrlDraft}
+                onAltTextChange={setManualSlideImageAltDraft}
+                onClear={clearManualSlideImage}
+                onImageUrlChange={setManualSlideImageUrlDraft}
+                onSaveUrl={saveManualSlideImageUrl}
+                onUpload={uploadManualSlideImage}
+                slide={currentPresentationSlide}
+                uploadName={manualSlideUploadName}
               />
               <LessonPromptComposer
                 expectedAnswer={lessonExpectedAnswerDraft}
@@ -1768,12 +1876,16 @@ function LessonStageCard({ lesson, hostView = false }) {
 
 function SlideVisual({ slide, compact = false }) {
   const [hasImageError, setHasImageError] = useState(false)
+  const [manualFallbackUsed, setManualFallbackUsed] = useState(false)
   const prompt = slide?.imagePrompt || `${slide?.title || ""} ${slide?.focus || slide?.studentViewText || ""}`.trim()
-  const imageUrl = prompt ? buildQuestionImageUrl(prompt, slide?.title || "Presentatie", { kind: "slide" }) : ""
+  const generatedImageUrl = prompt ? buildQuestionImageUrl(prompt, slide?.title || "Presentatie", { kind: "slide" }) : ""
+  const manualImageUrl = slide?.manualImageUrl || ""
+  const imageUrl = manualImageUrl && !manualFallbackUsed ? manualImageUrl : generatedImageUrl
 
   useEffect(() => {
     setHasImageError(false)
-  }, [slide?.id])
+    setManualFallbackUsed(false)
+  }, [slide?.id, slide?.manualImageUrl])
 
   if (!prompt || hasImageError) {
     return (
@@ -1789,9 +1901,84 @@ function SlideVisual({ slide, compact = false }) {
     <img
       alt={slide?.imageAlt || slide?.title || "Presentatiedia"}
       className={`slide-visual ${compact ? "compact" : ""}`}
-      onError={() => setHasImageError(true)}
+      onError={() => {
+        if (manualImageUrl && !manualFallbackUsed) {
+          setManualFallbackUsed(true)
+          return
+        }
+        setHasImageError(true)
+      }}
       src={imageUrl}
     />
+  )
+}
+
+function ManualSlideImageCard({
+  slide,
+  imageUrl,
+  altText,
+  uploadName,
+  hasManualImage,
+  onImageUrlChange,
+  onAltTextChange,
+  onSaveUrl,
+  onUpload,
+  onClear,
+}) {
+  if (!slide) return null
+
+  return (
+    <section className="glass board-card manual-image-card">
+      <div className="section-head">
+        <h2>Dia-afbeelding</h2>
+        <span className="pill">{slide.title}</span>
+      </div>
+      <p className="muted">
+        Zoek zelf een passende afbeelding en plak de directe afbeeldingslink, of upload een bestand. Deze afbeelding overschrijft AI voor deze dia.
+      </p>
+      <div className="field-row manual-image-grid">
+        <label className="field">
+          <span>Afbeeldingslink</span>
+          <input
+            onChange={(event) => onImageUrlChange(event.target.value)}
+            placeholder="https://voorbeeld.nl/afbeelding.jpg"
+            value={imageUrl}
+          />
+        </label>
+        <label className="field">
+          <span>Alt-tekst</span>
+          <input
+            onChange={(event) => onAltTextChange(event.target.value)}
+            placeholder="Korte beschrijving van de afbeelding"
+            value={altText}
+          />
+        </label>
+      </div>
+      <div className="manual-image-actions">
+        <button className="button-secondary" disabled={!imageUrl.trim()} onClick={onSaveUrl} type="button">
+          Gebruik link
+        </button>
+        <label className="button-ghost manual-upload-button">
+          Upload afbeelding
+          <input
+            accept="image/*"
+            onChange={(event) => {
+              const file = event.target.files?.[0]
+              if (file) onUpload(file)
+              event.target.value = ""
+            }}
+            type="file"
+          />
+        </label>
+        <button className="button-ghost subtle-danger" disabled={!hasManualImage} onClick={onClear} type="button">
+          Wis handmatige afbeelding
+        </button>
+      </div>
+      <div className="manual-image-meta">
+        <span>{hasManualImage ? "Handmatige afbeelding actief" : "AI-afbeelding actief"}</span>
+        {uploadName ? <strong>{uploadName}</strong> : null}
+      </div>
+    </section>
   )
 }
 

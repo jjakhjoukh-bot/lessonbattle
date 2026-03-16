@@ -1854,6 +1854,47 @@ body::after {
   color: #f2f8ff;
 }
 
+.manual-image-card {
+  display: grid;
+  gap: 14px;
+}
+
+.manual-image-grid {
+  grid-template-columns: 1.4fr 1fr;
+}
+
+.manual-image-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.manual-upload-button {
+  position: relative;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.manual-upload-button input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.manual-image-meta {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+  color: var(--muted);
+}
+
+.manual-image-meta strong {
+  color: #f8fbff;
+}
+
 .lesson-library-section {
   margin-top: 22px;
 }
@@ -2175,7 +2216,8 @@ body::after {
   .presentation-stage.has-video,
   .presentation-stage.is-single,
   .presentation-slide-canvas,
-  .presentation-slide-canvas.is-board {
+  .presentation-slide-canvas.is-board,
+  .manual-image-grid {
     grid-template-columns: 1fr;
   }
 }
@@ -2252,7 +2294,15 @@ body::after {
   .presentation-stage.is-single,
   .presentation-slide-canvas,
   .presentation-slide-canvas.is-board,
-  .presenter-support-grid {
+  .presenter-support-grid,
+  .manual-image-grid,
+  .manual-image-actions,
+  .manual-image-meta {
     grid-template-columns: 1fr;
+  }
+
+  .manual-image-actions,
+  .manual-image-meta {
+    display: grid;
   }
 }

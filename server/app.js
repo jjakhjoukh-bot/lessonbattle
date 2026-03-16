@@ -20,6 +20,7 @@ const sessionHistoryPath = path.join(sharedDataPath, "session-history.json")
 const activeRoomsPath = path.join(sharedDataPath, "active-rooms.json")
 const teacherAccountsPath = path.join(sharedDataPath, "teacher-accounts.json")
 const generatedImagesPath = path.join(sharedDataPath, "generated-images")
+const manualImagesPath = path.join(sharedDataPath, "manual-images")
 
 if (fs.existsSync(envPath)) {
   const envLines = fs.readFileSync(envPath, "utf8").split(/\r?\n/)
@@ -92,6 +93,11 @@ function ensureSharedDataDir() {
 function ensureGeneratedImagesDir() {
   ensureSharedDataDir()
   fs.mkdirSync(generatedImagesPath, { recursive: true })
+}
+
+function ensureManualImagesDir() {
+  ensureSharedDataDir()
+  fs.mkdirSync(manualImagesPath, { recursive: true })
 }
 
 function createPlayerRecord({
@@ -195,6 +201,57 @@ function escapeSvgText(value, maxLength = 160) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
+}
+
+function mimeTypeToExtension(mimeType = "") {
+  const normalized = String(mimeType).toLowerCase()
+  if (normalized === "image/png") return "png"
+  if (normalized === "image/jpeg" || normalized === "image/jpg") return "jpg"
+  if (normalized === "image/webp") return "webp"
+  if (normalized === "image/gif") return "gif"
+  if (normalized === "image/svg+xml") return "svg"
+  return ""
+}
+
+function sanitizeManualImageUrl(value = "") {
+  const rawValue = String(value || "").trim()
+  if (!rawValue) return ""
+  if (rawValue.startsWith("/manual-images/")) return rawValue
+
+  try {
+    const parsed = new URL(rawValue)
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      return parsed.toString()
+    }
+  } catch {
+    return ""
+  }
+
+  return ""
+}
+
+function saveManualImageFromDataUrl({ dataUrl = "", entityId = "slide" }) {
+  const match = String(dataUrl).match(/^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i)
+  if (!match) {
+    throw new Error("Uploadbestand heeft geen geldig afbeeldingsformaat.")
+  }
+
+  const mimeType = match[1].toLowerCase()
+  const extension = mimeTypeToExtension(mimeType)
+  if (!extension) {
+    throw new Error("Alleen PNG, JPG, WEBP, GIF of SVG worden ondersteund.")
+  }
+
+  const imageBuffer = Buffer.from(match[2], "base64")
+  if (!imageBuffer.length) {
+    throw new Error("De geuploade afbeelding is leeg.")
+  }
+
+  ensureManualImagesDir()
+  const fileName = `${String(entityId || "slide").replace(/[^a-z0-9-_]/gi, "-")}-${Date.now().toString(36)}.${extension}`
+  const filePath = path.join(manualImagesPath, fileName)
+  fs.writeFileSync(filePath, imageBuffer)
+  return `/manual-images/${fileName}`
 }
 
 function wrapSvgText(value, maxChars = 26, maxLines = 3) {
@@ -752,6 +809,7 @@ function sanitizePresentationSlide(slide, viewer = "host") {
     bullets: [...(slide.bullets || [])],
     imagePrompt: slide.imagePrompt || "",
     imageAlt: slide.imageAlt || slide.title || "Presentatiedia",
+    manualImageUrl: sanitizeManualImageUrl(slide.manualImageUrl || ""),
   }
 
   if (viewer === "player") return safeSlide
@@ -2689,6 +2747,7 @@ function normalizePresentationPackage(rawPresentation, lesson, { includeVideoPla
         existingPrompt: slide?.imagePrompt,
       }),
       imageAlt: String(slide?.imageAlt ?? "").trim() || `${String(slide?.title ?? "").trim()} dia`,
+      manualImageUrl: sanitizeManualImageUrl(slide?.manualImageUrl || ""),
     }))
     .filter((slide) => slide.title && (slide.bullets.length || slide.studentViewText || slide.focus))
     .slice(0, safeSlideCount)
@@ -2709,6 +2768,7 @@ function normalizePresentationPackage(rawPresentation, lesson, { includeVideoPla
             focus: phase.goal,
           }),
           imageAlt: `${phase.title} dia`,
+          manualImageUrl: "",
         })).slice(0, safeSlideCount)
 
   const rawVideo = safePresentation.video
@@ -3483,6 +3543,9 @@ app.get("/api/question-image", async (req, res) => {
   res.status(200).send(buildQuestionSvg({ prompt, category }))
 })
 
+ensureManualImagesDir()
+app.use("/manual-images", express.static(manualImagesPath))
+
 if (fs.existsSync(clientDistPath)) {
   app.use(express.static(clientDistPath))
   app.get(/.*/, (req, res, next) => {
@@ -4116,6 +4179,97 @@ io.on("connection", (socket) => {
     emitStateToRoom(room)
     emitLessonPromptUpdate(room)
     socket.emit("host:lesson-prompt:success", { prompt: room.lesson.activePrompt })
+  })
+
+  socket.on("host:presentation-image:update", ({ slideId, imageUrl, imageAlt, uploadDataUrl }) => {
+    const room = requireHostRoom(socket)
+    if (!room || room.game.mode !== "lesson" || !room.lesson?.presentation?.slides?.length) return
+
+    const normalizedSlideId = String(slideId ?? "").trim()
+    if (!normalizedSlideId) {
+      socket.emit("host:error", { message: "Kies eerst een dia voordat je een afbeelding instelt." })
+      return
+    }
+
+    const slideExists = room.lesson.presentation.slides.some((slide) => slide.id === normalizedSlideId)
+    if (!slideExists) {
+      socket.emit("host:error", { message: "Deze dia bestaat niet meer in de huidige presentatie." })
+      return
+    }
+
+    let nextManualImageUrl = sanitizeManualImageUrl(imageUrl)
+    try {
+      if (String(uploadDataUrl || "").trim()) {
+        nextManualImageUrl = saveManualImageFromDataUrl({
+          dataUrl: uploadDataUrl,
+          entityId: normalizedSlideId,
+        })
+      }
+    } catch (error) {
+      socket.emit("host:error", {
+        message: error instanceof Error ? error.message : "De afbeelding kon niet worden opgeslagen.",
+      })
+      return
+    }
+
+    if (!nextManualImageUrl) {
+      socket.emit("host:error", { message: "Plak een geldige afbeeldingslink of upload een bestand." })
+      return
+    }
+
+    room.lesson = {
+      ...room.lesson,
+      presentation: {
+        ...room.lesson.presentation,
+        slides: room.lesson.presentation.slides.map((slide) =>
+          slide.id === normalizedSlideId
+            ? {
+                ...slide,
+                manualImageUrl: nextManualImageUrl,
+                imageAlt: String(imageAlt ?? "").trim() || slide.imageAlt || slide.title || "Presentatiedia",
+              }
+            : slide
+        ),
+      },
+    }
+
+    emitStateToRoom(room)
+    socket.emit("host:presentation-image:success", {
+      slideId: normalizedSlideId,
+      manualImageUrl: nextManualImageUrl,
+    })
+  })
+
+  socket.on("host:presentation-image:clear", ({ slideId }) => {
+    const room = requireHostRoom(socket)
+    if (!room || room.game.mode !== "lesson" || !room.lesson?.presentation?.slides?.length) return
+
+    const normalizedSlideId = String(slideId ?? "").trim()
+    if (!normalizedSlideId) {
+      socket.emit("host:error", { message: "Kies eerst een dia voordat je de afbeelding wist." })
+      return
+    }
+
+    room.lesson = {
+      ...room.lesson,
+      presentation: {
+        ...room.lesson.presentation,
+        slides: room.lesson.presentation.slides.map((slide) =>
+          slide.id === normalizedSlideId
+            ? {
+                ...slide,
+                manualImageUrl: "",
+              }
+            : slide
+        ),
+      },
+    }
+
+    emitStateToRoom(room)
+    socket.emit("host:presentation-image:success", {
+      slideId: normalizedSlideId,
+      manualImageUrl: "",
+    })
   })
 
   socket.on("host:delete-lesson", ({ lessonId }) => {
