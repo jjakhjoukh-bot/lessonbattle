@@ -59,6 +59,11 @@ const AI_ROUND_GENERATION_TIMEOUT_MS = 120000
 const AI_RESPONSE_EVALUATION_TIMEOUT_MS = 12000
 const LESSON_EVALUATION_CACHE_LIMIT = 500
 const SESSION_HISTORY_LIMIT = 120
+const BASE_CORRECT_POINTS = 100
+const MAX_SPEED_BONUS = 100
+const FINAL_SPRINT_QUESTIONS = 2
+const FINAL_SPRINT_CLOSE_GAP = BASE_CORRECT_POINTS + MAX_SPEED_BONUS
+const ANSWER_GRACE_MS = 500
 const hostSocketIds = new Set()
 const hostSessions = new Map()
 const socketToRoom = new Map()
@@ -124,6 +129,15 @@ function createIdleGameState() {
     mode: "battle",
     lessonModel: "edi",
     lessonDurationMinutes: 45,
+    questionMultiplier: 1,
+    finalSprintActive: false,
+    leadingTeamId: null,
+    leadingTeamName: "",
+    leadingTeamScore: 0,
+    runnerUpTeamId: null,
+    runnerUpTeamName: "",
+    runnerUpTeamScore: 0,
+    leadingGap: 0,
   }
 }
 
@@ -673,6 +687,108 @@ function syncTeamScores(room) {
   }))
 }
 
+function sortedTeamsByScore(room) {
+  syncTeamScores(room)
+  return [...room.teams].sort((left, right) => right.score - left.score || left.name.localeCompare(right.name))
+}
+
+function getTeamRaceSnapshot(room) {
+  const sortedTeams = sortedTeamsByScore(room)
+  const leader = sortedTeams[0] ?? null
+  const runnerUp = sortedTeams[1] ?? null
+  const gap = leader && runnerUp ? Math.max(0, leader.score - runnerUp.score) : 0
+
+  return {
+    sortedTeams,
+    leader,
+    runnerUp,
+    gap,
+  }
+}
+
+function getQuestionScoringProfile(room, questionIndex = room.currentQuestionIndex) {
+  const isBattleRound = room?.game?.mode === "battle" && room?.game?.source !== "practice"
+  const remainingIncludingCurrent =
+    Number.isInteger(questionIndex) && questionIndex >= 0
+      ? Math.max(0, room.questions.length - questionIndex)
+      : 0
+  const race = getTeamRaceSnapshot(room)
+  const closeScoreRace = Boolean(race.leader && race.runnerUp && race.gap <= FINAL_SPRINT_CLOSE_GAP)
+  const finalSprintActive = Boolean(
+    isBattleRound && remainingIncludingCurrent > 0 && remainingIncludingCurrent <= FINAL_SPRINT_QUESTIONS && closeScoreRace
+  )
+
+  return {
+    multiplier: finalSprintActive ? 2 : 1,
+    finalSprintActive,
+    remainingIncludingCurrent,
+    leader: race.leader,
+    runnerUp: race.runnerUp,
+    gap: race.gap,
+  }
+}
+
+function applyQuestionScoringProfile(room, questionIndex = room.currentQuestionIndex) {
+  const profile = getQuestionScoringProfile(room, questionIndex)
+
+  room.game = {
+    ...room.game,
+    questionMultiplier: profile.multiplier,
+    finalSprintActive: profile.finalSprintActive,
+    leadingTeamId: profile.leader?.id ?? null,
+    leadingTeamName: profile.leader?.name ?? "",
+    leadingTeamScore: profile.leader?.score ?? 0,
+    runnerUpTeamId: profile.runnerUp?.id ?? null,
+    runnerUpTeamName: profile.runnerUp?.name ?? "",
+    runnerUpTeamScore: profile.runnerUp?.score ?? 0,
+    leadingGap: profile.gap,
+  }
+
+  return profile
+}
+
+function getBattleAnswerScoring(room, elapsedMs, durationSec) {
+  const safeDurationMs = Math.max(1000, (Number(durationSec) || 20) * 1000)
+  const multiplier = Math.max(1, Number(room?.game?.questionMultiplier) || 1)
+  const remainingRatio = Math.max(0, Math.min(1, (safeDurationMs - elapsedMs) / safeDurationMs))
+  const basePoints = BASE_CORRECT_POINTS * multiplier
+  const speedBonus = Math.max(0, Math.round(MAX_SPEED_BONUS * multiplier * remainingRatio))
+
+  return {
+    multiplier,
+    basePoints,
+    speedBonus,
+    awardedPoints: basePoints + speedBonus,
+  }
+}
+
+function buildPlayerAnswerResultPayload(room, player, answerRecord, question) {
+  return {
+    answerIndex: answerRecord?.answerIndex ?? null,
+    correct: Boolean(answerRecord?.isCorrect),
+    correctIndex: question?.correctIndex,
+    explanation: question?.explanation || "",
+    awardedPoints: Number(answerRecord?.awardedPoints) || 0,
+    basePoints: Number(answerRecord?.basePoints) || 0,
+    speedBonus: Number(answerRecord?.speedBonus) || 0,
+    multiplier: Math.max(1, Number(answerRecord?.multiplier) || Number(room?.game?.questionMultiplier) || 1),
+    playerScore: player?.score ?? 0,
+    teamScore: room.teams.find((team) => team.id === player?.teamId)?.score ?? 0,
+  }
+}
+
+function emitBattleRevealResults(room, question) {
+  if (!question) return
+
+  for (const player of room.players) {
+    if (!player?.socketId) continue
+    const answerRecord = room.playerAnswers.get(player.id)
+    if (!answerRecord) continue
+
+    io.to(player.socketId).emit("player:answer:result", buildPlayerAnswerResultPayload(room, player, answerRecord, question))
+  }
+}
+
 function leaderboard(room) {
   return [...room.players].sort((a, b) => b.score - a.score || a.name.localeCompare(b.name))
 }
@@ -697,6 +813,7 @@ function reassignPlayersToExistingTeams(room) {
 
 function buildStatePayload(room, viewer = "host") {
   syncTeamScores(room)
+  const race = getTeamRaceSnapshot(room)
   const lessonPhase = currentLessonPhase(room)
   const onlinePlayers = getOnlinePlayers(room)
   const answeredCount =
@@ -717,6 +834,15 @@ function buildStatePayload(room, viewer = "host") {
       currentPhaseIndex: room.lesson?.currentPhaseIndex ?? -1,
       totalPhases: room.lesson?.phases?.length ?? 0,
       roomCodeActive: true,
+      questionMultiplier: Math.max(1, Number(room.game.questionMultiplier) || 1),
+      finalSprintActive: Boolean(room.game.finalSprintActive),
+      leadingTeamId: room.game.leadingTeamId ?? race.leader?.id ?? null,
+      leadingTeamName: room.game.leadingTeamName || race.leader?.name || "",
+      leadingTeamScore: Number(room.game.leadingTeamScore) || race.leader?.score || 0,
+      runnerUpTeamId: room.game.runnerUpTeamId ?? race.runnerUp?.id ?? null,
+      runnerUpTeamName: room.game.runnerUpTeamName || race.runnerUp?.name || "",
+      runnerUpTeamScore: Number(room.game.runnerUpTeamScore) || race.runnerUp?.score || 0,
+      leadingGap: Number(room.game.leadingGap) || race.gap || 0,
       answeredCount,
       totalPlayers,
       allAnswered: totalPlayers > 0 && answeredCount >= totalPlayers,
@@ -1182,6 +1308,9 @@ function deserializeRoomSnapshot(snapshot) {
               isCorrect: Boolean(answer?.isCorrect),
               elapsedMs: Number(answer?.elapsedMs) || 0,
               awardedPoints: Number(answer?.awardedPoints) || 0,
+              basePoints: Number(answer?.basePoints) || 0,
+              speedBonus: Number(answer?.speedBonus) || 0,
+              multiplier: Math.max(1, Number(answer?.multiplier) || 1),
             },
           ])
         : []
@@ -1256,6 +1385,17 @@ function restoreRoomsFromDisk() {
 
 function buildHostInsights(room) {
   const onlinePlayers = getOnlinePlayers(room)
+  const unansweredPlayers = room.players
+    .filter((player) =>
+      room.game.mode === "lesson" ? !room.lessonResponses.has(player.id) : !room.playerAnswers.has(player.id)
+    )
+    .map((player) => ({
+      playerId: player.id,
+      name: player.name,
+      teamId: player.teamId,
+      teamName: room.teams.find((team) => team.id === player.teamId)?.name || "",
+      connected: player.connected !== false,
+    }))
 
   if (room.game.mode === "lesson") {
     const phase = currentLessonPhase(room)
@@ -1274,6 +1414,7 @@ function buildHostInsights(room) {
       allAnswered,
       canAdvance: allAnswered,
       expectedAnswer: getActiveLessonExpectedAnswer(room.lesson),
+      unansweredPlayers,
       responses: room.players.map((player) => {
         const response = room.lessonResponses.get(player.id)
         return {
@@ -1297,6 +1438,7 @@ function buildHostInsights(room) {
   const answeredCount = room.answeredPlayers.size
   const totalPlayers = onlinePlayers.length
   const allAnswered = totalPlayers > 0 && answeredCount >= totalPlayers
+  const race = getTeamRaceSnapshot(room)
   const distribution = (question.options || []).map((option, index) => {
     const playersForOption = room.players.filter((player) => room.playerAnswers.get(player.id)?.answerIndex === index)
     return {
@@ -1324,6 +1466,11 @@ function buildHostInsights(room) {
     correctIndex: question ? question.correctIndex : null,
     correctOption: question ? question.options[question.correctIndex] : null,
     explanation: question ? question.explanation : "",
+    questionMultiplier: Math.max(1, Number(room.game.questionMultiplier) || 1),
+    finalSprintActive: Boolean(room.game.finalSprintActive),
+    leadingTeamName: room.game.leadingTeamName || race.leader?.name || "",
+    leadingGap: Number(room.game.leadingGap) || race.gap || 0,
+    unansweredPlayers,
     distribution,
     responses: room.players.map((player) => {
       const answer = room.playerAnswers.get(player.id)
@@ -1338,6 +1485,11 @@ function buildHostInsights(room) {
         answerIndex: answer?.answerIndex ?? null,
         answerText: answer ? question?.options?.[answer.answerIndex] ?? null : null,
         isCorrect: answer ? answer.isCorrect : null,
+        awardedPoints: Number(answer?.awardedPoints) || 0,
+        basePoints: Number(answer?.basePoints) || 0,
+        speedBonus: Number(answer?.speedBonus) || 0,
+        multiplier: Math.max(1, Number(answer?.multiplier) || 1),
+        elapsedMs: Number(answer?.elapsedMs) || 0,
       }
     }),
   }
@@ -1417,6 +1569,7 @@ function emitStateToSocket(socket, room) {
 }
 
 function stampQuestionStart(room) {
+  applyQuestionScoringProfile(room, room.currentQuestionIndex)
   room.game = {
     ...room.game,
     questionStartedAt: new Date().toISOString(),
@@ -1430,6 +1583,7 @@ function setCurrentQuestionPreview(room, questionIndex) {
   room.currentQuestionIndex = nextQuestion ? questionIndex : -1
   room.answeredPlayers = new Set()
   room.playerAnswers = new Map()
+  const scoringProfile = nextQuestion ? applyQuestionScoringProfile(room, questionIndex) : null
   room.game = {
     ...room.game,
     questionStartedAt: null,
@@ -1437,6 +1591,15 @@ function setCurrentQuestionPreview(room, questionIndex) {
     status: nextQuestion ? "preview" : room.questions.length ? "finished" : "idle",
     answerRevealed: false,
     mode: "battle",
+    questionMultiplier: scoringProfile?.multiplier ?? 1,
+    finalSprintActive: Boolean(scoringProfile?.finalSprintActive),
+    leadingTeamId: scoringProfile?.leader?.id ?? null,
+    leadingTeamName: scoringProfile?.leader?.name ?? "",
+    leadingTeamScore: scoringProfile?.leader?.score ?? 0,
+    runnerUpTeamId: scoringProfile?.runnerUp?.id ?? null,
+    runnerUpTeamName: scoringProfile?.runnerUp?.name ?? "",
+    runnerUpTeamScore: scoringProfile?.runnerUp?.score ?? 0,
+    leadingGap: scoringProfile?.gap ?? 0,
   }
 }
 
@@ -3757,7 +3920,8 @@ io.on("connection", (socket) => {
   socket.on("host:show-answer", () => {
     const room = requireHostRoom(socket)
     if (!room || room.game.mode !== "battle" || room.game.source === "practice") return
-    if (!currentQuestion(room)) return
+    const question = currentQuestion(room)
+    if (!question) return
 
     room.game = {
       ...room.game,
@@ -3766,6 +3930,7 @@ io.on("connection", (socket) => {
       answerRevealed: true,
     }
     emitStateToRoom(room)
+    emitBattleRevealResults(room, question)
   })
 
   socket.on("player:practice-next", () => {
@@ -3932,14 +4097,10 @@ io.on("connection", (socket) => {
     if (storedAnswer) {
       const activeQuestion = currentQuestion(room)
       if (room.game.source === "practice" && activeQuestion) {
-        socket.emit("player:answer:result", {
-          answerIndex: storedAnswer.answerIndex,
-          correct: storedAnswer.isCorrect,
-          correctIndex: activeQuestion.correctIndex,
-          explanation: activeQuestion.explanation,
-          playerScore: joinedPlayer?.score ?? 0,
-          teamScore: room.teams.find((team) => team.id === selectedTeamId)?.score ?? 0,
-        })
+        socket.emit(
+          "player:answer:result",
+          buildPlayerAnswerResultPayload(room, joinedPlayer, storedAnswer, activeQuestion)
+        )
       } else {
         socket.emit(
           "player:answer:result",
@@ -3950,14 +4111,7 @@ io.on("connection", (socket) => {
                 playerScore: joinedPlayer?.score ?? 0,
                 teamScore: room.teams.find((team) => team.id === selectedTeamId)?.score ?? 0,
               }
-            : {
-                answerIndex: storedAnswer.answerIndex,
-                correct: storedAnswer.isCorrect,
-                correctIndex: activeQuestion?.correctIndex,
-                explanation: activeQuestion?.explanation || "",
-                playerScore: joinedPlayer?.score ?? 0,
-                teamScore: room.teams.find((team) => team.id === selectedTeamId)?.score ?? 0,
-              }
+            : buildPlayerAnswerResultPayload(room, joinedPlayer, storedAnswer, activeQuestion)
         )
       }
     }
@@ -3984,32 +4138,37 @@ io.on("connection", (socket) => {
     const startTime = room.game.questionStartedAt ? new Date(room.game.questionStartedAt).getTime() : 0
     const currentDuration = Number(question.durationSec) || room.game.questionDurationSec
     const now = Date.now()
-    const withinAnswerWindow = startTime && now <= startTime + currentDuration * 1000
+    const withinAnswerWindow = startTime && now <= startTime + currentDuration * 1000 + ANSWER_GRACE_MS
     if (!withinAnswerWindow) return
 
     room.answeredPlayers.add(player.id)
     const isCorrect = answer === question.correctIndex
     const elapsedMs = Math.max(0, now - startTime)
-    const speedBonus = Math.max(0, Math.round(((currentDuration * 1000 - elapsedMs) / (currentDuration * 1000)) * 50))
-    const awardedPoints = isCorrect ? 100 + speedBonus : 0
+    const scoring = isCorrect
+      ? getBattleAnswerScoring(room, elapsedMs, currentDuration)
+      : {
+          multiplier: Math.max(1, Number(room.game.questionMultiplier) || 1),
+          basePoints: 0,
+          speedBonus: 0,
+          awardedPoints: 0,
+        }
     room.playerAnswers.set(player.id, {
       answerIndex: answer,
       isCorrect,
       elapsedMs,
-      awardedPoints,
+      awardedPoints: scoring.awardedPoints,
+      basePoints: scoring.basePoints,
+      speedBonus: scoring.speedBonus,
+      multiplier: scoring.multiplier,
     })
-    if (isCorrect) player.score += awardedPoints
+    if (isCorrect) player.score += scoring.awardedPoints
 
     syncTeamScores(room)
     if (room.game.source === "practice") {
-      socket.emit("player:answer:result", {
-        answerIndex: answer,
-        correct: isCorrect,
-        correctIndex: question.correctIndex,
-        explanation: question.explanation,
-        playerScore: player.score,
-        teamScore: room.teams.find((team) => team.id === player.teamId)?.score ?? 0,
-      })
+      socket.emit(
+        "player:answer:result",
+        buildPlayerAnswerResultPayload(room, player, room.playerAnswers.get(player.id), question)
+      )
     } else {
       socket.emit("player:answer:result", {
         answerIndex: answer,

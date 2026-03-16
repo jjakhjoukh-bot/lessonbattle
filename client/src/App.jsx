@@ -71,6 +71,42 @@ function formatHistoryDate(value) {
   }).format(date)
 }
 
+function sortTeamsByScore(teams = []) {
+  return [...teams].sort((left, right) => right.score - left.score || left.name.localeCompare(right.name))
+}
+
+function getTeamRaceSummary(teams = []) {
+  const sortedTeams = sortTeamsByScore(teams)
+  const leader = sortedTeams[0] ?? null
+  const runnerUp = sortedTeams[1] ?? null
+  const gap = leader && runnerUp ? Math.max(0, leader.score - runnerUp.score) : 0
+
+  return {
+    sortedTeams,
+    leader,
+    runnerUp,
+    gap,
+  }
+}
+
+function formatAnswerSpeed(elapsedMs) {
+  if (!Number.isFinite(elapsedMs) || elapsedMs < 0) return ""
+  const seconds = elapsedMs >= 10000 ? (elapsedMs / 1000).toFixed(0) : (elapsedMs / 1000).toFixed(1)
+  return `${seconds}s`
+}
+
+function buildAnswerStatusText(payload) {
+  if (!payload) return "Wacht op de volgende vraag."
+  if (payload.waitingForReveal) {
+    return "Je antwoord is opgeslagen. Wacht tot het juiste antwoord wordt getoond."
+  }
+  if (payload.correct) {
+    const multiplierText = payload.multiplier > 1 ? " Deze vraag telde dubbel." : ""
+    return `Goed! +${payload.awardedPoints || 0} punten.${multiplierText}`
+  }
+  return "Niet correct. Kijk naar de uitleg en ga daarna verder."
+}
+
 function App() {
   const path = window.location.pathname
 
@@ -92,6 +128,11 @@ function useQuizState() {
     questionDurationSec: 20,
     status: "idle",
     mode: "battle",
+    questionMultiplier: 1,
+    finalSprintActive: false,
+    leadingTeamName: "",
+    runnerUpTeamName: "",
+    leadingGap: 0,
     currentQuestionIndex: -1,
     totalQuestions: 0,
     currentPhaseIndex: -1,
@@ -973,13 +1014,16 @@ function HostPage() {
             <LessonCompleteCard lesson={game.lesson} />
           ) : game.question ? (
             <>
+              {game.mode === "battle" ? <BattleRaceBanner game={game} teams={teams} variant="compact" /> : null}
               <QuestionCard question={game.question} />
               {game.mode === "battle" && game.source !== "practice" ? (
                 <BattleQuestionControls
                   duration={battleDurationDraft}
+                  finalSprintActive={game.finalSprintActive}
                   onDurationChange={setBattleDurationDraft}
                   onReveal={showBattleAnswer}
                   onStart={startBattleQuestion}
+                  questionMultiplier={game.questionMultiplier}
                   status={game.status}
                 />
               ) : null}
@@ -1121,11 +1165,7 @@ function PlayerPage() {
       }
       setResult(payload)
       setAnswerLocked(true)
-      if (payload.waitingForReveal) {
-        setStatus("Je antwoord is opgeslagen. Wacht tot het juiste antwoord wordt getoond.")
-        return
-      }
-      setStatus(payload.correct ? "Goed antwoord. Je team pakt punten." : "Niet correct. Kijk naar de uitleg en ga daarna verder.")
+      setStatus(buildAnswerStatusText(payload))
     }
     const onLessonResponseResult = (payload) => {
       setLessonResult(payload)
@@ -1220,6 +1260,12 @@ function PlayerPage() {
 
   const availableTeams = joined ? teams : roomPreview.valid ? roomPreview.teams : teams
   const selectedTeam = availableTeams.find((team) => team.id === teamId)
+  const currentPlayer = useMemo(
+    () => players.find((player) => player.id === playerSessionId) || leaderboard.find((player) => player.id === playerSessionId) || null,
+    [leaderboard, playerSessionId, players]
+  )
+  const currentTeam = teams.find((team) => team.id === (currentPlayer?.teamId || teamId)) || selectedTeam || null
+  const currentRank = currentPlayer ? leaderboard.findIndex((player) => player.id === currentPlayer.id) + 1 : 0
   const isPracticeTestLive = game.source === "practice"
   const isLastPracticeQuestion = isPracticeTestLive && game.currentQuestionIndex + 1 >= game.totalQuestions
   const canAdvancePracticeQuestion =
@@ -1319,6 +1365,23 @@ function PlayerPage() {
             </div>
           </div>
 
+          {game.mode === "battle" ? (
+            <div className="player-score-strip">
+              <div className="player-score-pill">
+                <span>Jij</span>
+                <strong>{currentPlayer?.score ?? 0}</strong>
+              </div>
+              <div className="player-score-pill">
+                <span>Jouw team</span>
+                <strong>{currentTeam?.score ?? 0}</strong>
+              </div>
+              <div className="player-score-pill">
+                <span>Plek</span>
+                <strong>{currentRank ? `#${currentRank}` : "-"}</strong>
+              </div>
+            </div>
+          ) : null}
+
           {game.mode === "lesson" && game.lesson?.currentPhase ? (
             <>
               <LessonStageCard lesson={game.lesson} />
@@ -1333,6 +1396,7 @@ function PlayerPage() {
             </>
           ) : game.question ? (
             <>
+              {game.mode === "battle" ? <BattleRaceBanner game={game} teams={teams} /> : null}
               <ProgressBar current={game.currentQuestionIndex + 1} total={game.totalQuestions} timeLeft={timeLeft} duration={game.questionDurationSec} />
               <QuestionCard question={game.question} compact={false} showOptions={false} />
               {game.status === "live" || isPracticeTestLive || battleRevealVisible || result ? (
@@ -1378,18 +1442,41 @@ function PlayerPage() {
                 </div>
               ) : null}
               {battleRevealVisible ? (
-                <div className={`answer-result ${chosenAnswer === game.question.correctIndex ? "ok" : "bad"}`}>
-                  <strong>{chosenAnswer === game.question.correctIndex ? "Goed antwoord" : "Juiste antwoord"}</strong>
+                <div className={`answer-result ${result ? (result.correct ? "ok" : "bad") : chosenAnswer === game.question.correctIndex ? "ok" : ""}`}>
+                  <strong>
+                    {result
+                      ? result.correct
+                        ? `Goed! +${result.awardedPoints || 0} punten`
+                        : "Niet goed deze keer"
+                      : chosenAnswer === game.question.correctIndex
+                        ? "Goed antwoord"
+                        : "Juiste antwoord"}
+                  </strong>
                   <p>
                     {game.question.options[game.question.correctIndex]}
                     {game.question.explanation ? ` — ${game.question.explanation}` : ""}
                   </p>
+                  {result ? (
+                    <div className="score-breakdown">
+                      <span className="score-chip">Score totaal {result.playerScore}</span>
+                      <span className="score-chip">Team {result.teamScore}</span>
+                      {result.correct ? <span className="score-chip">Snelheid +{result.speedBonus || 0}</span> : null}
+                      {result.multiplier > 1 ? <span className="score-chip">x{result.multiplier} punten</span> : null}
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
-              {result && !result.waitingForReveal ? (
+              {result && !result.waitingForReveal && !battleRevealVisible ? (
                 <div className={`answer-result ${result.correct ? "ok" : "bad"}`}>
-                  <strong>{result.correct ? "Correct" : "Niet correct"}</strong>
+                  <strong>{result.correct ? `Correct • +${result.awardedPoints || 0}` : "Niet correct"}</strong>
                   <p>{result.explanation}</p>
+                  {result.correct ? (
+                    <div className="score-breakdown">
+                      <span className="score-chip">Basis {result.basePoints || 0}</span>
+                      <span className="score-chip">Snelheid +{result.speedBonus || 0}</span>
+                      {result.multiplier > 1 ? <span className="score-chip">x{result.multiplier}</span> : null}
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
               {isPracticeTestLive && canAdvancePracticeQuestion ? (
@@ -1813,7 +1900,7 @@ function LessonPromptComposer({
   )
 }
 
-function BattleQuestionControls({ status, duration, onDurationChange, onStart, onReveal }) {
+function BattleQuestionControls({ status, duration, onDurationChange, onStart, onReveal, questionMultiplier, finalSprintActive }) {
   const durationPresets = [10, 20, 30, 45, 60]
 
   return (
@@ -1826,6 +1913,15 @@ function BattleQuestionControls({ status, duration, onDurationChange, onStart, o
             : status === "revealed"
               ? "Het antwoord is zichtbaar voor leerlingen"
               : "De klas antwoordt nu"}
+        </span>
+      </div>
+
+      <div className={`question-points-panel ${finalSprintActive ? "is-final-sprint" : ""}`}>
+        <strong>{questionMultiplier > 1 ? `Deze vraag telt x${questionMultiplier}` : "Normale vraagpunten"}</strong>
+        <span>
+          {questionMultiplier > 1
+            ? "Basispunten en snelheidsbonus worden op deze vraag verdubbeld."
+            : "Goed antwoord = 100 punten. Sneller antwoorden geeft extra bonuspunten."}
         </span>
       </div>
 
@@ -2238,6 +2334,7 @@ function LessonDistributionChart({ responses, totalPlayers }) {
 
 function HostInsightsCard({ insights }) {
   if (!insights) return null
+  const unansweredPlayers = insights.unansweredPlayers || []
 
   if (insights.mode === "lesson") {
     return (
@@ -2277,6 +2374,23 @@ function HostInsightsCard({ insights }) {
 
         <LessonDistributionChart responses={insights.responses} totalPlayers={insights.totalPlayers} />
 
+        {unansweredPlayers.length ? (
+          <div className="missing-player-panel">
+            <div className="section-head">
+              <h3>Nog geen reactie</h3>
+              <span className="pill">{unansweredPlayers.length}</span>
+            </div>
+            <div className="missing-player-list">
+              {unansweredPlayers.map((player) => (
+                <div className={`missing-player-chip ${player.connected === false ? "offline" : ""}`} key={player.playerId}>
+                  <strong>{player.name}</strong>
+                  <span>{player.connected === false ? "Offline" : player.teamName || "Nog bezig"}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
         <div className="insight-grid">
           {insights.responses.map((response) => (
             <div
@@ -2295,7 +2409,10 @@ function HostInsightsCard({ insights }) {
                     <span>{response.feedback || "Reactie ontvangen."}</span>
                   </>
                 ) : (
-                  <b>Wacht nog</b>
+                  <>
+                    <span>{response.connected === false ? "Leerling is offline" : "Nog geen reactie binnen"}</span>
+                    <b>{response.connected === false ? "Offline" : "Wacht nog"}</b>
+                  </>
                 )}
               </div>
             </div>
@@ -2314,9 +2431,14 @@ function HostInsightsCard({ insights }) {
         </span>
       </div>
 
-      <div className="answer-result ok">
+      <div className={`answer-result ${insights.finalSprintActive ? "boost" : "ok"}`}>
         <strong>Juiste antwoord: {insights.correctOption}</strong>
         <p>{insights.explanation || "De docent kan dit antwoord direct bespreken."}</p>
+        <span className="answer-result-meta">
+          {insights.questionMultiplier > 1
+            ? `Dubbele punten actief. ${insights.leadingTeamName || "De koploper"} stond ${insights.leadingGap} punten voor.`
+            : "Scoring: 100 basispunten plus een snelheidsbonus voor snelle antwoorden."}
+        </span>
       </div>
 
       <BattleDistributionChart distribution={insights.distribution || []} totalPlayers={insights.totalPlayers} />
@@ -2329,6 +2451,23 @@ function HostInsightsCard({ insights }) {
             : "Je ziet de verdeling al live terwijl de rest nog antwoordt."}
         </p>
       </div>
+
+      {unansweredPlayers.length ? (
+        <div className="missing-player-panel">
+          <div className="section-head">
+            <h3>Nog niet geantwoord</h3>
+            <span className="pill">{unansweredPlayers.length}</span>
+          </div>
+          <div className="missing-player-list">
+            {unansweredPlayers.map((player) => (
+              <div className={`missing-player-chip ${player.connected === false ? "offline" : ""}`} key={player.playerId}>
+                <strong>{player.name}</strong>
+                <span>{player.connected === false ? "Offline" : player.teamName || "Nog bezig"}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       <div className="insight-grid">
         {insights.responses.map((response) => (
@@ -2344,10 +2483,20 @@ function HostInsightsCard({ insights }) {
               {response.answered ? (
                 <>
                   <span>{response.answerText || "Geen antwoordtekst"}</span>
-                  <b>{response.isCorrect ? "Goed" : "Fout"}</b>
+                  <b>{response.isCorrect ? `Goed • +${response.awardedPoints}` : "Fout • 0"}</b>
+                  {response.isCorrect ? (
+                    <span>
+                      {response.speedBonus ? `Snelheidsbonus +${response.speedBonus}` : "Goed zonder extra bonus"}
+                      {response.multiplier > 1 ? ` • x${response.multiplier}` : ""}
+                      {response.elapsedMs >= 0 ? ` • ${formatAnswerSpeed(response.elapsedMs)}` : ""}
+                    </span>
+                  ) : null}
                 </>
               ) : (
-                <b>Wacht nog</b>
+                <>
+                  <span>{response.connected === false ? "Leerling is offline" : "Nog geen antwoord binnen"}</span>
+                  <b>{response.connected === false ? "Offline" : "Wacht nog"}</b>
+                </>
               )}
             </div>
           </div>
@@ -2532,6 +2681,37 @@ function ResultsCard({ teams, leaderboard }) {
   )
 }
 
+function BattleRaceBanner({ teams, game, variant = "default" }) {
+  const { leader, runnerUp, gap } = getTeamRaceSummary(teams)
+
+  if (!leader) return null
+
+  return (
+    <section
+      className={`battle-race-banner ${variant === "compact" ? "compact" : ""} ${game.finalSprintActive ? "is-final-sprint" : ""}`}
+      style={{ "--team-accent": leader.color }}
+    >
+      <div>
+        <span className="eyebrow">{game.finalSprintActive ? "Finale sprint" : "Koploper"}</span>
+        <h3>{leader.name} staat bovenaan</h3>
+        <p>
+          {runnerUp
+            ? `${leader.score} punten, ${gap} voor op ${runnerUp.name}.`
+            : `${leader.score} punten in totaal.`}
+        </p>
+      </div>
+      <div className="battle-race-meta">
+        <strong>{game.questionMultiplier > 1 ? `x${game.questionMultiplier} punten` : "Live stand"}</strong>
+        <span>
+          {game.finalSprintActive
+            ? "Deze vraag telt dubbel omdat de teams dicht bij elkaar zitten."
+            : "Je ziet hier steeds welk team momenteel bovenaan staat."}
+        </span>
+      </div>
+    </section>
+  )
+}
+
 function ProgressBar({ current, total, timeLeft, duration }) {
   const progress = total ? Math.max(0, Math.min(100, (current / total) * 100)) : 0
   const timeProgress = duration ? Math.max(0, Math.min(100, (timeLeft / duration) * 100)) : 100
@@ -2570,6 +2750,8 @@ function LobbyCard({ roomCode, teams, players, onlineCount }) {
 }
 
 function ScoreBoard({ teams, leaderboard, compact = false }) {
+  const sortedTeams = sortTeamsByScore(teams)
+
   return (
     <section className={`glass board-card ${compact ? "compact" : ""}`}>
       <div className="section-head">
@@ -2577,8 +2759,8 @@ function ScoreBoard({ teams, leaderboard, compact = false }) {
         <span className="pill">Live</span>
       </div>
       <div className="team-score-list">
-        {teams.map((team) => (
-          <div className="team-score-card" key={team.id} style={{ "--team-accent": team.color }}>
+        {sortedTeams.map((team, index) => (
+          <div className={`team-score-card ${index === 0 ? "is-leading" : ""}`} key={team.id} style={{ "--team-accent": team.color }}>
             <div>
               <strong>{team.name}</strong>
               <span>Groepspunten</span>
