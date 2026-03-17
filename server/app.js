@@ -167,7 +167,7 @@ function verifyTeacherPassword(password, account) {
   return stored.length === candidate.length && crypto.timingSafeEqual(stored, candidate)
 }
 
-function createIdleGameState() {
+function createIdleGameState(groupModeEnabled = false) {
   return {
     topic: "",
     audience: "vmbo",
@@ -191,6 +191,7 @@ function createIdleGameState() {
     runnerUpTeamName: "",
     runnerUpTeamScore: 0,
     leadingGap: 0,
+    groupModeEnabled: Boolean(groupModeEnabled),
   }
 }
 
@@ -2000,6 +2001,14 @@ function sanitizeLesson(lesson, viewer = "host") {
 }
 
 function syncTeamScores(room) {
+  if (!room?.game?.groupModeEnabled) {
+    room.teams = room.teams.map((team) => ({
+      ...team,
+      score: 0,
+    }))
+    return
+  }
+
   room.teams = room.teams.map((team) => ({
     ...team,
     score: room.players.filter((player) => player.teamId === team.id).reduce((sum, player) => sum + player.score, 0),
@@ -2012,6 +2021,15 @@ function sortedTeamsByScore(room) {
 }
 
 function getTeamRaceSnapshot(room) {
+  if (!room?.game?.groupModeEnabled) {
+    return {
+      sortedTeams: [],
+      leader: null,
+      runnerUp: null,
+      gap: 0,
+    }
+  }
+
   const sortedTeams = sortedTeamsByScore(room)
   const leader = sortedTeams[0] ?? null
   const runnerUp = sortedTeams[1] ?? null
@@ -2135,6 +2153,33 @@ function reassignPlayersToExistingTeams(room) {
   }))
 }
 
+function applyGroupModeSettings(room, groupModeEnabled, teamNames = null) {
+  const nextGroupModeEnabled = Boolean(groupModeEnabled)
+
+  if (Array.isArray(teamNames) && teamNames.length > 0) {
+    room.teams = createTeams(teamNames)
+  } else if (!room.teams.length) {
+    room.teams = createTeams()
+  }
+
+  room.game = {
+    ...room.game,
+    groupModeEnabled: nextGroupModeEnabled,
+  }
+
+  if (nextGroupModeEnabled) {
+    reassignPlayersToExistingTeams(room)
+  } else {
+    room.players = room.players.map((player) => ({
+      ...player,
+      teamId: "",
+    }))
+  }
+
+  syncTeamScores(room)
+  return nextGroupModeEnabled
+}
+
 function buildStatePayload(room, viewer = "host", playerId = "") {
   syncTeamScores(room)
   const race = getTeamRaceSnapshot(room)
@@ -2168,6 +2213,7 @@ function buildStatePayload(room, viewer = "host", playerId = "") {
       roomCodeActive: true,
       questionMultiplier: Math.max(1, Number(room.game.questionMultiplier) || 1),
       finalSprintActive: Boolean(room.game.finalSprintActive),
+      groupModeEnabled: Boolean(room.game.groupModeEnabled),
       leadingTeamId: room.game.leadingTeamId ?? race.leader?.id ?? null,
       leadingTeamName: room.game.leadingTeamName || race.leader?.name || "",
       leadingTeamScore: Number(room.game.leadingTeamScore) || race.leader?.score || 0,
@@ -4881,17 +4927,22 @@ io.on("connection", (socket) => {
       status: room.game.status,
       mode: room.game.mode || "battle",
       intakeTotal: room.game.mode === "math" ? room.math?.intakeQuestions?.length || 0 : 0,
+      groupModeEnabled: Boolean(room.game.groupModeEnabled),
     })
   })
 
-  socket.on("host:configure", ({ teamNames }) => {
+  socket.on("host:configure", ({ teamNames, groupModeEnabled }) => {
     const room = requireHostRoom(socket)
     if (!room) return
-    room.teams = createTeams(Array.isArray(teamNames) ? teamNames : DEFAULT_TEAMS)
-    reassignPlayersToExistingTeams(room)
+    const nextGroupModeEnabled = applyGroupModeSettings(
+      room,
+      groupModeEnabled,
+      Array.isArray(teamNames) ? teamNames : DEFAULT_TEAMS
+    )
     emitStateToRoom(room)
     socket.emit("host:configure:success", {
       teams: room.teams,
+      groupModeEnabled: nextGroupModeEnabled,
     })
   })
 
@@ -4920,23 +4971,20 @@ io.on("connection", (socket) => {
     room.math = createEmptyMathState()
     room.questions = []
     room.currentQuestionIndex = -1
-    room.game = createIdleGameState()
+    room.game = createIdleGameState(Boolean(room.game?.groupModeEnabled))
     rememberHostRoomForSession(getHostSession(socket.id), room.code)
     socket.emit("host:room:update", { roomCode: room.code })
     emitStateToRoom(room)
   })
 
-  socket.on("host:generate", async ({ topic, audience, questionCount, teamNames, questionDurationSec }) => {
+  socket.on("host:generate", async ({ topic, audience, questionCount, teamNames, questionDurationSec, groupModeEnabled }) => {
     const room = requireHostRoom(socket)
     if (!room) return
 
     const safeDuration = Math.max(8, Math.min(60, Number(questionDurationSec) || 20))
     socket.emit("host:generate:started", { message: "AI is bezig met de ronde..." })
 
-    if (Array.isArray(teamNames) && teamNames.length > 0) {
-      room.teams = createTeams(teamNames)
-      reassignPlayersToExistingTeams(room)
-    }
+    applyGroupModeSettings(room, groupModeEnabled, Array.isArray(teamNames) ? teamNames : DEFAULT_TEAMS)
 
     let generationResult
     try {
@@ -4966,7 +5014,7 @@ io.on("connection", (socket) => {
       room.lesson = createEmptyLessonState()
       room.math = createEmptyMathState()
       room.game = {
-        ...createIdleGameState(),
+        ...createIdleGameState(Boolean(room.game?.groupModeEnabled)),
         topic: String(topic ?? "").trim(),
         audience: audience?.trim() || "vmbo",
         questionCount: Number(questionCount) || 12,
@@ -4982,7 +5030,7 @@ io.on("connection", (socket) => {
     room.lesson = createEmptyLessonState()
     room.math = createEmptyMathState()
     room.game = {
-      ...createIdleGameState(),
+      ...createIdleGameState(Boolean(room.game?.groupModeEnabled)),
       topic: String(topic ?? "").trim(),
       audience: audience?.trim() || "vmbo",
       questionCount: room.questions.length,
@@ -5041,7 +5089,7 @@ io.on("connection", (socket) => {
     }
 
     room.game = {
-      ...createIdleGameState(),
+      ...createIdleGameState(false),
       topic: `Rekenen ${formatMathLevel(selectedBand)}`,
       audience: "vmbo",
       status: "live",
@@ -5069,6 +5117,7 @@ io.on("connection", (socket) => {
     slideCount,
     practiceQuestionCount,
     teamNames,
+    groupModeEnabled,
     includePracticeTest,
     includePresentation,
     includeVideoPlan,
@@ -5085,10 +5134,7 @@ io.on("connection", (socket) => {
     const wantsVideoPlan = Boolean(includePresentation && includeVideoPlan)
     socket.emit("host:generate-lesson:started", { message: "AI bouwt de lesopzet..." })
 
-    if (Array.isArray(teamNames) && teamNames.length > 0) {
-      room.teams = createTeams(teamNames)
-      reassignPlayersToExistingTeams(room)
-    }
+    applyGroupModeSettings(room, groupModeEnabled, Array.isArray(teamNames) ? teamNames : DEFAULT_TEAMS)
 
     let lessonResult
     try {
@@ -5119,7 +5165,7 @@ io.on("connection", (socket) => {
       room.lesson = createEmptyLessonState()
       room.math = createEmptyMathState()
       room.game = {
-        ...createIdleGameState(),
+        ...createIdleGameState(Boolean(room.game?.groupModeEnabled)),
         mode: "lesson",
         topic: String(topic ?? "").trim(),
         audience: audience?.trim() || "vmbo",
@@ -5184,7 +5230,7 @@ io.on("connection", (socket) => {
       ),
     }
     room.game = {
-      ...createIdleGameState(),
+      ...createIdleGameState(Boolean(room.game?.groupModeEnabled)),
       topic: String(topic ?? "").trim(),
       audience: audience?.trim() || "vmbo",
       status: "live",
@@ -5230,7 +5276,7 @@ io.on("connection", (socket) => {
     room.lessonResponses = new Map()
     room.math = createEmptyMathState()
     room.game = {
-      ...createIdleGameState(),
+      ...createIdleGameState(Boolean(room.game?.groupModeEnabled)),
       topic: room.game.topic,
       audience: room.game.audience,
       questionCount: room.questions.length,
@@ -5309,7 +5355,7 @@ io.on("connection", (socket) => {
       ...withLessonPhaseContext(cloneLessonForRoom(entry.lesson, entry.id), 0),
     }
     room.game = {
-      ...createIdleGameState(),
+      ...createIdleGameState(Boolean(room.game?.groupModeEnabled)),
       topic: entry.topic,
       audience: entry.audience,
       status: "live",
@@ -5498,7 +5544,7 @@ io.on("connection", (socket) => {
         ...withLessonPhaseContext(cloneLessonForRoom(entry.lesson, entry.lesson?.libraryId || null), 0),
       }
       room.game = {
-        ...createIdleGameState(),
+        ...createIdleGameState(Boolean(room.game?.groupModeEnabled)),
         topic: entry.topic,
         audience: entry.audience,
         status: "live",
@@ -5517,7 +5563,7 @@ io.on("connection", (socket) => {
       if (entry.type === "practice") {
         room.currentQuestionIndex = room.questions.length ? 0 : -1
         room.game = {
-          ...createIdleGameState(),
+          ...createIdleGameState(Boolean(room.game?.groupModeEnabled)),
           topic: entry.topic,
           audience: entry.audience,
           questionCount: room.questions.length,
@@ -5532,7 +5578,7 @@ io.on("connection", (socket) => {
         }
       } else {
         room.game = {
-          ...createIdleGameState(),
+          ...createIdleGameState(Boolean(room.game?.groupModeEnabled)),
           topic: entry.topic,
           audience: entry.audience,
           questionCount: room.questions.length,
@@ -5715,7 +5761,7 @@ io.on("connection", (socket) => {
     room.lessonResponses = new Map()
     room.lesson = createEmptyLessonState()
     room.math = createEmptyMathState()
-    room.game = createIdleGameState()
+    room.game = createIdleGameState(Boolean(room.game?.groupModeEnabled))
     emitStateToRoom(room)
   })
 
@@ -5824,7 +5870,7 @@ io.on("connection", (socket) => {
     const isMathRoom = room.game.mode === "math"
     const selectedTeamId = isMathRoom
       ? room.teams[0]?.id || ""
-      : room.teams.some((team) => team.id === requestedTeamId)
+      : room.game.groupModeEnabled && room.teams.some((team) => team.id === requestedTeamId)
         ? requestedTeamId
         : ""
     if (!trimmedName && !isMathRoom) {

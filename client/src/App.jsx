@@ -285,8 +285,9 @@ function HostPage() {
   const [lessonPromptDraft, setLessonPromptDraft] = useState("")
   const [lessonExpectedAnswerDraft, setLessonExpectedAnswerDraft] = useState("")
   const [teamNamesInput, setTeamNamesInput] = useState("Team Zon\nTeam Oceaan")
+  const [groupModeEnabledDraft, setGroupModeEnabledDraft] = useState(false)
   const [isEditingTeams, setIsEditingTeams] = useState(false)
-  const [status, setStatus] = useState("Vul het onderwerp in, stel de teams in en start de ronde.")
+  const [status, setStatus] = useState("Vul het onderwerp in, kies eventueel groepen en start de ronde.")
   const [hostInsights, setHostInsights] = useState(null)
   const [lessonLibrary, setLessonLibrary] = useState([])
   const [sessionHistory, setSessionHistory] = useState([])
@@ -339,12 +340,17 @@ function HostPage() {
           ? "Oefentoets opbouwen"
           : "Les opbouwen"
   const currentPresentationSlide = game.lesson?.presentation?.currentSlide || null
+  const liveGroupModeEnabled = Boolean(game.groupModeEnabled)
 
   useEffect(() => {
     if (teams.length > 0 && !isEditingTeams) {
       setTeamNamesInput(teams.map((team) => team.name).join("\n"))
     }
   }, [teams, isEditingTeams])
+
+  useEffect(() => {
+    setGroupModeEnabledDraft(Boolean(game.groupModeEnabled))
+  }, [game.groupModeEnabled])
 
   useEffect(() => {
     if (game.lessonModel) setLessonModel(game.lessonModel)
@@ -396,13 +402,20 @@ function HostPage() {
       }))
       setStatus("Beheeraccount verbonden.")
     }
-    const onConfigureSuccess = ({ teams: nextTeams }) => {
+    const onConfigureSuccess = ({ teams: nextTeams, groupModeEnabled: nextGroupModeEnabled }) => {
       const teamCount = Array.isArray(nextTeams) ? nextTeams.length : teams.length
       if (Array.isArray(nextTeams) && nextTeams.length > 0) {
         setTeamNamesInput(nextTeams.map((team) => team.name).join("\n"))
       }
+      if (typeof nextGroupModeEnabled === "boolean") {
+        setGroupModeEnabledDraft(nextGroupModeEnabled)
+      }
       setIsEditingTeams(false)
-      setStatus(`${teamCount} teams opgeslagen.`)
+      setStatus(
+        nextGroupModeEnabled
+          ? `${teamCount} groepen opgeslagen. Leerlingen mogen nu desgewenst een groep kiezen.`
+          : "Individuele deelname staat aan. Leerlingen hoeven geen groep meer te kiezen."
+      )
     }
     const onRoomUpdate = ({ roomCode }) => {
       setHostSession((current) => ({ ...current, roomCode }))
@@ -661,8 +674,11 @@ function HostPage() {
   )
 
   const configureTeams = () => {
-    setStatus("Teams worden bijgewerkt...")
-    socket.emit("host:configure", { teamNames: preparedTeamNames })
+    setStatus("Groepsinstellingen worden bijgewerkt...")
+    socket.emit("host:configure", {
+      teamNames: preparedTeamNames,
+      groupModeEnabled: groupModeEnabledDraft,
+    })
   }
 
   const selectSessionMode = (nextMode) => {
@@ -716,6 +732,7 @@ function HostPage() {
       questionCount,
       questionDurationSec,
       teamNames: preparedTeamNames,
+      groupModeEnabled: groupModeEnabledDraft,
     })
   }
 
@@ -747,6 +764,7 @@ function HostPage() {
       includePresentation,
       includeVideoPlan: includePresentation && includeVideoPlan,
       teamNames: preparedTeamNames,
+      groupModeEnabled: groupModeEnabledDraft,
     })
   }
 
@@ -890,8 +908,8 @@ function HostPage() {
         </div>
         <div className="hero-panel glass">
           <div className="hero-stat">
-            <strong>{teams.length}</strong>
-            <span>Actieve teams</span>
+            <strong>{liveGroupModeEnabled ? teams.length : "Uit"}</strong>
+            <span>{liveGroupModeEnabled ? "Actieve groepen" : "Groepsmodus"}</span>
           </div>
           <div className="hero-stat">
             <strong>{onlinePlayerCount}</strong>
@@ -1161,18 +1179,48 @@ function HostPage() {
           </div>
 
           {activeMode !== "math" ? (
-            <label className="field">
-              <span>Teams</span>
-              <textarea
-                rows="4"
-                value={teamNamesInput}
-                onChange={(event) => {
-                  setIsEditingTeams(true)
-                  setTeamNamesInput(event.target.value)
-                }}
-                placeholder="Eén team per regel"
-              />
-            </label>
+            <>
+              <div className="toggle-grid">
+                <button
+                  className={`toggle-card ${!groupModeEnabledDraft ? "is-active" : ""}`}
+                  onClick={() => setGroupModeEnabledDraft(false)}
+                  type="button"
+                >
+                  <span>Instelling</span>
+                  <strong>Individueel werken</strong>
+                  <p>Leerlingen vullen alleen hun naam en spelcode in. Er worden geen groepen gebruikt.</p>
+                </button>
+                <button
+                  className={`toggle-card ${groupModeEnabledDraft ? "is-active" : ""}`}
+                  onClick={() => setGroupModeEnabledDraft(true)}
+                  type="button"
+                >
+                  <span>Instelling</span>
+                  <strong>Groepsopdracht aan</strong>
+                  <p>Leerlingen kunnen een groep kiezen. Wie zonder groep meedoet, blijft individueel zichtbaar.</p>
+                </button>
+              </div>
+
+              {groupModeEnabledDraft ? (
+                <label className="field">
+                  <span>Groepen</span>
+                  <textarea
+                    rows="4"
+                    value={teamNamesInput}
+                    onChange={(event) => {
+                      setIsEditingTeams(true)
+                      setTeamNamesInput(event.target.value)
+                    }}
+                    placeholder="Eén groep per regel"
+                  />
+                </label>
+              ) : (
+                <div className="field math-config-card">
+                  <span>Groepen uit</span>
+                  <p>Deze sessie werkt individueel. Zet groepsopdracht aan als je leerlingen aan groepen wilt koppelen.</p>
+                </div>
+              )}
+            </>
           ) : null}
 
           {activeMode === "lesson" ? (
@@ -1191,7 +1239,7 @@ function HostPage() {
                 onClick={configureTeams}
                 type="button"
               >
-                Teams opslaan
+                Groepsinstellingen opslaan
               </button>
             ) : null}
             <button
@@ -1351,7 +1399,7 @@ function HostPage() {
             <LessonCompleteCard lesson={game.lesson} />
           ) : game.question ? (
             <>
-              {game.mode === "battle" ? <BattleRaceBanner game={game} teams={teams} variant="compact" /> : null}
+              {game.mode === "battle" && liveGroupModeEnabled ? <BattleRaceBanner game={game} teams={teams} variant="compact" /> : null}
               <QuestionCard question={game.question} />
               {game.mode === "battle" && game.source !== "practice" ? (
                 <BattleQuestionControls
@@ -1367,16 +1415,23 @@ function HostPage() {
               <HostInsightsCard insights={hostInsights} />
             </>
           ) : game.status === "finished" ? (
-            <ResultsCard teams={teams} leaderboard={leaderboard} />
+            <ResultsCard teams={teams} leaderboard={leaderboard} showGroups={liveGroupModeEnabled} />
           ) : (
-            <LobbyCard roomCode={hostSession.roomCode} teams={teams} players={players} onlineCount={onlinePlayerCount} />
+            <LobbyCard
+              groupModeEnabled={liveGroupModeEnabled}
+              roomCode={hostSession.roomCode}
+              teams={teams}
+              players={players}
+              onlineCount={onlinePlayerCount}
+            />
           )}
         </div>
       </section>
 
       <section className="dashboard-grid">
-        <ScoreBoard teams={teams} leaderboard={leaderboard} />
+        <ScoreBoard teams={teams} leaderboard={leaderboard} showGroups={liveGroupModeEnabled} />
         <RosterBoard
+          groupModeEnabled={liveGroupModeEnabled}
           onlineCount={onlinePlayerCount}
           onRemovePlayer={(playerId) => socket.emit("host:remove-player", { playerId })}
           players={players}
@@ -1447,7 +1502,7 @@ function PlayerPage() {
   const [playerId, setPlayerId] = useState(playerSession.playerId || "")
   const [playerSessionId, setPlayerSessionId] = useState(playerSession.playerSessionId || createPlayerSessionId())
   const [learnerCode, setLearnerCode] = useState(playerSession.learnerCode || "")
-  const [roomPreview, setRoomPreview] = useState({ valid: false, teams: [], intakeTotal: 0, mode: "battle" })
+  const [roomPreview, setRoomPreview] = useState({ valid: false, teams: [], intakeTotal: 0, mode: "battle", groupModeEnabled: false })
   const [joined, setJoined] = useState(Boolean(playerSession.joined))
   const [result, setResult] = useState(null)
   const [chosenAnswer, setChosenAnswer] = useState(null)
@@ -1463,6 +1518,14 @@ function PlayerPage() {
 
   useEffect(() => {
     const sourceTeams = joined ? teams : roomPreview.valid ? roomPreview.teams : teams
+    const groupsAllowed =
+      (joined ? Boolean(game.groupModeEnabled) : Boolean(roomPreview.groupModeEnabled)) &&
+      (joined ? game.mode !== "math" : roomPreview.mode !== "math")
+
+    if (!groupsAllowed) {
+      if (teamId) setTeamId("")
+      return
+    }
 
     if (!sourceTeams.length) {
       if (teamId) setTeamId("")
@@ -1472,7 +1535,7 @@ function PlayerPage() {
     if (teamId && !sourceTeams.some((team) => team.id === teamId)) {
       setTeamId("")
     }
-  }, [joined, roomPreview, teamId, teams])
+  }, [game.groupModeEnabled, game.mode, joined, roomPreview, teamId, teams])
 
   useEffect(() => {
     const onJoined = (nextMode = roomPreview.mode) => {
@@ -1556,7 +1619,7 @@ function PlayerPage() {
 
   useEffect(() => {
     if (roomCode.trim().length < 5) {
-      setRoomPreview({ valid: false, teams: [], intakeTotal: 0, mode: "battle" })
+      setRoomPreview({ valid: false, teams: [], intakeTotal: 0, mode: "battle", groupModeEnabled: false })
       return
     }
 
@@ -1641,12 +1704,16 @@ function PlayerPage() {
   }
 
   const availableTeams = joined ? teams : roomPreview.valid ? roomPreview.teams : teams
+  const liveGroupModeEnabled = Boolean(game.groupModeEnabled)
+  const isMathPreview = roomPreview.mode === "math" || game.mode === "math"
+  const joinGroupModeEnabled = !isMathPreview && Boolean(joined ? liveGroupModeEnabled : roomPreview.groupModeEnabled)
   const selectedTeam = availableTeams.find((team) => team.id === teamId)
   const currentPlayer = useMemo(
     () => players.find((player) => player.id === playerId) || leaderboard.find((player) => player.id === playerId) || null,
     [leaderboard, playerId, players]
   )
-  const currentTeam = teams.find((team) => team.id === (currentPlayer?.teamId || teamId)) || selectedTeam || null
+  const currentTeam =
+    liveGroupModeEnabled ? teams.find((team) => team.id === (currentPlayer?.teamId || teamId)) || selectedTeam || null : null
   const currentRank = currentPlayer ? leaderboard.findIndex((player) => player.id === currentPlayer.id) + 1 : 0
   const isMathLive = game.mode === "math" && Boolean(game.math)
   const isPracticeTestLive = game.source === "practice"
@@ -1683,7 +1750,6 @@ function PlayerPage() {
     isMathLive &&
     !game.math?.currentTask &&
     Boolean(game.math?.awaitingNext)
-  const isMathPreview = roomPreview.mode === "math" || game.mode === "math"
   const canJoinRoom =
     roomPreview.valid &&
     (isMathPreview ? /^\d{4}$/.test(learnerCode) : Boolean(name.trim()))
@@ -1701,7 +1767,7 @@ function PlayerPage() {
             <input value={name} onChange={(event) => setName(event.target.value)} placeholder="Bijv. Amina" />
           </label>
 
-          {!isMathPreview ? (
+          {joinGroupModeEnabled ? (
             <label className="field">
               <span>Groep (optioneel)</span>
               <select value={teamId} onChange={(event) => setTeamId(event.target.value)}>
@@ -1741,7 +1807,7 @@ function PlayerPage() {
             {joined ? "Opnieuw koppelen" : "Ik doe mee"}
           </button>
 
-          {selectedTeam && !isMathPreview ? (
+          {selectedTeam && joinGroupModeEnabled ? (
             <div className="team-chip" style={{ "--team-accent": selectedTeam.color }}>
               {selectedTeam.name}
             </div>
@@ -1799,8 +1865,8 @@ function PlayerPage() {
                 <strong>{currentPlayer?.score ?? 0}</strong>
               </div>
               <div className="player-score-pill">
-                <span>Jouw team</span>
-                <strong>{currentTeam?.score ?? 0}</strong>
+                <span>{liveGroupModeEnabled ? "Jouw groep" : "Koploper"}</span>
+                <strong>{liveGroupModeEnabled ? currentTeam?.score ?? 0 : leaderboard[0]?.score ?? 0}</strong>
               </div>
               <div className="player-score-pill">
                 <span>Plek</span>
@@ -1839,7 +1905,7 @@ function PlayerPage() {
             </>
           ) : game.question ? (
             <>
-              {game.mode === "battle" ? <BattleRaceBanner game={game} teams={teams} /> : null}
+              {game.mode === "battle" && liveGroupModeEnabled ? <BattleRaceBanner game={game} teams={teams} /> : null}
               <ProgressBar current={game.currentQuestionIndex + 1} total={game.totalQuestions} timeLeft={timeLeft} duration={game.questionDurationSec} />
               <QuestionCard question={game.question} compact={false} showOptions={false} />
               {game.status === "live" || isPracticeTestLive || battleRevealVisible || result ? (
@@ -1902,7 +1968,7 @@ function PlayerPage() {
                   {result ? (
                     <div className="score-breakdown">
                       <span className="score-chip">Score totaal {result.playerScore}</span>
-                      <span className="score-chip">Team {result.teamScore}</span>
+                      {liveGroupModeEnabled ? <span className="score-chip">Groep {result.teamScore}</span> : null}
                       {result.correct ? <span className="score-chip">Snelheid +{result.speedBonus || 0}</span> : null}
                       {result.multiplier > 1 ? <span className="score-chip">x{result.multiplier} punten</span> : null}
                     </div>
@@ -1940,7 +2006,7 @@ function PlayerPage() {
             ) : isPracticeTestLive ? (
               <PracticeCompleteCard />
             ) : (
-              <ResultsCard teams={teams} leaderboard={leaderboard} />
+              <ResultsCard teams={teams} leaderboard={leaderboard} showGroups={liveGroupModeEnabled} />
             )
           ) : (
             <div className="empty-state">
@@ -1958,8 +2024,8 @@ function PlayerPage() {
 
         <div className="glass side-column">
           {game.mode === "math" && game.math && learnerCode ? <LearnerCodeCard learnerCode={learnerCode} roomCode={roomCode} /> : null}
-          <ScoreBoard teams={teams} leaderboard={leaderboard} compact />
-          <RosterBoard players={players} teams={teams} compact />
+          <ScoreBoard teams={teams} leaderboard={leaderboard} compact showGroups={liveGroupModeEnabled} />
+          <RosterBoard groupModeEnabled={liveGroupModeEnabled} players={players} teams={teams} compact />
         </div>
       </section>
     </main>
@@ -3433,10 +3499,30 @@ function getQuestionPrompt(question) {
   return question?.prompt || question?.question_text || "Beantwoord de volgende vraag."
 }
 
-function ResultsCard({ teams, leaderboard }) {
+function ResultsCard({ teams, leaderboard, showGroups = true }) {
   const sortedTeams = [...teams].sort((left, right) => right.score - left.score)
   const winningTeam = sortedTeams[0]
   const topPlayer = leaderboard[0]
+
+  if (!showGroups) {
+    return (
+      <div className="results-card">
+        <span className="eyebrow">Ronde klaar</span>
+        <h3>{topPlayer ? `${topPlayer.name} wint deze ronde` : "De ronde is afgelopen"}</h3>
+        <p>
+          {topPlayer ? `${topPlayer.score} punten voor de winnaar.` : "Bekijk hieronder de eindstand."}
+        </p>
+        <div className="results-grid">
+          {leaderboard.slice(0, 10).map((player, index) => (
+            <div className="result-tile" key={player.id}>
+              <span>{index + 1}. {player.name}</span>
+              <strong>{player.score}</strong>
+            </div>
+          ))}
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="results-card">
@@ -3514,17 +3600,21 @@ function ProgressBar({ current, total, timeLeft, duration }) {
   )
 }
 
-function LobbyCard({ roomCode, teams, players, onlineCount }) {
+function LobbyCard({ roomCode, teams, players, onlineCount, groupModeEnabled = false }) {
   return (
     <div className="lobby-card">
       <span className="eyebrow">Wachtruimte</span>
       <h3>Open de quiz en voer de code in</h3>
       <div className="lobby-code">{roomCode || "-----"}</div>
-      <p>Open <strong>/join</strong>, voer de code in en kies een team. Zodra de ronde start, verschijnen de vragen hier live.</p>
+      <p>
+        Open <strong>/join</strong>, voer de code in en vul je naam in.
+        {groupModeEnabled ? " Een groep kiezen is mogelijk, maar niet verplicht." : " Deze sessie werkt individueel, dus een groep kiezen hoeft niet."}
+        {" "}Zodra de ronde start, verschijnen de vragen hier live.
+      </p>
       <div className="lobby-stats">
         <div className="result-tile">
-          <span>Teams</span>
-          <strong>{teams.length}</strong>
+          <span>{groupModeEnabled ? "Groepen" : "Individueel"}</span>
+          <strong>{groupModeEnabled ? teams.length : "Aan"}</strong>
         </div>
         <div className="result-tile">
           <span>Spelers online</span>
@@ -3535,30 +3625,32 @@ function LobbyCard({ roomCode, teams, players, onlineCount }) {
   )
 }
 
-function ScoreBoard({ teams, leaderboard, compact = false }) {
+function ScoreBoard({ teams, leaderboard, compact = false, showGroups = true }) {
   const sortedTeams = sortTeamsByScore(teams)
 
   return (
     <section className={`glass board-card ${compact ? "compact" : ""}`}>
       <div className="section-head">
-        <h2>Teamscore</h2>
+        <h2>{showGroups ? "Teamscore" : "Spelersscore"}</h2>
         <span className="pill">Live</span>
       </div>
-      <div className="team-score-list">
-        {sortedTeams.map((team, index) => (
-          <div className={`team-score-card ${index === 0 ? "is-leading" : ""}`} key={team.id} style={{ "--team-accent": team.color }}>
-            <div>
-              <strong>{team.name}</strong>
-              <span>Groepspunten</span>
+      {showGroups ? (
+        <div className="team-score-list">
+          {sortedTeams.map((team, index) => (
+            <div className={`team-score-card ${index === 0 ? "is-leading" : ""}`} key={team.id} style={{ "--team-accent": team.color }}>
+              <div>
+                <strong>{team.name}</strong>
+                <span>Groepspunten</span>
+              </div>
+              <b>{team.score}</b>
             </div>
-            <b>{team.score}</b>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      ) : null}
 
       <div className="mini-leaderboard">
-        <h3>Top spelers</h3>
-        {leaderboard.slice(0, 5).map((player, index) => (
+        <h3>{showGroups ? "Top spelers" : "Leaderboard"}</h3>
+        {leaderboard.slice(0, compact ? 5 : 10).map((player, index) => (
           <div className="mini-row" key={player.id}>
             <span>{index + 1}. {player.name}</span>
             <strong>{player.score}</strong>
@@ -3569,39 +3661,72 @@ function ScoreBoard({ teams, leaderboard, compact = false }) {
   )
 }
 
-function RosterBoard({ players, teams, compact = false, onRemovePlayer, onlineCount }) {
+function RosterBoard({
+  players,
+  teams,
+  compact = false,
+  onRemovePlayer,
+  onlineCount = players.filter((player) => player.connected !== false).length,
+  groupModeEnabled = false,
+}) {
+  const renderRosterRows = (entries, emptyId, emptyLabel) =>
+    (entries.length ? entries : [{ id: emptyId, name: emptyLabel, score: 0 }]).map((player) => (
+      <div className="roster-row" key={player.id}>
+        <div className="roster-row-main">
+          <span>{player.name}</span>
+          {player.connected === false ? <small className="roster-status-offline">offline</small> : null}
+          <strong>{player.score}</strong>
+        </div>
+        {onRemovePlayer && !String(player.id).endsWith("-empty") ? (
+          <button
+            className="button-remove-mini"
+            onClick={() => onRemovePlayer(player.id)}
+            type="button"
+          >
+            Verwijder
+          </button>
+        ) : null}
+      </div>
+    ))
+
+  if (!groupModeEnabled) {
+    return (
+      <section className={`glass board-card ${compact ? "compact" : ""}`}>
+        <div className="section-head">
+          <h2>Deelnemers</h2>
+          <span className="pill">{onlineCount} online</span>
+        </div>
+        <div className="roster-grid">
+          <div className="roster-column">
+            <h3>Alle leerlingen</h3>
+            {renderRosterRows(players, "players-empty", "Nog niemand")}
+          </div>
+        </div>
+      </section>
+    )
+  }
+
+  const ungroupedPlayers = players.filter((player) => !player.teamId)
+
   return (
     <section className={`glass board-card ${compact ? "compact" : ""}`}>
       <div className="section-head">
-        <h2>Deelnemers per team</h2>
+        <h2>Deelnemers per groep</h2>
         <span className="pill">{onlineCount} online</span>
       </div>
       <div className="roster-grid">
         {teams.map((team) => (
           <div className="roster-column" key={team.id} style={{ "--team-accent": team.color }}>
             <h3>{team.name}</h3>
-            {(players.filter((player) => player.teamId === team.id).length
-              ? players.filter((player) => player.teamId === team.id)
-              : [{ id: `${team.id}-empty`, name: "Nog niemand", score: 0 }]).map((player) => (
-              <div className="roster-row" key={player.id}>
-                <div className="roster-row-main">
-                  <span>{player.name}</span>
-                  {player.connected === false ? <small className="roster-status-offline">offline</small> : null}
-                  <strong>{player.score}</strong>
-                </div>
-                {onRemovePlayer && !String(player.id).endsWith("-empty") ? (
-                  <button
-                    className="button-remove-mini"
-                    onClick={() => onRemovePlayer(player.id)}
-                    type="button"
-                  >
-                    Verwijder
-                  </button>
-                ) : null}
-              </div>
-            ))}
+            {renderRosterRows(players.filter((player) => player.teamId === team.id), `${team.id}-empty`, "Nog niemand")}
           </div>
         ))}
+        {ungroupedPlayers.length ? (
+          <div className="roster-column">
+            <h3>Zonder groep</h3>
+            {renderRosterRows(ungroupedPlayers, "ungrouped-empty", "Nog niemand")}
+          </div>
+        ) : null}
       </div>
     </section>
   )
