@@ -97,7 +97,10 @@ const INVALID_IMAGE_SIGNATURE_WINDOW_MS = 10 * 60 * 1000
 const HOST_SESSION_TTL_MS = 12 * 60 * 60 * 1000
 const MATH_LEVELS = ["0f", "1f", "2f", "3f", "4f"]
 const MATH_ROOM_GRACE_MS = 7 * 24 * 60 * 60 * 1000
-const MATH_INTAKE_QUESTION_COUNT = 6
+const MATH_INTAKE_QUESTION_COUNT = 12
+const MAX_MATH_ANSWER_HISTORY = 24
+const MATH_ACTIVE_WINDOW_MS = 5 * 60 * 1000
+const MATH_STALE_WINDOW_MS = 20 * 60 * 1000
 const BASE_CORRECT_POINTS = 100
 const MAX_SPEED_BONUS = 100
 const FINAL_SPRINT_QUESTIONS = 2
@@ -152,6 +155,13 @@ function createPlayerRecord({
 
 function normalizeTeacherUsername(value) {
   return String(value ?? "").trim().toLowerCase()
+}
+
+function normalizeParticipantName(value = "") {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ")
 }
 
 function hashTeacherPassword(password, salt = crypto.randomBytes(16).toString("hex")) {
@@ -633,13 +643,13 @@ function buildMathIntakePlan(selectedBand) {
   const nextLevel = MATH_LEVELS[Math.min(MATH_LEVELS.length - 1, bandIndex + 1)]
   const plan =
     bandIndex === 0
-      ? ["0f", "0f", "0f", "1f", "1f", "1f"]
+      ? [...Array(8).fill("0f"), ...Array(4).fill("1f")]
       : bandIndex === MATH_LEVELS.length - 1
-        ? [previousLevel, previousLevel, safeBand, safeBand, safeBand, safeBand]
-        : [previousLevel, previousLevel, safeBand, safeBand, nextLevel, nextLevel]
+        ? [...Array(4).fill(previousLevel), ...Array(8).fill(safeBand)]
+        : [...Array(4).fill(previousLevel), ...Array(4).fill(safeBand), ...Array(4).fill(nextLevel)]
 
   return plan.slice(0, MATH_INTAKE_QUESTION_COUNT).map((level, index) =>
-    generateMathTaskForLevel(level, index < 2 ? 1 : index < 4 ? 2 : 3, "intake")
+    generateMathTaskForLevel(level, index < 3 ? 1 : index < 6 ? 2 : index < 9 ? 3 : 4, "intake")
   )
 }
 
@@ -679,6 +689,7 @@ function createMathProgress(mathState, playerId) {
     phase: firstTask ? "intake" : "practice",
     intakeIndex: 0,
     intakeAnswers: [],
+    answerHistory: [],
     placementLevel: "",
     targetLevel: "",
     practiceDifficulty: 2,
@@ -720,7 +731,7 @@ function determineMathPlacement(mathState, progress) {
   for (const level of attemptedOrder) {
     const bucket = attemptedLevels.get(level)
     if (!bucket?.total) continue
-    if (bucket.correct / bucket.total >= 0.6) {
+    if (bucket.correct / bucket.total >= 0.7) {
       placement = level
     }
   }
@@ -745,6 +756,54 @@ function evaluateMathTask(task, rawAnswer) {
     correct,
     expected,
   }
+}
+
+function buildChildFriendlyMathExplanation(task, expectedAnswer) {
+  return [
+    "Kijk rustig stap voor stap.",
+    task?.hint ? `Tip: ${String(task.hint).trim()}.` : "",
+    task?.explanation ? String(task.explanation).trim() : "",
+    expectedAnswer ? `Dus het goede antwoord is ${expectedAnswer}.` : "",
+  ]
+    .filter(Boolean)
+    .join(" ")
+}
+
+function appendMathAnswerHistory(progress, entry) {
+  const existing = Array.isArray(progress?.answerHistory) ? progress.answerHistory : []
+  progress.answerHistory = [...existing, entry].slice(-MAX_MATH_ANSWER_HISTORY)
+}
+
+function getMathAnsweredCount(progress) {
+  return (Array.isArray(progress?.intakeAnswers) ? progress.intakeAnswers.length : 0) + (Number(progress?.practiceQuestionCount) || 0)
+}
+
+function getMathCorrectCount(progress) {
+  const intakeCorrectCount = (Array.isArray(progress?.intakeAnswers) ? progress.intakeAnswers : []).filter((entry) => entry.correct).length
+  return intakeCorrectCount + (Number(progress?.practiceCorrectCount) || 0)
+}
+
+function getMathWrongCount(progress) {
+  return Math.max(0, getMathAnsweredCount(progress) - getMathCorrectCount(progress))
+}
+
+function getMathAccuracyRate(progress) {
+  const total = getMathAnsweredCount(progress)
+  if (!total) return 0
+  return Math.round((getMathCorrectCount(progress) / total) * 100)
+}
+
+function getMathWorkLabel(progress) {
+  const totalAnswered = getMathAnsweredCount(progress)
+  if (!totalAnswered) return "Nog niet gestart"
+
+  const lastAnsweredAt = progress?.lastAnsweredAt ? new Date(progress.lastAnsweredAt).getTime() : 0
+  const age = lastAnsweredAt ? Date.now() - lastAnsweredAt : Number.POSITIVE_INFINITY
+
+  if (age <= MATH_ACTIVE_WINDOW_MS && totalAnswered >= 8) return "Heel actief"
+  if (age <= MATH_ACTIVE_WINDOW_MS && totalAnswered >= 3) return "Actief"
+  if (age <= MATH_STALE_WINDOW_MS) return "Bezig"
+  return "Stilgevallen"
 }
 
 function updateMathDifficulty(progress, correct) {
@@ -793,10 +852,11 @@ function sanitizeMathState(room, viewer = "host", playerId = "") {
 
   if (viewer === "player") {
     const progress = playerId ? ensureMathProgress(room, playerId) : null
+    const activePlayer = playerId ? room.players.find((player) => player.id === playerId) || null : null
     return {
       title: room.math.title,
       selectedBand: formatMathLevel(room.math.selectedBand),
-      learnerCode: playerId || "",
+      learnerCode: activePlayer?.learnerCode || "",
       phase: progress?.phase || "intake",
       intakeIndex: Number(progress?.intakeIndex) || 0,
       intakeTotal: room.math.intakeQuestions.length,
@@ -804,6 +864,10 @@ function sanitizeMathState(room, viewer = "host", playerId = "") {
       targetLevel: progress?.targetLevel ? formatMathLevel(progress.targetLevel) : "",
       practiceDifficulty: clampMathDifficulty(progress?.practiceDifficulty || 2),
       streak: Number(progress?.streak) || 0,
+      answeredCount: getMathAnsweredCount(progress),
+      correctCount: getMathCorrectCount(progress),
+      wrongCount: getMathWrongCount(progress),
+      accuracyRate: getMathAccuracyRate(progress),
       practiceQuestionCount: Number(progress?.practiceQuestionCount) || 0,
       practiceCorrectCount: Number(progress?.practiceCorrectCount) || 0,
       currentTask: sanitizeMathTask(progress?.currentTask, "player"),
@@ -832,10 +896,21 @@ function sanitizeMathState(room, viewer = "host", playerId = "") {
       targetLevel: progress?.targetLevel ? formatMathLevel(progress.targetLevel) : "",
       phase: progress?.phase || "intake",
       practiceDifficulty: clampMathDifficulty(progress?.practiceDifficulty || 2),
+      answeredCount: getMathAnsweredCount(progress),
+      correctCount: getMathCorrectCount(progress),
+      wrongCount: getMathWrongCount(progress),
+      accuracyRate: getMathAccuracyRate(progress),
+      workLabel: getMathWorkLabel(progress),
       practiceQuestionCount: Number(progress?.practiceQuestionCount) || 0,
       practiceCorrectCount: Number(progress?.practiceCorrectCount) || 0,
       awaitingNext: Boolean(progress?.awaitingNext),
       currentTask: sanitizeMathTask(progress?.currentTask, "host"),
+      answerHistory: Array.isArray(progress?.answerHistory)
+        ? progress.answerHistory.map((entry) => ({
+            ...entry,
+            level: entry?.level ? formatMathLevel(entry.level) : "",
+          }))
+        : [],
       lastAnsweredAt: progress?.lastAnsweredAt || null,
     }
   })
@@ -871,6 +946,12 @@ function serializeMathState(mathState) {
       {
         ...progress,
         currentTask: cloneMathTask(progress?.currentTask),
+        answerHistory: Array.isArray(progress?.answerHistory)
+          ? progress.answerHistory.map((entry) => ({
+              ...entry,
+              level: normalizeMathLevel(entry?.level),
+            }))
+          : [],
       },
     ]),
     startedAt: mathState.startedAt || null,
@@ -899,6 +980,12 @@ function deserializeMathState(rawMathState) {
                     questionId: String(entry?.questionId ?? ""),
                     level: normalizeMathLevel(entry?.level),
                     correct: Boolean(entry?.correct),
+                  }))
+                : [],
+              answerHistory: Array.isArray(progress?.answerHistory)
+                ? progress.answerHistory.map((entry) => ({
+                    ...entry,
+                    level: normalizeMathLevel(entry?.level),
                   }))
                 : [],
               placementLevel: progress?.placementLevel ? normalizeMathLevel(progress.placementLevel) : "",
@@ -1573,6 +1660,52 @@ function getRoomBySocketId(socketId) {
 
 function getPlayerBySocketId(room, socketId) {
   return room?.players.find((player) => player.socketId === socketId) ?? null
+}
+
+function detachPlayerSocketFromOtherRoom(socketId, nextRoomCode = "") {
+  const previousRoomCode = socketToRoom.get(socketId)
+  if (!previousRoomCode || previousRoomCode === nextRoomCode) return
+
+  const previousRoom = rooms.get(previousRoomCode)
+  if (!previousRoom) return
+
+  const previousPlayer = getPlayerBySocketId(previousRoom, socketId)
+  if (!previousPlayer) return
+
+  previousPlayer.socketId = null
+  previousPlayer.connected = false
+  emitStateToRoom(previousRoom)
+}
+
+function findMathRoomForHomeResume(name, learnerCode) {
+  const normalizedName = normalizeParticipantName(name)
+  const normalizedLearnerCode = normalizeLearnerCode(learnerCode)
+  if (!normalizedName || !normalizedLearnerCode) return { room: null, player: null, ambiguous: false }
+
+  const matches = []
+  for (const room of rooms.values()) {
+    if (room?.game?.mode !== "math") continue
+    const player = room.players.find(
+      (entry) =>
+        normalizeParticipantName(entry.name) === normalizedName &&
+        normalizeLearnerCode(entry.learnerCode) === normalizedLearnerCode
+    )
+    if (player) matches.push({ room, player })
+  }
+
+  if (matches.length !== 1) {
+    return {
+      room: null,
+      player: null,
+      ambiguous: matches.length > 1,
+    }
+  }
+
+  return {
+    room: matches[0].room,
+    player: matches[0].player,
+    ambiguous: false,
+  }
 }
 
 function getOnlinePlayers(room) {
@@ -2841,10 +2974,21 @@ function buildHostInsights(room) {
           placementLevel: progress?.placementLevel ? formatMathLevel(progress.placementLevel) : "",
           targetLevel: progress?.targetLevel ? formatMathLevel(progress.targetLevel) : "",
           practiceDifficulty: clampMathDifficulty(progress?.practiceDifficulty || 2),
+          answeredCount: getMathAnsweredCount(progress),
+          correctCount: getMathCorrectCount(progress),
+          wrongCount: getMathWrongCount(progress),
+          accuracyRate: getMathAccuracyRate(progress),
+          workLabel: getMathWorkLabel(progress),
           practiceQuestionCount: Number(progress?.practiceQuestionCount) || 0,
           practiceCorrectCount: Number(progress?.practiceCorrectCount) || 0,
           awaitingNext: Boolean(progress?.awaitingNext),
           currentTaskPrompt: progress?.currentTask?.prompt || "",
+          answerHistory: Array.isArray(progress?.answerHistory)
+            ? progress.answerHistory.map((entry) => ({
+                ...entry,
+                level: entry?.level ? formatMathLevel(entry.level) : "",
+              }))
+            : [],
           lastAnsweredAt: progress?.lastAnsweredAt || null,
         }
       }),
@@ -5886,19 +6030,7 @@ io.on("connection", (socket) => {
       return
     }
 
-    const previousRoomCode = socketToRoom.get(socket.id)
-    if (previousRoomCode && previousRoomCode !== room.code) {
-      const previousRoom = rooms.get(previousRoomCode)
-      if (previousRoom) {
-        const previousPlayer = getPlayerBySocketId(previousRoom, socket.id)
-        if (previousPlayer) {
-          previousPlayer.socketId = null
-          previousPlayer.connected = false
-        }
-        emitStateToRoom(previousRoom)
-      }
-    }
-
+    detachPlayerSocketFromOtherRoom(socket.id, room.code)
     socketToRoom.set(socket.id, room.code)
     const existingPlayer = isMathRoom
       ? room.players.find((player) => player.learnerCode === requestedLearnerCode) ?? null
@@ -5948,6 +6080,7 @@ io.on("connection", (socket) => {
       learnerCode: joinedPlayer?.learnerCode ?? requestedLearnerCode,
       teamId: selectedTeamId,
       roomCode: room.code,
+      mode: room.game.mode || "battle",
     })
     emitStateToSocket(socket, room)
     emitStateToRoom(room)
@@ -5983,6 +6116,62 @@ io.on("connection", (socket) => {
         feedback: storedLessonResponse.feedback,
       })
     }
+  })
+
+  socket.on("player:resume-math", ({ name, learnerCode, playerSessionId }) => {
+    const trimmedName = String(name ?? "").trim()
+    const requestedLearnerCode = normalizeLearnerCode(learnerCode)
+    const requestedPlayerSessionId = String(playerSessionId ?? "").trim()
+
+    if (!trimmedName) {
+      socket.emit("player:error", { message: "Vul eerst je naam in." })
+      return
+    }
+
+    if (!isValidLearnerCode(requestedLearnerCode)) {
+      socket.emit("player:error", { message: "Vul je leerlingcode van 4 cijfers in." })
+      return
+    }
+
+    const match = findMathRoomForHomeResume(trimmedName, requestedLearnerCode)
+    if (match.ambiguous) {
+      socket.emit("player:error", {
+        message: "Deze naam en leerlingcode horen bij meer dan een rekenroute. Vraag dan toch even de spelcode aan je docent.",
+      })
+      return
+    }
+
+    if (!match.room || !match.player) {
+      socket.emit("player:error", {
+        message: "We vonden geen actieve rekenroute bij deze naam en leerlingcode. Controleer je gegevens of vraag je docent om hulp.",
+      })
+      return
+    }
+
+    const room = match.room
+    const player = match.player
+
+    detachPlayerSocketFromOtherRoom(socket.id, room.code)
+    socketToRoom.set(socket.id, room.code)
+    player.socketId = socket.id
+    player.connected = true
+    if (!player.name) {
+      player.name = trimmedName
+    }
+    if (!room.game.groupModeEnabled) {
+      player.teamId = ""
+    }
+
+    socket.emit("player:joined", {
+      playerId: player.id,
+      playerSessionId: player.id || requestedPlayerSessionId,
+      learnerCode: player.learnerCode ?? requestedLearnerCode,
+      teamId: player.teamId || "",
+      roomCode: room.code,
+      mode: room.game.mode || "math",
+    })
+    emitStateToSocket(socket, room)
+    emitStateToRoom(room)
   })
 
   socket.on("player:answer", ({ answer }) => {
@@ -6057,6 +6246,21 @@ io.on("connection", (socket) => {
     const expectedAnswer = formatMathAnswer(evaluation.expected)
     const answeredValue =
       evaluation.candidate === null ? String(answer ?? "").trim() : formatMathAnswer(evaluation.candidate)
+    const studentExplanation = buildChildFriendlyMathExplanation(task, expectedAnswer)
+    const baseHistoryEntry = {
+      taskId: task.id,
+      prompt: task.prompt,
+      domain: task.domain,
+      phase: progress.phase,
+      level: task.level,
+      difficulty: clampMathDifficulty(task.difficulty),
+      correct: evaluation.correct,
+      expectedAnswer,
+      answeredValue,
+      explanation: studentExplanation,
+      answeredAt: submittedAt,
+      pointsAwarded: 0,
+    }
 
     progress.lastAnsweredAt = submittedAt
     progress.updatedAt = submittedAt
@@ -6079,10 +6283,10 @@ io.on("connection", (socket) => {
           correct: evaluation.correct,
           expectedAnswer,
           answeredValue,
-          explanation: task.explanation,
+          explanation: studentExplanation,
           feedback: evaluation.correct
-            ? "Goed gedaan. Tik op 'Volgende vraag' voor de rest van de instaptoets."
-            : `Nog niet goed. Het juiste antwoord was ${expectedAnswer}. Tik op 'Volgende vraag' om verder te gaan.`,
+            ? "Goed gedaan. Dit antwoord klopt. Tik op 'Volgende vraag' om verder te gaan."
+            : "Nog niet goed. Kijk rustig naar de uitleg hieronder en ga dan verder.",
           pointsAwarded: 0,
         }
       } else {
@@ -6099,13 +6303,14 @@ io.on("connection", (socket) => {
           correct: evaluation.correct,
           expectedAnswer,
           answeredValue,
-          explanation: task.explanation,
+          explanation: studentExplanation,
           placementLevel,
           targetLevel,
-          feedback: `Instaptoets klaar. Jij zit nu op ${formatMathLevel(placementLevel)} en gaat oefenen op ${formatMathLevel(targetLevel)}.`,
+          feedback: `Instaptoets klaar. Jij laat nu ${formatMathLevel(placementLevel)} zien en gaat oefenen op ${formatMathLevel(targetLevel)}.`,
           pointsAwarded: 0,
         }
       }
+      appendMathAnswerHistory(progress, baseHistoryEntry)
     } else {
       progress.practiceQuestionCount += 1
       if (evaluation.correct) {
@@ -6120,14 +6325,18 @@ io.on("connection", (socket) => {
         correct: evaluation.correct,
         expectedAnswer,
         answeredValue,
-        explanation: task.explanation,
+        explanation: studentExplanation,
         placementLevel: progress.placementLevel,
         targetLevel: progress.targetLevel,
         feedback: evaluation.correct
-          ? `Goed! Je krijgt ${task.points} punten. De volgende som sluit aan op ${formatMathLevel(progress.targetLevel)}.`
-          : `Nog niet goed. Het juiste antwoord was ${expectedAnswer}. De volgende som past zich aan.`,
+          ? `Goed! Je krijgt ${task.points} punten. De volgende som past bij ${formatMathLevel(progress.targetLevel)}.`
+          : "Dat antwoord klopt nog niet. Kijk rustig naar de uitleg hieronder. Daarna krijg je een nieuwe som.",
         pointsAwarded: evaluation.correct ? Number(task.points) || 0 : 0,
       }
+      appendMathAnswerHistory(progress, {
+        ...baseHistoryEntry,
+        pointsAwarded: evaluation.correct ? Number(task.points) || 0 : 0,
+      })
     }
 
     syncTeamScores(room)

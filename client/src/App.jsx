@@ -9,6 +9,8 @@ const IMAGE_RENDER_VERSION = "20260316b"
 const MAX_MANUAL_UPLOAD_FILE_BYTES = 10 * 1024 * 1024
 const MAX_MANUAL_UPLOAD_DATA_BYTES = 4 * 1024 * 1024
 const MATH_LEVEL_OPTIONS = ["0f", "1f", "2f", "3f", "4f"]
+const PLAYER_JOIN_MODE_CLASSROOM = "classroom"
+const PLAYER_JOIN_MODE_HOME_MATH = "home-math"
 const DEFAULT_HOST_SESSION = {
   authenticated: false,
   username: "",
@@ -117,6 +119,10 @@ function buildAnswerStatusText(payload) {
 
 function formatMathLevelLabel(level) {
   return String(level || "").trim().toUpperCase()
+}
+
+function formatAccuracy(rate = 0) {
+  return `${Math.max(0, Number(rate) || 0)}%`
 }
 
 function formatMathDifficultyLabel(difficulty) {
@@ -1491,9 +1497,27 @@ function PlayerPage() {
       const stored = window.localStorage.getItem(PLAYER_SESSION_KEY)
       return stored
         ? JSON.parse(stored)
-        : { name: "", teamId: "", roomCode: "", joined: false, playerId: "", playerSessionId: createPlayerSessionId(), learnerCode: "" }
+        : {
+            name: "",
+            teamId: "",
+            roomCode: "",
+            joined: false,
+            playerId: "",
+            playerSessionId: createPlayerSessionId(),
+            learnerCode: "",
+            joinMode: PLAYER_JOIN_MODE_CLASSROOM,
+          }
     } catch {
-      return { name: "", teamId: "", roomCode: "", joined: false, playerId: "", playerSessionId: createPlayerSessionId(), learnerCode: "" }
+      return {
+        name: "",
+        teamId: "",
+        roomCode: "",
+        joined: false,
+        playerId: "",
+        playerSessionId: createPlayerSessionId(),
+        learnerCode: "",
+        joinMode: PLAYER_JOIN_MODE_CLASSROOM,
+      }
     }
   })
   const [name, setName] = useState(playerSession.name || "")
@@ -1502,6 +1526,7 @@ function PlayerPage() {
   const [playerId, setPlayerId] = useState(playerSession.playerId || "")
   const [playerSessionId, setPlayerSessionId] = useState(playerSession.playerSessionId || createPlayerSessionId())
   const [learnerCode, setLearnerCode] = useState(playerSession.learnerCode || "")
+  const [joinMode, setJoinMode] = useState(playerSession.joinMode || PLAYER_JOIN_MODE_CLASSROOM)
   const [roomPreview, setRoomPreview] = useState({ valid: false, teams: [], intakeTotal: 0, mode: "battle", groupModeEnabled: false })
   const [joined, setJoined] = useState(Boolean(playerSession.joined))
   const [result, setResult] = useState(null)
@@ -1542,15 +1567,17 @@ function PlayerPage() {
       setJoined(true)
       setStatus(nextMode === "math" ? "Je bent verbonden. Je rekensom of instaptoets staat voor je klaar." : "Je bent verbonden. Wacht op de volgende vraag.")
     }
-    const onJoinedPayload = ({ playerId: nextPlayerId, playerSessionId: nextPlayerSessionId, learnerCode: nextLearnerCode }) => {
+    const onJoinedPayload = ({ playerId: nextPlayerId, playerSessionId: nextPlayerSessionId, learnerCode: nextLearnerCode, roomCode: nextRoomCode, mode: nextMode }) => {
       if (nextPlayerId) setPlayerId(nextPlayerId)
       if (nextPlayerSessionId) setPlayerSessionId(nextPlayerSessionId)
       if (nextLearnerCode) setLearnerCode(nextLearnerCode)
-      onJoined(roomPreview.mode)
+      if (nextRoomCode) setRoomCode(nextRoomCode)
+      onJoined(nextMode || roomPreview.mode)
     }
     const onPlayerError = ({ message }) => setStatus(message)
     const onRoomPreview = (payload) => {
       setRoomPreview(payload)
+      if (joinMode !== PLAYER_JOIN_MODE_CLASSROOM) return
       if (payload.valid) {
         setStatus(
           payload.mode === "math"
@@ -1609,34 +1636,39 @@ function PlayerPage() {
       socket.off("player:lesson-response:result", onLessonResponseResult)
       socket.off("player:profile:update", onProfileUpdate)
     }
-  }, [roomCode.length])
+  }, [joinMode, roomCode.length])
 
   useEffect(() => {
-    const nextSession = { name, teamId, roomCode, joined, playerId, playerSessionId, learnerCode }
+    const nextSession = { name, teamId, roomCode, joined, playerId, playerSessionId, learnerCode, joinMode }
     setPlayerSession(nextSession)
     window.localStorage.setItem(PLAYER_SESSION_KEY, JSON.stringify(nextSession))
-  }, [joined, learnerCode, name, playerId, playerSessionId, roomCode, teamId])
+  }, [joinMode, joined, learnerCode, name, playerId, playerSessionId, roomCode, teamId])
 
   useEffect(() => {
+    if (joinMode !== PLAYER_JOIN_MODE_CLASSROOM) {
+      setRoomPreview({ valid: false, teams: [], intakeTotal: 0, mode: "battle", groupModeEnabled: false })
+      return
+    }
+
     if (roomCode.trim().length < 5) {
       setRoomPreview({ valid: false, teams: [], intakeTotal: 0, mode: "battle", groupModeEnabled: false })
       return
     }
 
     socket.emit("player:lookup-room", { roomCode: roomCode.trim().toUpperCase() })
-  }, [roomCode])
+  }, [joinMode, roomCode])
 
   useEffect(() => {
     const normalizedCode = roomCode.trim().toUpperCase()
 
-    if (joined || normalizedCode.length < 5) return undefined
+    if (joinMode !== PLAYER_JOIN_MODE_CLASSROOM || joined || normalizedCode.length < 5) return undefined
 
     const intervalId = window.setInterval(() => {
       socket.emit("player:lookup-room", { roomCode: normalizedCode })
     }, 2000)
 
     return () => window.clearInterval(intervalId)
-  }, [joined, roomCode])
+  }, [joinMode, joined, roomCode])
 
   useEffect(() => {
     setResult(null)
@@ -1657,31 +1689,58 @@ function PlayerPage() {
   }, [game.math?.currentTask?.id])
 
   useEffect(() => {
+    if (joined) return
+    setStatus(
+      joinMode === PLAYER_JOIN_MODE_HOME_MATH
+        ? "Vul je naam en leerlingcode in om thuis verder te gaan."
+        : "Vul je gegevens in en sluit aan."
+    )
+  }, [joinMode, joined])
+
+  useEffect(() => {
     const onConnect = () => {
       const normalizedCode = roomCode.trim().toUpperCase()
-      if (normalizedCode.length >= 5) {
+      if (joinMode === PLAYER_JOIN_MODE_CLASSROOM && normalizedCode.length >= 5) {
         socket.emit("player:lookup-room", { roomCode: normalizedCode })
       }
       const canReconnect =
         joined &&
-        normalizedCode.length >= 5 &&
-        ((roomPreview.mode === "math" && /^\d{4}$/.test(learnerCode)) || Boolean(name.trim()))
+        ((normalizedCode.length >= 5 &&
+          ((roomPreview.mode === "math" && /^\d{4}$/.test(learnerCode)) || Boolean(name.trim()))) ||
+          (joinMode === PLAYER_JOIN_MODE_HOME_MATH && Boolean(name.trim()) && /^\d{4}$/.test(learnerCode)))
       if (canReconnect) {
-        socket.emit("player:join", {
-          name: name.trim(),
-          teamId,
-          roomCode: normalizedCode,
-          playerSessionId,
-          learnerCode,
-        })
+        if (normalizedCode.length >= 5) {
+          socket.emit("player:join", {
+            name: name.trim(),
+            teamId,
+            roomCode: normalizedCode,
+            playerSessionId,
+            learnerCode,
+          })
+        } else if (joinMode === PLAYER_JOIN_MODE_HOME_MATH) {
+          socket.emit("player:resume-math", {
+            name: name.trim(),
+            learnerCode,
+            playerSessionId,
+          })
+        }
       }
     }
 
     socket.on("connect", onConnect)
     return () => socket.off("connect", onConnect)
-  }, [joined, learnerCode, name, playerSessionId, roomCode, roomPreview.mode, teamId])
+  }, [joinMode, joined, learnerCode, name, playerSessionId, roomCode, roomPreview.mode, teamId])
 
   const join = () => {
+    if (joinMode === PLAYER_JOIN_MODE_HOME_MATH) {
+      socket.emit("player:resume-math", {
+        name: name.trim(),
+        learnerCode,
+        playerSessionId,
+      })
+      return
+    }
+
     socket.emit("player:join", {
       name: name.trim(),
       teamId,
@@ -1706,7 +1765,11 @@ function PlayerPage() {
   const availableTeams = joined ? teams : roomPreview.valid ? roomPreview.teams : teams
   const liveGroupModeEnabled = Boolean(game.groupModeEnabled)
   const isMathPreview = roomPreview.mode === "math" || game.mode === "math"
-  const joinGroupModeEnabled = !isMathPreview && Boolean(joined ? liveGroupModeEnabled : roomPreview.groupModeEnabled)
+  const isHomeMathJoin = joinMode === PLAYER_JOIN_MODE_HOME_MATH
+  const joinGroupModeEnabled =
+    !isHomeMathJoin && !isMathPreview && Boolean(joined ? liveGroupModeEnabled : roomPreview.groupModeEnabled)
+  const needsRoomCode = !isHomeMathJoin
+  const needsLearnerCode = isMathPreview || isHomeMathJoin
   const selectedTeam = availableTeams.find((team) => team.id === teamId)
   const currentPlayer = useMemo(
     () => players.find((player) => player.id === playerId) || leaderboard.find((player) => player.id === playerId) || null,
@@ -1751,16 +1814,34 @@ function PlayerPage() {
     !game.math?.currentTask &&
     Boolean(game.math?.awaitingNext)
   const canJoinRoom =
-    roomPreview.valid &&
-    (isMathPreview ? /^\d{4}$/.test(learnerCode) : Boolean(name.trim()))
+    isHomeMathJoin
+      ? Boolean(name.trim()) && /^\d{4}$/.test(learnerCode)
+      : roomPreview.valid && (isMathPreview ? /^\d{4}$/.test(learnerCode) : Boolean(name.trim()))
 
   return (
     <main className="page-shell player-shell">
       <section className="player-layout">
         <div className="glass join-card">
           <span className="eyebrow">Deelnemen</span>
-          <h1>{isMathPreview ? "Start rekenen" : "Join de battle"}</h1>
+          <h1>{isHomeMathJoin ? "Ga thuis verder" : isMathPreview ? "Start rekenen" : "Join de battle"}</h1>
           <p className="muted">{status}</p>
+
+          <div className="mode-switch join-mode-switch">
+            <button
+              className={`mode-chip ${joinMode === PLAYER_JOIN_MODE_CLASSROOM ? "is-active" : ""}`}
+              onClick={() => setJoinMode(PLAYER_JOIN_MODE_CLASSROOM)}
+              type="button"
+            >
+              In de klas
+            </button>
+            <button
+              className={`mode-chip ${isHomeMathJoin ? "is-active" : ""}`}
+              onClick={() => setJoinMode(PLAYER_JOIN_MODE_HOME_MATH)}
+              type="button"
+            >
+              Thuis rekenen
+            </button>
+          </div>
 
           <label className="field">
             <span>Jouw naam</span>
@@ -1781,16 +1862,18 @@ function PlayerPage() {
             </label>
           ) : null}
 
-          <label className="field">
-            <span>Spelcode</span>
-            <input
-              value={roomCode}
-              onChange={(event) => setRoomCode(event.target.value.toUpperCase())}
-              placeholder="Bijv. AB12C"
-            />
-          </label>
+          {needsRoomCode ? (
+            <label className="field">
+              <span>Spelcode</span>
+              <input
+                value={roomCode}
+                onChange={(event) => setRoomCode(event.target.value.toUpperCase())}
+                placeholder="Bijv. AB12C"
+              />
+            </label>
+          ) : null}
 
-          {isMathPreview ? (
+          {needsLearnerCode ? (
             <label className="field">
               <span>Leerlingcode</span>
               <input
@@ -1804,7 +1887,7 @@ function PlayerPage() {
           ) : null}
 
           <button className="button-primary" disabled={!canJoinRoom} onClick={join} type="button">
-            {joined ? "Opnieuw koppelen" : "Ik doe mee"}
+            {joined ? "Opnieuw koppelen" : isHomeMathJoin ? "Verder met rekenen" : "Ik doe mee"}
           </button>
 
           {selectedTeam && joinGroupModeEnabled ? (
@@ -1812,7 +1895,13 @@ function PlayerPage() {
               {selectedTeam.name}
             </div>
           ) : null}
-          {isMathPreview ? <p className="muted learner-code-note">Vul hier de 4-cijferige code in die je van de docent hebt gekregen.</p> : null}
+          {needsLearnerCode ? (
+            <p className="muted learner-code-note">
+              {isHomeMathJoin
+                ? "Vul je naam en leerlingcode in. Dan zoeken we jouw rekenroute automatisch op."
+                : "Vul hier de 4-cijferige code in die je van de docent hebt gekregen."}
+            </p>
+          ) : null}
         </div>
 
         <div className="glass battle-card">
@@ -2073,6 +2162,10 @@ function MathHostSummary({ math, players }) {
         <span>Actieve leerlingen</span>
         <strong>{players.length}</strong>
       </div>
+      <div className="player-score-pill">
+        <span>Oefenvragen samen</span>
+        <strong>{(math.players || []).reduce((sum, player) => sum + (player.answeredCount || 0), 0)}</strong>
+      </div>
     </div>
   )
 }
@@ -2087,6 +2180,7 @@ function MathHostPanel({
   onLearnerCodeSave,
   onNewLearnerChange,
 }) {
+  const [showOverview, setShowOverview] = useState(true)
   if (!math) return null
 
   const playerRows = insights?.mode === "math" ? insights.players || [] : math.players || []
@@ -2102,12 +2196,32 @@ function MathHostPanel({
             met oplopende moeilijkheid als het goed gaat.
           </p>
         </div>
-        <div className="math-summary-stack">
-          <span className="score-chip">Instap {math.intakeTotal || 0} vragen</span>
-          <span className="score-chip">{math.intakeCount || 0} in intake</span>
-          <span className="score-chip">{math.practiceCount || 0} aan het oefenen</span>
+        <div className="math-host-actions">
+          <div className="math-summary-stack">
+            <span className="score-chip">Instap {math.intakeTotal || 0} vragen</span>
+            <span className="score-chip">{math.intakeCount || 0} in intake</span>
+            <span className="score-chip">{math.practiceCount || 0} aan het oefenen</span>
+          </div>
+          <button className="button-ghost" onClick={() => setShowOverview((current) => !current)} type="button">
+            {showOverview ? "Verberg voortgang" : "Toon voortgang"}
+          </button>
         </div>
       </div>
+
+      {showOverview ? (
+        <div className="math-monitor-grid">
+          {playerRows.map((player) => (
+            <article className="math-monitor-card" key={`${player.playerId}-overview`}>
+              <strong>{player.name}</strong>
+              <span>{player.workLabel || "Nog niet gestart"}</span>
+              <b>{player.answeredCount || 0} gemaakt</b>
+              <small>
+                Goed {player.correctCount || 0} · Fout {player.wrongCount || 0} · {formatAccuracy(player.accuracyRate || 0)}
+              </small>
+            </article>
+          ))}
+        </div>
+      ) : null}
 
       <div className="math-host-card">
         <div className="math-host-card-head">
@@ -2150,6 +2264,12 @@ function MathHostPanel({
               <span className="pill">{player.phase === "practice" ? "Adaptief" : "Instaptoets"}</span>
             </div>
             <div className="math-host-meta">
+              <span>Werkhouding: {player.workLabel || "Nog niet gestart"}</span>
+              <span>Gemaakt: {player.answeredCount || 0}</span>
+              <span>Goed: {player.correctCount || 0}</span>
+              <span>Fout: {player.wrongCount || 0}</span>
+              <span>Nauwkeurigheid: {formatAccuracy(player.accuracyRate || 0)}</span>
+              <span>Laatste actief: {player.lastAnsweredAt ? formatHistoryDate(player.lastAnsweredAt) : "Nog geen activiteit"}</span>
               <span>Plaatsing: {player.placementLevel || "-"}</span>
               <span>Oefenniveau: {player.targetLevel || "-"}</span>
               <span>Moeilijkheid: {formatMathDifficultyLabel(player.practiceDifficulty)}</span>
@@ -2168,6 +2288,27 @@ function MathHostPanel({
               </button>
             </div>
             {player.currentTaskPrompt ? <p className="math-task-preview">{player.currentTaskPrompt}</p> : null}
+            <div className="math-history-block">
+              <strong>Laatste antwoorden</strong>
+              {(player.answerHistory || []).length ? (
+                <div className="math-history-list">
+                  {[...(player.answerHistory || [])].reverse().map((entry) => (
+                    <div className={`math-history-row ${entry.correct ? "is-correct" : "is-wrong"}`} key={`${player.playerId}-${entry.taskId}-${entry.answeredAt}`}>
+                      <div className="math-history-head">
+                        <strong>{entry.correct ? "Goed" : "Fout"}</strong>
+                        <span>{entry.level || "-"} · {entry.domain || "rekenen"}</span>
+                      </div>
+                      <p>{entry.prompt}</p>
+                      <small>
+                        Leerling: {entry.answeredValue || "geen antwoord"} · Goed: {entry.expectedAnswer}
+                      </small>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="math-task-preview">Nog geen beantwoorde vragen.</p>
+              )}
+            </div>
           </article>
         ))}
       </div>
@@ -2185,6 +2326,8 @@ function MathStudentPanel({ math, answer, onAnswerChange, onSubmit, onNext, canS
         <span className="score-chip">Instap {Math.min((math.intakeIndex || 0) + (math.currentTask ? 1 : 0), math.intakeTotal || 0)} / {math.intakeTotal || 0}</span>
         {math.placementLevel ? <span className="score-chip">Jij zit op {math.placementLevel}</span> : null}
         {math.targetLevel ? <span className="score-chip">Je oefent op {math.targetLevel}</span> : null}
+        {math.answeredCount ? <span className="score-chip">{math.answeredCount} gemaakt</span> : null}
+        {math.answeredCount ? <span className="score-chip">{formatAccuracy(math.accuracyRate || 0)} goed</span> : null}
         {math.phase === "practice" ? <span className="score-chip">{formatMathDifficultyLabel(math.practiceDifficulty)}</span> : null}
       </div>
 
@@ -2219,7 +2362,12 @@ function MathStudentPanel({ math, answer, onAnswerChange, onSubmit, onNext, canS
         <div className={`answer-result ${math.lastResult.correct ? "ok" : "bad"}`}>
           <strong>{math.lastResult.correct ? "Goed bezig" : "Nog even doorpakken"}</strong>
           <p>{math.lastResult.feedback}</p>
-          {math.lastResult.explanation ? <p>{math.lastResult.explanation}</p> : null}
+          {math.lastResult.explanation ? (
+            <div className="math-explanation-box">
+              <strong>Uitleg stap voor stap</strong>
+              <p>{math.lastResult.explanation}</p>
+            </div>
+          ) : null}
           {math.lastResult.expectedAnswer ? <span className="score-chip">Juiste antwoord: {math.lastResult.expectedAnswer}</span> : null}
         </div>
       ) : null}
@@ -2239,7 +2387,7 @@ function LearnerCodeCard({ learnerCode, roomCode }) {
   return (
     <section className="learner-code-card">
       <span className="eyebrow">Verdergaan</span>
-      <h3>Bewaar deze combinatie</h3>
+      <h3>Bewaar je leerlingcode</h3>
       <div className="learner-code-grid">
         <div>
           <span>Spelcode</span>
@@ -2250,7 +2398,7 @@ function LearnerCodeCard({ learnerCode, roomCode }) {
           <strong>{learnerCode}</strong>
         </div>
       </div>
-      <p className="muted">Vul later dezelfde code en leercode in om door te gaan waar je was gebleven.</p>
+      <p className="muted">In de klas gebruik je spelcode + leerlingcode. Thuis kun je verdergaan met je naam + leerlingcode.</p>
     </section>
   )
 }

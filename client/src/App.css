@@ -2197,7 +2197,9 @@ body::after {
 .math-answer-row,
 .math-code-row,
 .math-create-row,
-.learner-code-grid {
+.learner-code-grid,
+.math-monitor-grid,
+.math-history-list {
   display: grid;
   gap: 12px;
 }
@@ -2245,6 +2247,12 @@ body::after {
   align-items: flex-start;
 }
 
+.math-host-actions {
+  display: grid;
+  gap: 12px;
+  justify-items: end;
+}
+
 .math-summary-stack,
 .math-student-strip,
 .math-host-meta {
@@ -2257,6 +2265,67 @@ body::after {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
+}
+
+.math-monitor-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.math-monitor-card,
+.math-history-row,
+.math-explanation-box {
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.math-monitor-card strong,
+.math-history-block strong,
+.math-history-head strong,
+.math-explanation-box strong {
+  display: block;
+}
+
+.math-monitor-card span,
+.math-monitor-card small,
+.math-history-row small {
+  color: rgba(237, 241, 255, 0.72);
+}
+
+.math-history-block {
+  display: grid;
+  gap: 10px;
+}
+
+.math-history-list {
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.math-history-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.math-history-row {
+  display: grid;
+  gap: 8px;
+}
+
+.math-history-row p,
+.math-explanation-box p {
+  margin: 0;
+}
+
+.math-history-row.is-correct {
+  border-color: rgba(84, 235, 223, 0.22);
+}
+
+.math-history-row.is-wrong {
+  border-color: rgba(255, 119, 119, 0.24);
 }
 
 .math-host-card-head strong,
@@ -2291,6 +2360,11 @@ body::after {
   align-items: center;
 }
 
+.join-mode-switch {
+  width: 100%;
+  margin: 4px 0 0;
+}
+
 .math-task-card h3,
 .learner-code-card h3 {
   margin: 0;
@@ -2318,7 +2392,8 @@ body::after {
   .distribution-grid,
   .action-row,
   .math-band-row,
-  .math-host-grid {
+  .math-host-grid,
+  .math-monitor-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -2369,6 +2444,7 @@ body::after {
   .distribution-grid,
   .math-band-row,
   .math-host-grid,
+  .math-monitor-grid,
   .math-summary-row,
   .learner-code-grid,
   .math-create-row,
