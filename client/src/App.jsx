@@ -4,6 +4,7 @@ import "./App.css"
 
 const socket = io(window.location.origin.startsWith("http://localhost:5173") ? "http://localhost:3001" : window.location.origin)
 const HOST_SESSION_KEY = "lessonbattle-host-session"
+const HOST_ROOM_BACKUP_KEY_PREFIX = "lessonbattle-host-room-backup"
 const PLAYER_SESSION_KEY = "lessonbattle-player-session"
 const IMAGE_RENDER_VERSION = "20260316b"
 const MAX_MANUAL_UPLOAD_FILE_BYTES = 10 * 1024 * 1024
@@ -128,6 +129,54 @@ function formatAccuracy(rate = 0) {
 function formatMathDifficultyLabel(difficulty) {
   const safeDifficulty = Math.max(1, Math.min(5, Number(difficulty) || 1))
   return ["instap", "basis", "stevig", "uitdagend", "topniveau"][safeDifficulty - 1]
+}
+
+function formatMathDomainLabel(domain = "") {
+  const normalized = String(domain || "").trim().toLowerCase()
+  if (normalized === "meten en meetkunde") return "Meten en meetkunde"
+  if (normalized === "verhoudingen") return "Verhoudingen"
+  if (normalized === "verbanden") return "Verbanden"
+  if (normalized === "getallen") return "Getallen"
+  return normalized ? normalized.charAt(0).toUpperCase() + normalized.slice(1) : "Rekenen"
+}
+
+function buildHostBackupStorageKey(username = "") {
+  return `${HOST_ROOM_BACKUP_KEY_PREFIX}-${String(username || "default").trim().toLowerCase() || "default"}`
+}
+
+function readHostRoomBackup(username = "") {
+  if (!username) return null
+  try {
+    const stored = window.localStorage.getItem(buildHostBackupStorageKey(username))
+    if (!stored) return null
+    const parsed = JSON.parse(stored)
+    if (!parsed?.snapshot) return null
+    return {
+      username: parsed.username || username,
+      roomCode: parsed.roomCode || "",
+      savedAt: parsed.savedAt || "",
+      snapshot: parsed.snapshot,
+    }
+  } catch {
+    return null
+  }
+}
+
+function writeHostRoomBackup(username = "", snapshot) {
+  if (!username || !snapshot) return null
+  const payload = {
+    username,
+    roomCode: snapshot?.code || "",
+    savedAt: new Date().toISOString(),
+    snapshot,
+  }
+  window.localStorage.setItem(buildHostBackupStorageKey(username), JSON.stringify(payload))
+  return payload
+}
+
+function clearHostRoomBackup(username = "") {
+  if (!username) return
+  window.localStorage.removeItem(buildHostBackupStorageKey(username))
 }
 
 function readFileAsDataUrl(file) {
@@ -309,6 +358,9 @@ function HostPage() {
   const [newMathLearner, setNewMathLearner] = useState({ name: "", learnerCode: "" })
   const [loginForm, setLoginForm] = useState(storedHostSession.loginForm)
   const [hostSession, setHostSession] = useState(storedHostSession.hostSession)
+  const [localRoomBackup, setLocalRoomBackup] = useState(() =>
+    readHostRoomBackup(storedHostSession.hostSession.username || storedHostSession.loginForm.username)
+  )
   const [manualSlideImageUrlDraft, setManualSlideImageUrlDraft] = useState("")
   const [manualSlideImageAltDraft, setManualSlideImageAltDraft] = useState("")
   const [manualSlideUploadName, setManualSlideUploadName] = useState("")
@@ -388,6 +440,11 @@ function HostPage() {
     setLessonPromptDraft(game.lesson?.currentPhase?.prompt || "")
     setLessonExpectedAnswerDraft(game.lesson?.currentPhase?.expectedAnswer || "")
   }, [game.lesson?.currentPhase?.id, game.lesson?.currentPhase?.prompt, game.lesson?.currentPhase?.expectedAnswer, game.mode])
+
+  useEffect(() => {
+    const username = hostSession.username || loginForm.username
+    setLocalRoomBackup(readHostRoomBackup(username))
+  }, [hostSession.username, loginForm.username])
 
   useEffect(() => {
     const onLoginSuccess = ({ username, displayName, role, canManageAccounts, roomCode, sessionToken }) => {
@@ -481,6 +538,14 @@ function HostPage() {
       setManualSlideUploadName("")
       setStatus(manualImageUrl ? "Dia-afbeelding bijgewerkt." : "Handmatige dia-afbeelding verwijderd.")
     }
+    const onRoomBackup = ({ snapshot }) => {
+      const username = hostSession.username || loginForm.username
+      const storedBackup = writeHostRoomBackup(username, snapshot)
+      if (storedBackup) setLocalRoomBackup(storedBackup)
+    }
+    const onBackupRestoreSuccess = ({ roomCode, title }) => {
+      setStatus(`Lokale backup hersteld${title ? `: ${title}` : ""}. Roomcode ${roomCode}.`)
+    }
 
     socket.on("host:login:success", onLoginSuccess)
     socket.on("host:configure:success", onConfigureSuccess)
@@ -503,6 +568,8 @@ function HostPage() {
     socket.on("host:teacher-accounts:success", onTeacherAccountsSuccess)
     socket.on("host:learner-code:success", onLearnerCodeSuccess)
     socket.on("host:presentation-image:success", onPresentationImageSuccess)
+    socket.on("host:room:backup", onRoomBackup)
+    socket.on("host:backup:restore:success", onBackupRestoreSuccess)
 
     return () => {
       socket.off("host:login:success", onLoginSuccess)
@@ -526,8 +593,10 @@ function HostPage() {
       socket.off("host:teacher-accounts:success", onTeacherAccountsSuccess)
       socket.off("host:learner-code:success", onLearnerCodeSuccess)
       socket.off("host:presentation-image:success", onPresentationImageSuccess)
+      socket.off("host:room:backup", onRoomBackup)
+      socket.off("host:backup:restore:success", onBackupRestoreSuccess)
     }
-  }, [])
+  }, [hostSession.username, loginForm.username])
 
   useEffect(() => {
     setManualSlideImageUrlDraft(currentPresentationSlide?.manualImageUrl || "")
@@ -841,6 +910,22 @@ function HostPage() {
   const createMathLearner = () => {
     setStatus("Leerling met code wordt klaargezet...")
     socket.emit("host:math:learner:create", newMathLearner)
+  }
+
+  const restoreLocalRoomBackup = () => {
+    if (!localRoomBackup?.snapshot) {
+      setStatus("Er is geen lokale backup gevonden om te herstellen.")
+      return
+    }
+    setStatus("Lokale backup wordt teruggezet...")
+    socket.emit("host:backup:restore", { snapshot: localRoomBackup.snapshot })
+  }
+
+  const clearLocalRoomBackupFromDevice = () => {
+    const username = hostSession.username || loginForm.username
+    clearHostRoomBackup(username)
+    setLocalRoomBackup(null)
+    setStatus("Lokale backup verwijderd van dit apparaat.")
   }
 
   const updateLessonPrompt = () => {
@@ -1362,14 +1447,17 @@ function HostPage() {
           {game.mode === "math" && game.math ? (
             <MathHostPanel
               learnerCodeDrafts={learnerCodeDrafts}
+              localBackup={localRoomBackup}
               math={game.math}
               newMathLearner={newMathLearner}
+              onClearLocalBackup={clearLocalRoomBackupFromDevice}
               onCreateLearner={createMathLearner}
               onLearnerCodeChange={(playerId, value) =>
                 setLearnerCodeDrafts((current) => ({ ...current, [playerId]: value }))
               }
               onNewLearnerChange={setNewMathLearner}
               onLearnerCodeSave={updateLearnerCode}
+              onRestoreLocalBackup={restoreLocalRoomBackup}
               insights={hostInsights}
             />
           ) : game.mode === "lesson" && game.lesson?.currentPhase ? (
@@ -2174,11 +2262,14 @@ function MathHostPanel({
   math,
   insights,
   learnerCodeDrafts,
+  localBackup,
   newMathLearner,
+  onClearLocalBackup,
   onCreateLearner,
   onLearnerCodeChange,
   onLearnerCodeSave,
   onNewLearnerChange,
+  onRestoreLocalBackup,
 }) {
   const [showOverview, setShowOverview] = useState(true)
   if (!math) return null
@@ -2201,12 +2292,32 @@ function MathHostPanel({
             <span className="score-chip">Instap {math.intakeTotal || 0} vragen</span>
             <span className="score-chip">{math.intakeCount || 0} in intake</span>
             <span className="score-chip">{math.practiceCount || 0} aan het oefenen</span>
+            {localBackup?.savedAt ? <span className="score-chip">Lokale backup {formatHistoryDate(localBackup.savedAt)}</span> : null}
           </div>
-          <button className="button-ghost" onClick={() => setShowOverview((current) => !current)} type="button">
-            {showOverview ? "Verberg voortgang" : "Toon voortgang"}
-          </button>
+          <div className="math-host-actions-row">
+            <button className="button-ghost" onClick={() => setShowOverview((current) => !current)} type="button">
+              {showOverview ? "Verberg voortgang" : "Toon voortgang"}
+            </button>
+            {localBackup?.snapshot ? (
+              <button className="button-secondary" onClick={onRestoreLocalBackup} type="button">
+                Herstel lokale backup
+              </button>
+            ) : null}
+            {localBackup?.snapshot ? (
+              <button className="button-ghost" onClick={onClearLocalBackup} type="button">
+                Wis backup
+              </button>
+            ) : null}
+          </div>
         </div>
       </div>
+
+      {localBackup?.snapshot ? (
+        <div className="math-backup-note">
+          Deze gratis backup staat alleen op dit apparaat en in deze browser. Daarmee kun je een rekenroute later opnieuw openen,
+          ook als Render de room tussendoor kwijt is geraakt.
+        </div>
+      ) : null}
 
       {showOverview ? (
         <div className="math-monitor-grid">
@@ -2215,6 +2326,7 @@ function MathHostPanel({
               <strong>{player.name}</strong>
               <span>{player.workLabel || "Nog niet gestart"}</span>
               <b>{player.answeredCount || 0} gemaakt</b>
+              <small>Focus: {(player.focusDomains || []).map(formatMathDomainLabel).join(", ") || "nog bepalen"}</small>
               <small>
                 Goed {player.correctCount || 0} · Fout {player.wrongCount || 0} · {formatAccuracy(player.accuracyRate || 0)}
               </small>
@@ -2273,6 +2385,7 @@ function MathHostPanel({
               <span>Plaatsing: {player.placementLevel || "-"}</span>
               <span>Oefenniveau: {player.targetLevel || "-"}</span>
               <span>Moeilijkheid: {formatMathDifficultyLabel(player.practiceDifficulty)}</span>
+              <span>Focus nu: {(player.focusDomains || []).map(formatMathDomainLabel).join(", ") || "nog bepalen"}</span>
               <span>
                 Goed: {player.practiceCorrectCount || 0} / {player.practiceQuestionCount || 0}
               </span>
@@ -2329,6 +2442,9 @@ function MathStudentPanel({ math, answer, onAnswerChange, onSubmit, onNext, canS
         {math.answeredCount ? <span className="score-chip">{math.answeredCount} gemaakt</span> : null}
         {math.answeredCount ? <span className="score-chip">{formatAccuracy(math.accuracyRate || 0)} goed</span> : null}
         {math.phase === "practice" ? <span className="score-chip">{formatMathDifficultyLabel(math.practiceDifficulty)}</span> : null}
+        {math.phase === "practice" && (math.focusDomains || []).length ? (
+          <span className="score-chip">Focus: {(math.focusDomains || []).map(formatMathDomainLabel).join(", ")}</span>
+        ) : null}
       </div>
 
       {math.phase !== "practice" ? (

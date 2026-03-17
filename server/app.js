@@ -1251,10 +1251,114 @@ function determineMathPlacement(mathState, progress) {
   return placement
 }
 
+function createMathDomainPerformanceBucket(domain) {
+  return {
+    domain,
+    total: 0,
+    correct: 0,
+    intakeTotal: 0,
+    intakeCorrect: 0,
+    practiceTotal: 0,
+    practiceCorrect: 0,
+    recentTotal: 0,
+    recentCorrect: 0,
+  }
+}
+
+function collectMathDomainPerformance(progress) {
+  const stats = new Map(MATH_DOMAIN_KEYS.map((domain) => [domain, createMathDomainPerformanceBucket(domain)]))
+
+  for (const answer of progress?.intakeAnswers || []) {
+    const domainKey = MATH_DOMAIN_KEYS.includes(answer?.domain) ? answer.domain : "getallen"
+    const bucket = stats.get(domainKey) || createMathDomainPerformanceBucket(domainKey)
+    bucket.total += 1
+    bucket.intakeTotal += 1
+    if (answer?.correct) {
+      bucket.correct += 1
+      bucket.intakeCorrect += 1
+    }
+    stats.set(domainKey, bucket)
+  }
+
+  const practiceEntries = (progress?.answerHistory || []).filter(
+    (entry) => entry?.phase === "practice" && MATH_DOMAIN_KEYS.includes(entry?.domain)
+  )
+
+  for (const entry of practiceEntries) {
+    const bucket = stats.get(entry.domain) || createMathDomainPerformanceBucket(entry.domain)
+    bucket.total += 1
+    bucket.practiceTotal += 1
+    if (entry.correct) {
+      bucket.correct += 1
+      bucket.practiceCorrect += 1
+    }
+    stats.set(entry.domain, bucket)
+  }
+
+  for (const entry of practiceEntries.slice(-6)) {
+    const bucket = stats.get(entry.domain) || createMathDomainPerformanceBucket(entry.domain)
+    bucket.recentTotal += 1
+    if (entry.correct) bucket.recentCorrect += 1
+    stats.set(entry.domain, bucket)
+  }
+
+  return stats
+}
+
+function rankMathDomainsForPractice(progress) {
+  const stats = collectMathDomainPerformance(progress)
+  return MATH_DOMAIN_KEYS.map((domain) => {
+    const bucket = stats.get(domain) || createMathDomainPerformanceBucket(domain)
+    const accuracy = bucket.total ? bucket.correct / bucket.total : 0.35
+    const recentAccuracy = bucket.recentTotal ? bucket.recentCorrect / bucket.recentTotal : accuracy
+    const coveragePenalty = bucket.practiceTotal === 0 ? 0.12 : 0
+    const score = accuracy * 0.55 + recentAccuracy * 0.45 - coveragePenalty
+
+    return {
+      ...bucket,
+      accuracy,
+      recentAccuracy,
+      score,
+    }
+  }).sort(
+    (left, right) =>
+      left.score - right.score ||
+      left.practiceTotal - right.practiceTotal ||
+      left.total - right.total ||
+      MATH_DOMAIN_KEYS.indexOf(left.domain) - MATH_DOMAIN_KEYS.indexOf(right.domain)
+  )
+}
+
+function getMathFocusDomains(progress, count = 2) {
+  return rankMathDomainsForPractice(progress)
+    .slice(0, Math.max(1, count))
+    .map((entry) => entry.domain)
+}
+
+function selectAdaptiveMathDomain(progress) {
+  const ranked = rankMathDomainsForPractice(progress)
+  const lastPracticeDomain =
+    [...(progress?.answerHistory || [])]
+      .reverse()
+      .find((entry) => entry?.phase === "practice" && MATH_DOMAIN_KEYS.includes(entry?.domain))?.domain || ""
+
+  const weakPool = ranked.filter(
+    (entry) => entry.practiceTotal === 0 || entry.accuracy < 0.75 || entry.recentAccuracy < 0.7
+  )
+  const preferredEntry =
+    weakPool.find((entry) => entry.domain !== lastPracticeDomain) ||
+    weakPool[0] ||
+    ranked.find((entry) => entry.domain !== lastPracticeDomain) ||
+    ranked[0]
+
+  return preferredEntry?.domain || ""
+}
+
 function generateAdaptivePracticeTask(progress) {
   const targetLevel = normalizeMathLevel(progress?.targetLevel || progress?.placementLevel || MATH_LEVELS[1])
   const difficulty = clampMathDifficulty(progress?.practiceDifficulty || 2)
-  return cloneMathTask(generateMathTaskForLevel(targetLevel, difficulty, "practice"))
+  const preferredDomain = selectAdaptiveMathDomain(progress)
+  return cloneMathTask(generateMathTaskForLevel(targetLevel, difficulty, "practice", preferredDomain))
 }
 
 function evaluateMathTask(task, rawAnswer) {
@@ -1380,6 +1484,7 @@ function sanitizeMathState(room, viewer = "host", playerId = "") {
       correctCount: getMathCorrectCount(progress),
       wrongCount: getMathWrongCount(progress),
       accuracyRate: getMathAccuracyRate(progress),
+      focusDomains: getMathFocusDomains(progress),
       practiceQuestionCount: Number(progress?.practiceQuestionCount) || 0,
       practiceCorrectCount: Number(progress?.practiceCorrectCount) || 0,
       currentTask: sanitizeMathTask(progress?.currentTask, "player"),
@@ -1412,6 +1517,7 @@ function sanitizeMathState(room, viewer = "host", playerId = "") {
       correctCount: getMathCorrectCount(progress),
       wrongCount: getMathWrongCount(progress),
       accuracyRate: getMathAccuracyRate(progress),
+      focusDomains: getMathFocusDomains(progress),
       workLabel: getMathWorkLabel(progress),
       practiceQuestionCount: Number(progress?.practiceQuestionCount) || 0,
       practiceCorrectCount: Number(progress?.practiceCorrectCount) || 0,
@@ -3491,6 +3597,7 @@ function buildHostInsights(room) {
           correctCount: getMathCorrectCount(progress),
           wrongCount: getMathWrongCount(progress),
           accuracyRate: getMathAccuracyRate(progress),
+          focusDomains: getMathFocusDomains(progress),
           workLabel: getMathWorkLabel(progress),
           practiceQuestionCount: Number(progress?.practiceQuestionCount) || 0,
           practiceCorrectCount: Number(progress?.practiceCorrectCount) || 0,
@@ -3611,6 +3718,13 @@ function emitHostInsights(room) {
   io.to(room.hostSocketId).emit("host:question:insights", buildHostInsights(room))
 }
 
+function emitRoomBackupToHost(room) {
+  if (!room?.hostSocketId) return
+  io.to(room.hostSocketId).emit("host:room:backup", {
+    snapshot: serializeRoomSnapshot(room),
+  })
+}
+
 function emitLessonPromptUpdate(room) {
   if (room.game.mode !== "lesson") return
   const promptVersion = room.lesson?.promptVersion ?? Date.now()
@@ -3642,6 +3756,7 @@ function emitStateToRoom(room) {
     io.to(room.hostSocketId).emit("teams:update", hostPayload.teams)
     io.to(room.hostSocketId).emit("leaderboard:update", hostPayload.leaderboard)
     io.to(room.hostSocketId).emit("game:update", hostPayload.game)
+    emitRoomBackupToHost(room)
   }
 
   for (const player of getOnlinePlayers(room)) {
@@ -3691,6 +3806,11 @@ function emitStateToSocket(socket, room) {
         },
       }
   socket.emit("state:init", payload)
+  if (room && hostSocketIds.has(socket.id)) {
+    socket.emit("host:room:backup", {
+      snapshot: serializeRoomSnapshot(room),
+    })
+  }
 }
 
 function stampQuestionStart(room) {
@@ -5405,6 +5525,50 @@ io.on("connection", (socket) => {
     emitTeacherAccountsToSocket(socket)
     emitStateToRoom(room)
     emitStateToSocket(socket, room)
+  })
+
+  socket.on("host:backup:restore", ({ snapshot }) => {
+    const currentRoom = requireHostRoom(socket)
+    if (!currentRoom) return
+
+    const session = getHostSession(socket.id)
+    if (!session) {
+      socket.emit("host:error", { message: "Je docentsessie is verlopen. Log opnieuw in." })
+      return
+    }
+
+    const restoredRoom = deserializeRoomSnapshot(snapshot)
+    if (!restoredRoom) {
+      socket.emit("host:error", { message: "De lokale backup kon niet worden hersteld." })
+      return
+    }
+
+    const targetCode = String(restoredRoom.code || currentRoom.code).trim().toUpperCase()
+    if (rooms.has(targetCode) && targetCode !== currentRoom.code) {
+      socket.emit("host:error", { message: "Er draait al een room met deze code. Sluit die eerst af of gebruik later opnieuw herstel." })
+      return
+    }
+
+    if (currentRoom.code !== targetCode) {
+      rooms.delete(currentRoom.code)
+    }
+
+    restoredRoom.code = targetCode
+    claimRoomForHost(restoredRoom, socket.id)
+    rememberHostRoomForSession(session, restoredRoom.code)
+    rooms.set(restoredRoom.code, restoredRoom)
+    scheduleRoomClosure(restoredRoom)
+
+    socket.emit("host:room:update", { roomCode: restoredRoom.code })
+    socket.emit("host:backup:restore:success", {
+      roomCode: restoredRoom.code,
+      title:
+        restoredRoom.game.mode === "math"
+          ? restoredRoom.math?.title || `Rekenroute ${formatMathLevel(restoredRoom.math?.selectedBand || MATH_LEVELS[1])}`
+          : restoredRoom.game.topic || "Les of quiz",
+    })
+    emitStateToRoom(restoredRoom)
+    emitStateToSocket(socket, restoredRoom)
   })
 
   socket.on("host:library:list", () => {

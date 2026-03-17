@@ -2253,12 +2253,27 @@ body::after {
   justify-items: end;
 }
 
+.math-host-actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
 .math-summary-stack,
 .math-student-strip,
 .math-host-meta {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+.math-backup-note {
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: rgba(128, 226, 194, 0.12);
+  border: 1px solid rgba(128, 226, 194, 0.22);
+  color: rgba(237, 241, 255, 0.86);
 }
 
 .math-host-grid {
