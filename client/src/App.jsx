@@ -299,6 +299,7 @@ function HostPage() {
   })
   const [teacherPasswordDrafts, setTeacherPasswordDrafts] = useState({})
   const [learnerCodeDrafts, setLearnerCodeDrafts] = useState({})
+  const [newMathLearner, setNewMathLearner] = useState({ name: "", learnerCode: "" })
   const [loginForm, setLoginForm] = useState(storedHostSession.loginForm)
   const [hostSession, setHostSession] = useState(storedHostSession.hostSession)
   const [manualSlideImageUrlDraft, setManualSlideImageUrlDraft] = useState("")
@@ -453,6 +454,7 @@ function HostPage() {
       setStatus(message || "Docentaccounts bijgewerkt.")
     }
     const onLearnerCodeSuccess = ({ message }) => {
+      setNewMathLearner({ name: "", learnerCode: "" })
       setStatus(message || "Leercode bijgewerkt.")
     }
     const onPresentationImageSuccess = ({ manualImageUrl }) => {
@@ -810,6 +812,11 @@ function HostPage() {
     const learnerCode = learnerCodeDrafts[playerId] || ""
     setStatus("Leercode wordt bijgewerkt...")
     socket.emit("host:learner-code:update", { playerId, learnerCode })
+  }
+
+  const createMathLearner = () => {
+    setStatus("Leerling met code wordt klaargezet...")
+    socket.emit("host:math:learner:create", newMathLearner)
   }
 
   const updateLessonPrompt = () => {
@@ -1302,9 +1309,12 @@ function HostPage() {
             <MathHostPanel
               learnerCodeDrafts={learnerCodeDrafts}
               math={game.math}
+              newMathLearner={newMathLearner}
+              onCreateLearner={createMathLearner}
               onLearnerCodeChange={(playerId, value) =>
                 setLearnerCodeDrafts((current) => ({ ...current, [playerId]: value }))
               }
+              onNewLearnerChange={setNewMathLearner}
               onLearnerCodeSave={updateLearnerCode}
               insights={hostInsights}
             />
@@ -1424,9 +1434,11 @@ function PlayerPage() {
   const [playerSession, setPlayerSession] = useState(() => {
     try {
       const stored = window.localStorage.getItem(PLAYER_SESSION_KEY)
-      return stored ? JSON.parse(stored) : { name: "", teamId: "", roomCode: "", joined: false, playerId: "", playerSessionId: createPlayerSessionId() }
+      return stored
+        ? JSON.parse(stored)
+        : { name: "", teamId: "", roomCode: "", joined: false, playerId: "", playerSessionId: createPlayerSessionId(), learnerCode: "" }
     } catch {
-      return { name: "", teamId: "", roomCode: "", joined: false, playerId: "", playerSessionId: createPlayerSessionId() }
+      return { name: "", teamId: "", roomCode: "", joined: false, playerId: "", playerSessionId: createPlayerSessionId(), learnerCode: "" }
     }
   })
   const [name, setName] = useState(playerSession.name || "")
@@ -1434,7 +1446,8 @@ function PlayerPage() {
   const [roomCode, setRoomCode] = useState(playerSession.roomCode || "")
   const [playerId, setPlayerId] = useState(playerSession.playerId || "")
   const [playerSessionId, setPlayerSessionId] = useState(playerSession.playerSessionId || createPlayerSessionId())
-  const [roomPreview, setRoomPreview] = useState({ valid: false, teams: [] })
+  const [learnerCode, setLearnerCode] = useState(playerSession.learnerCode || "")
+  const [roomPreview, setRoomPreview] = useState({ valid: false, teams: [], intakeTotal: 0, mode: "battle" })
   const [joined, setJoined] = useState(Boolean(playerSession.joined))
   const [result, setResult] = useState(null)
   const [chosenAnswer, setChosenAnswer] = useState(null)
@@ -1466,16 +1479,21 @@ function PlayerPage() {
       setJoined(true)
       setStatus(nextMode === "math" ? "Je bent verbonden. Je rekensom of instaptoets staat voor je klaar." : "Je bent verbonden. Wacht op de volgende vraag.")
     }
-    const onJoinedPayload = ({ playerId: nextPlayerId, playerSessionId: nextPlayerSessionId }) => {
+    const onJoinedPayload = ({ playerId: nextPlayerId, playerSessionId: nextPlayerSessionId, learnerCode: nextLearnerCode }) => {
       if (nextPlayerId) setPlayerId(nextPlayerId)
       if (nextPlayerSessionId) setPlayerSessionId(nextPlayerSessionId)
+      if (nextLearnerCode) setLearnerCode(nextLearnerCode)
       onJoined(roomPreview.mode)
     }
     const onPlayerError = ({ message }) => setStatus(message)
     const onRoomPreview = (payload) => {
       setRoomPreview(payload)
       if (payload.valid) {
-        setStatus(payload.mode === "math" ? `Rekenroom ${payload.roomCode} gevonden.` : `Room ${payload.roomCode} gevonden.`)
+        setStatus(
+          payload.mode === "math"
+            ? `Rekenroom ${payload.roomCode} gevonden. De instaptoets heeft ${payload.intakeTotal || 0} vragen.`
+            : `Room ${payload.roomCode} gevonden.`
+        )
         if (payload.teams?.[0]?.id) {
           setTeamId((current) => current || payload.teams[0].id)
         }
@@ -1508,9 +1526,9 @@ function PlayerPage() {
             : "Je reactie is ontvangen. Kijk nog eens naar de opdracht."
       )
     }
-    const onProfileUpdate = ({ playerId: nextPlayerId, playerSessionId: nextPlayerSessionId }) => {
+    const onProfileUpdate = ({ playerId: nextPlayerId, learnerCode: nextLearnerCode }) => {
       if (nextPlayerId) setPlayerId(nextPlayerId)
-      if (nextPlayerSessionId) setPlayerSessionId(nextPlayerSessionId)
+      if (nextLearnerCode) setLearnerCode(nextLearnerCode)
       setStatus("Je leercode is bijgewerkt. Je voortgang blijft bewaard.")
     }
 
@@ -1534,14 +1552,14 @@ function PlayerPage() {
   }, [roomCode.length])
 
   useEffect(() => {
-    const nextSession = { name, teamId, roomCode, joined, playerId, playerSessionId }
+    const nextSession = { name, teamId, roomCode, joined, playerId, playerSessionId, learnerCode }
     setPlayerSession(nextSession)
     window.localStorage.setItem(PLAYER_SESSION_KEY, JSON.stringify(nextSession))
-  }, [joined, name, playerId, playerSessionId, roomCode, teamId])
+  }, [joined, learnerCode, name, playerId, playerSessionId, roomCode, teamId])
 
   useEffect(() => {
     if (roomCode.trim().length < 5) {
-      setRoomPreview({ valid: false, teams: [] })
+      setRoomPreview({ valid: false, teams: [], intakeTotal: 0, mode: "battle" })
       return
     }
 
@@ -1584,17 +1602,34 @@ function PlayerPage() {
       if (normalizedCode.length >= 5) {
         socket.emit("player:lookup-room", { roomCode: normalizedCode })
       }
-      if (joined && name.trim() && teamId && normalizedCode.length >= 5) {
-        socket.emit("player:join", { name: name.trim(), teamId, roomCode: normalizedCode, playerSessionId })
+      const canReconnect =
+        joined &&
+        normalizedCode.length >= 5 &&
+        teamId &&
+        ((roomPreview.mode === "math" && /^\d{4}$/.test(learnerCode)) || Boolean(name.trim()))
+      if (canReconnect) {
+        socket.emit("player:join", {
+          name: name.trim(),
+          teamId,
+          roomCode: normalizedCode,
+          playerSessionId,
+          learnerCode,
+        })
       }
     }
 
     socket.on("connect", onConnect)
     return () => socket.off("connect", onConnect)
-  }, [joined, name, playerSessionId, roomCode, teamId])
+  }, [joined, learnerCode, name, playerSessionId, roomCode, roomPreview.mode, teamId])
 
   const join = () => {
-    socket.emit("player:join", { name: name.trim(), teamId, roomCode: roomCode.trim().toUpperCase(), playerSessionId })
+    socket.emit("player:join", {
+      name: name.trim(),
+      teamId,
+      roomCode: roomCode.trim().toUpperCase(),
+      playerSessionId,
+      learnerCode,
+    })
   }
 
   const submitMathAnswer = () => {
@@ -1653,6 +1688,9 @@ function PlayerPage() {
     !game.math?.currentTask &&
     Boolean(game.math?.awaitingNext)
   const isMathPreview = roomPreview.mode === "math" || game.mode === "math"
+  const canJoinRoom =
+    roomPreview.valid &&
+    (isMathPreview ? /^\d{4}$/.test(learnerCode) : Boolean(name.trim() && teamId))
 
   return (
     <main className="page-shell player-shell">
@@ -1689,16 +1727,20 @@ function PlayerPage() {
             />
           </label>
 
-          <label className="field">
-            <span>Jouw leercode</span>
-            <input
-              value={playerSessionId}
-              onChange={(event) => setPlayerSessionId(event.target.value.trim())}
-              placeholder="Wordt automatisch onthouden"
-            />
-          </label>
+          {isMathPreview ? (
+            <label className="field">
+              <span>Leerlingcode</span>
+              <input
+                inputMode="numeric"
+                maxLength={4}
+                value={learnerCode}
+                onChange={(event) => setLearnerCode(event.target.value.replace(/\D/g, "").slice(0, 4))}
+                placeholder="Bijv. 4821"
+              />
+            </label>
+          ) : null}
 
-          <button className="button-primary" disabled={!roomPreview.valid} onClick={join} type="button">
+          <button className="button-primary" disabled={!canJoinRoom} onClick={join} type="button">
             {joined ? "Opnieuw koppelen" : "Ik doe mee"}
           </button>
 
@@ -1707,7 +1749,7 @@ function PlayerPage() {
               {selectedTeam.name}
             </div>
           ) : null}
-          {isMathPreview ? <p className="muted learner-code-note">Gebruik later dezelfde spelcode en leercode om verder te gaan.</p> : null}
+          {isMathPreview ? <p className="muted learner-code-note">Vul hier de 4-cijferige code in die je van de docent hebt gekregen.</p> : null}
         </div>
 
         <div className="glass battle-card">
@@ -1918,7 +1960,7 @@ function PlayerPage() {
         </div>
 
         <div className="glass side-column">
-          {game.mode === "math" && game.math ? <LearnerCodeCard learnerCode={playerSessionId} roomCode={roomCode} /> : null}
+          {game.mode === "math" && game.math && learnerCode ? <LearnerCodeCard learnerCode={learnerCode} roomCode={roomCode} /> : null}
           <ScoreBoard teams={teams} leaderboard={leaderboard} compact />
           <RosterBoard players={players} teams={teams} compact />
         </div>
@@ -1972,7 +2014,16 @@ function MathHostSummary({ math, players }) {
   )
 }
 
-function MathHostPanel({ math, insights, learnerCodeDrafts, onLearnerCodeChange, onLearnerCodeSave }) {
+function MathHostPanel({
+  math,
+  insights,
+  learnerCodeDrafts,
+  newMathLearner,
+  onCreateLearner,
+  onLearnerCodeChange,
+  onLearnerCodeSave,
+  onNewLearnerChange,
+}) {
   if (!math) return null
 
   const playerRows = insights?.mode === "math" ? insights.players || [] : math.players || []
@@ -1984,7 +2035,7 @@ function MathHostPanel({ math, insights, learnerCodeDrafts, onLearnerCodeChange,
           <span className="eyebrow">Adaptief rekenen</span>
           <h3>{math.title || `Rekenroute ${math.selectedBand}`}</h3>
           <p>
-            Leerlingen maken eerst de instaptoets. Daarna krijgen ze automatisch sommen op het volgende niveau,
+            Leerlingen maken eerst precies {math.intakeTotal || 0} instapvragen. Daarna krijgen ze automatisch sommen op het volgende niveau,
             met oplopende moeilijkheid als het goed gaat.
           </p>
         </div>
@@ -1992,6 +2043,36 @@ function MathHostPanel({ math, insights, learnerCodeDrafts, onLearnerCodeChange,
           <span className="score-chip">Instap {math.intakeTotal || 0} vragen</span>
           <span className="score-chip">{math.intakeCount || 0} in intake</span>
           <span className="score-chip">{math.practiceCount || 0} aan het oefenen</span>
+        </div>
+      </div>
+
+      <div className="math-host-card">
+        <div className="math-host-card-head">
+          <div>
+            <strong>Leerlingcodes klaarzetten</strong>
+            <span>Voeg leerlingen toe en geef ze een eenvoudige 4-cijferige code.</span>
+          </div>
+        </div>
+        <div className="math-create-row">
+          <input
+            className="math-code-input"
+            onChange={(event) => onNewLearnerChange((current) => ({ ...current, name: event.target.value }))}
+            placeholder="Naam leerling"
+            value={newMathLearner.name}
+          />
+          <input
+            className="math-code-input"
+            inputMode="numeric"
+            maxLength={4}
+            onChange={(event) =>
+              onNewLearnerChange((current) => ({ ...current, learnerCode: event.target.value.replace(/\D/g, "").slice(0, 4) }))
+            }
+            placeholder="4 cijfers of leeg"
+            value={newMathLearner.learnerCode}
+          />
+          <button className="button-primary" onClick={onCreateLearner} type="button">
+            Voeg toe
+          </button>
         </div>
       </div>
 
@@ -2043,6 +2124,13 @@ function MathStudentPanel({ math, answer, onAnswerChange, onSubmit, onNext, canS
         {math.targetLevel ? <span className="score-chip">Je oefent op {math.targetLevel}</span> : null}
         {math.phase === "practice" ? <span className="score-chip">{formatMathDifficultyLabel(math.practiceDifficulty)}</span> : null}
       </div>
+
+      {math.phase !== "practice" ? (
+        <div className="math-task-card">
+          <strong>Instaptoets</strong>
+          <p>Je maakt eerst precies {math.intakeTotal || 0} vragen. Daarna bepaalt de site op welk niveau jij verder oefent.</p>
+        </div>
+      ) : null}
 
       {math.currentTask ? (
         <article className="math-task-card">

@@ -229,6 +229,26 @@ function createEmptyMathState() {
   }
 }
 
+function normalizeLearnerCode(value = "") {
+  return String(value ?? "")
+    .trim()
+    .replace(/\D/g, "")
+    .slice(0, 4)
+}
+
+function isValidLearnerCode(value = "") {
+  return /^\d{4}$/.test(String(value ?? ""))
+}
+
+function generateUniqueLearnerCode(room) {
+  const takenCodes = new Set((room?.players || []).map((player) => String(player.learnerCode || "")))
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const candidate = String(randomInt(1000, 9999))
+    if (!takenCodes.has(candidate)) return candidate
+  }
+  return `${Date.now()}`.slice(-4)
+}
+
 function normalizeMathLevel(value) {
   const normalized = String(value ?? "")
     .trim()
@@ -4855,6 +4875,7 @@ io.on("connection", (socket) => {
       teams: room.teams,
       status: room.game.status,
       mode: room.game.mode || "battle",
+      intakeTotal: room.game.mode === "math" ? room.math?.intakeQuestions?.length || 0 : 0,
     })
   })
 
@@ -4992,7 +5013,21 @@ io.on("connection", (socket) => {
     room.lessonResponses = new Map()
     room.lesson = createEmptyLessonState()
     room.math = buildMathSession(selectedBand)
-    room.players = room.players.map((player) => ({ ...player, score: 0 }))
+    const usedMathCodes = new Set()
+    room.players = room.players.map((player) => {
+      let nextLearnerCode = isValidLearnerCode(player.learnerCode) ? player.learnerCode : ""
+      if (!nextLearnerCode || usedMathCodes.has(nextLearnerCode)) {
+        do {
+          nextLearnerCode = String(randomInt(1000, 9999))
+        } while (usedMathCodes.has(nextLearnerCode))
+      }
+      usedMathCodes.add(nextLearnerCode)
+      return {
+        ...player,
+        score: 0,
+        learnerCode: nextLearnerCode,
+      }
+    })
     room.teams = createTeams(["Rekenroute"])
     reassignPlayersToExistingTeams(room)
 
@@ -5702,6 +5737,40 @@ io.on("connection", (socket) => {
     emitStateToRoom(room)
   })
 
+  socket.on("host:math:learner:create", ({ name, learnerCode }) => {
+    const room = requireHostRoom(socket)
+    if (!room || room.game.mode !== "math") return
+
+    const trimmedName = String(name ?? "").trim()
+    const normalizedCode = normalizeLearnerCode(learnerCode) || generateUniqueLearnerCode(room)
+    if (!trimmedName) {
+      socket.emit("host:error", { message: "Geef eerst de naam van de leerling op." })
+      return
+    }
+    if (!isValidLearnerCode(normalizedCode)) {
+      socket.emit("host:error", { message: "Gebruik een leerlingcode van precies 4 cijfers." })
+      return
+    }
+    if (room.players.some((player) => player.learnerCode === normalizedCode)) {
+      socket.emit("host:error", { message: "Deze leerlingcode is al in gebruik." })
+      return
+    }
+
+    const nextPlayer = createPlayerRecord({
+      learnerCode: normalizedCode,
+      name: trimmedName,
+      teamId: room.teams[0]?.id || "team-1",
+      connected: false,
+      score: 0,
+    })
+    room.players.push(nextPlayer)
+    ensureMathProgress(room, nextPlayer.id)
+    emitStateToRoom(room)
+    socket.emit("host:learner-code:success", {
+      message: `Leerling ${trimmedName} toegevoegd met code ${normalizedCode}.`,
+    })
+  })
+
   socket.on("host:learner-code:update", ({ playerId, learnerCode }) => {
     const room = requireHostRoom(socket)
     if (!room) return
@@ -5712,12 +5781,9 @@ io.on("connection", (socket) => {
       return
     }
 
-    const normalizedCode = String(learnerCode ?? "")
-      .trim()
-      .replace(/\s+/g, "-")
-      .replace(/[^a-z0-9_-]/gi, "")
-    if (normalizedCode.length < 4) {
-      socket.emit("host:error", { message: "Een leercode moet minimaal 4 tekens hebben." })
+    const normalizedCode = normalizeLearnerCode(learnerCode)
+    if (!isValidLearnerCode(normalizedCode)) {
+      socket.emit("host:error", { message: "Gebruik een leerlingcode van precies 4 cijfers." })
       return
     }
     if (room.players.some((entry) => entry.id !== player.id && entry.learnerCode === normalizedCode)) {
@@ -5729,7 +5795,7 @@ io.on("connection", (socket) => {
     if (player.socketId) {
       io.to(player.socketId).emit("player:profile:update", {
         playerId: player.id,
-        playerSessionId: player.learnerCode,
+        learnerCode: player.learnerCode,
       })
     }
 
@@ -5739,11 +5805,9 @@ io.on("connection", (socket) => {
     })
   })
 
-  socket.on("player:join", ({ name, teamId, roomCode, playerSessionId }) => {
-    const requestedLearnerCode = String(playerSessionId ?? "")
-      .trim()
-      .replace(/\s+/g, "-")
-      .replace(/[^a-z0-9_-]/gi, "")
+  socket.on("player:join", ({ name, teamId, roomCode, playerSessionId, learnerCode }) => {
+    const requestedPlayerSessionId = String(playerSessionId ?? "").trim()
+    const requestedLearnerCode = normalizeLearnerCode(learnerCode)
     const room = rooms.get(String(roomCode ?? "").trim().toUpperCase())
     if (!room) {
       socket.emit("player:error", { message: "De spelcode klopt niet." })
@@ -5751,9 +5815,14 @@ io.on("connection", (socket) => {
     }
 
     const trimmedName = String(name ?? "").trim()
+    const isMathRoom = room.game.mode === "math"
     const selectedTeamId = room.teams.some((team) => team.id === teamId) ? teamId : room.teams[0]?.id
-    if (!trimmedName || !selectedTeamId) {
+    if ((!trimmedName && !isMathRoom) || !selectedTeamId) {
       socket.emit("player:error", { message: "Vul een naam in en kies een team." })
+      return
+    }
+    if (isMathRoom && !isValidLearnerCode(requestedLearnerCode)) {
+      socket.emit("player:error", { message: "Vul de leerlingcode van 4 cijfers in die je van de docent hebt gekregen." })
       return
     }
 
@@ -5771,20 +5840,31 @@ io.on("connection", (socket) => {
     }
 
     socketToRoom.set(socket.id, room.code)
-    const existingPlayer =
-      room.players.find((player) => player.learnerCode === requestedLearnerCode) ??
-      room.players.find((player) => player.id === requestedLearnerCode) ??
-      room.players.find((player) => player.socketId === socket.id) ??
-      null
+    const existingPlayer = isMathRoom
+      ? room.players.find((player) => player.learnerCode === requestedLearnerCode) ?? null
+      : room.players.find((player) => player.id === requestedPlayerSessionId) ??
+        room.players.find((player) => player.socketId === socket.id) ??
+        null
+
+    if (isMathRoom && !existingPlayer) {
+      socket.emit("player:error", { message: "Deze leerlingcode klopt niet of is nog niet door de docent klaargezet." })
+      return
+    }
+
     if (existingPlayer) {
       existingPlayer.socketId = socket.id
-      existingPlayer.name = trimmedName
+      existingPlayer.name = isMathRoom && existingPlayer.name ? existingPlayer.name : trimmedName
       existingPlayer.teamId = selectedTeamId
-      existingPlayer.learnerCode = requestedLearnerCode || existingPlayer.learnerCode || existingPlayer.id
+      existingPlayer.learnerCode =
+        isMathRoom
+          ? requestedLearnerCode
+          : existingPlayer.learnerCode || requestedPlayerSessionId || existingPlayer.id
       existingPlayer.connected = true
     } else {
+      const nextPlayerId = requestedPlayerSessionId || generateEntityId("player")
       room.players.push(
         createPlayerRecord({
+          id: nextPlayerId,
           learnerCode: requestedLearnerCode || generateEntityId("learner"),
           socketId: socket.id,
           name: trimmedName,
@@ -5795,13 +5875,17 @@ io.on("connection", (socket) => {
       )
     }
 
-    const joinedPlayer =
-      room.players.find((player) => player.learnerCode === requestedLearnerCode) ??
-      room.players.find((player) => player.socketId === socket.id) ??
-      null
+    const joinedPlayer = isMathRoom
+      ? room.players.find((player) => player.learnerCode === requestedLearnerCode) ??
+        room.players.find((player) => player.socketId === socket.id) ??
+        null
+      : room.players.find((player) => player.id === requestedPlayerSessionId) ??
+        room.players.find((player) => player.socketId === socket.id) ??
+        null
     socket.emit("player:joined", {
       playerId: joinedPlayer?.id ?? "",
-      playerSessionId: joinedPlayer?.learnerCode ?? requestedLearnerCode,
+      playerSessionId: isMathRoom ? requestedPlayerSessionId : joinedPlayer?.id ?? requestedPlayerSessionId,
+      learnerCode: joinedPlayer?.learnerCode ?? requestedLearnerCode,
       teamId: selectedTeamId,
       roomCode: room.code,
     })

@@ -2196,6 +2196,7 @@ body::after {
 .math-summary-row,
 .math-answer-row,
 .math-code-row,
+.math-create-row,
 .learner-code-grid {
   display: grid;
   gap: 12px;
@@ -2285,6 +2286,11 @@ body::after {
   align-items: center;
 }
 
+.math-create-row {
+  grid-template-columns: 1.3fr 0.9fr auto;
+  align-items: center;
+}
+
 .math-task-card h3,
 .learner-code-card h3 {
   margin: 0;
@@ -2365,6 +2371,7 @@ body::after {
   .math-host-grid,
   .math-summary-row,
   .learner-code-grid,
+  .math-create-row,
   .math-code-row,
   .math-answer-row {
     grid-template-columns: 1fr;
