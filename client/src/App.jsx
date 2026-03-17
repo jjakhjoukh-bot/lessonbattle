@@ -15,6 +15,7 @@ const DEFAULT_HOST_SESSION = {
   role: "",
   canManageAccounts: false,
   roomCode: "",
+  sessionToken: "",
 }
 
 function readStoredHostSession() {
@@ -27,18 +28,21 @@ function readStoredHostSession() {
       }
     }
     const parsed = JSON.parse(stored)
+    const storedUsername = String(parsed?.lastUsername || parsed?.username || "").trim()
+    const storedToken = String(parsed?.sessionToken || "").trim()
     return {
-        hostSession: {
-          authenticated: Boolean(parsed?.authenticated && parsed?.username && parsed?.password),
-          username: parsed?.username || "",
-          displayName: parsed?.displayName || parsed?.username || "",
-          role: parsed?.role || "",
-          canManageAccounts: Boolean(parsed?.canManageAccounts),
-          roomCode: parsed?.roomCode || "",
-        },
-      loginForm: {
+      hostSession: {
+        authenticated: Boolean(parsed?.authenticated && parsed?.username && storedToken),
         username: parsed?.username || "",
-        password: parsed?.password || "",
+        displayName: parsed?.displayName || parsed?.username || "",
+        role: parsed?.role || "",
+        canManageAccounts: Boolean(parsed?.canManageAccounts),
+        roomCode: parsed?.roomCode || "",
+        sessionToken: storedToken,
+      },
+      loginForm: {
+        username: storedUsername,
+        password: "",
       },
     }
   } catch {
@@ -332,7 +336,7 @@ function HostPage() {
   }, [game.lesson?.currentPhase?.id, game.lesson?.currentPhase?.prompt, game.lesson?.currentPhase?.expectedAnswer, game.mode])
 
   useEffect(() => {
-    const onLoginSuccess = ({ username, displayName, role, canManageAccounts, roomCode }) => {
+    const onLoginSuccess = ({ username, displayName, role, canManageAccounts, roomCode, sessionToken }) => {
       setHostSession((current) => ({
         ...current,
         authenticated: true,
@@ -341,6 +345,12 @@ function HostPage() {
         role: role || "",
         canManageAccounts: Boolean(canManageAccounts),
         roomCode,
+        sessionToken: sessionToken || "",
+      }))
+      setLoginForm((current) => ({
+        ...current,
+        username: username || current.username,
+        password: "",
       }))
       setStatus("Beheeraccount verbonden.")
     }
@@ -372,7 +382,7 @@ function HostPage() {
     }
     const onError = ({ message }) => {
       setStatus(`Fout: ${message}`)
-      if (/onjuiste docentgegevens|log eerst in als docent/i.test(String(message))) {
+      if (/onjuiste docentgegevens|sessie verlopen|sessie niet meer geldig|log eerst in als docent/i.test(String(message))) {
         setHostSession(DEFAULT_HOST_SESSION)
       }
     }
@@ -465,8 +475,9 @@ function HostPage() {
         displayName: hostSession.displayName,
         role: hostSession.role,
         canManageAccounts: hostSession.canManageAccounts,
-        password: loginForm.password,
         roomCode: hostSession.roomCode,
+        sessionToken: hostSession.sessionToken,
+        lastUsername: loginForm.username,
       })
     )
   }, [
@@ -475,15 +486,16 @@ function HostPage() {
     hostSession.displayName,
     hostSession.role,
     hostSession.roomCode,
+    hostSession.sessionToken,
     hostSession.username,
-    loginForm.password,
+    loginForm.username,
   ])
 
   useEffect(() => {
     const reconnectHost = () => {
-      if (!hostSession.authenticated || !loginForm.username || !loginForm.password) return
-      socket.emit("host:login", {
-        ...loginForm,
+      if (!hostSession.authenticated || !hostSession.username || !hostSession.sessionToken) return
+      socket.emit("host:restore-session", {
+        sessionToken: hostSession.sessionToken,
         roomCode: hostSession.roomCode,
       })
     }
@@ -492,7 +504,7 @@ function HostPage() {
 
     socket.on("connect", reconnectHost)
     return () => socket.off("connect", reconnectHost)
-  }, [hostSession.authenticated, hostSession.roomCode, loginForm])
+  }, [hostSession.authenticated, hostSession.roomCode, hostSession.sessionToken, hostSession.username])
 
   useEffect(() => {
     if (!game.question) {

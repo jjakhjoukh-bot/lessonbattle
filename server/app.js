@@ -94,6 +94,7 @@ const MAX_MANUAL_IMAGE_BYTES = 4 * 1024 * 1024
 const MAX_REMOTE_IMAGE_BYTES = 5 * 1024 * 1024
 const INVALID_IMAGE_SIGNATURE_LIMIT = 12
 const INVALID_IMAGE_SIGNATURE_WINDOW_MS = 10 * 60 * 1000
+const HOST_SESSION_TTL_MS = 12 * 60 * 60 * 1000
 const BASE_CORRECT_POINTS = 100
 const MAX_SPEED_BONUS = 100
 const FINAL_SPRINT_QUESTIONS = 2
@@ -101,6 +102,7 @@ const FINAL_SPRINT_CLOSE_GAP = BASE_CORRECT_POINTS + MAX_SPEED_BONUS
 const ANSWER_GRACE_MS = 500
 const hostSocketIds = new Set()
 const hostSessions = new Map()
+const hostSessionTokens = new Map()
 const socketToRoom = new Map()
 const rooms = new Map()
 const lessonEvaluationCache = new Map()
@@ -867,8 +869,102 @@ function getHostSession(socketId) {
   return hostSessions.get(socketId) ?? null
 }
 
-function clearHostSession(socketId) {
+function createHostSession(account, roomCode = "") {
+  const now = Date.now()
+  return {
+    token: crypto.randomBytes(32).toString("hex"),
+    username: account.username,
+    displayName: account.displayName,
+    role: account.role,
+    canManageAccounts: Boolean(account.canManageAccounts),
+    roomCode: String(roomCode || "").trim().toUpperCase(),
+    createdAt: now,
+    expiresAt: now + HOST_SESSION_TTL_MS,
+  }
+}
+
+function rememberHostRoomForSession(session, roomCode = "") {
+  if (!session) return
+  session.roomCode = String(roomCode || "").trim().toUpperCase()
+  session.expiresAt = Date.now() + HOST_SESSION_TTL_MS
+  if (session.token) {
+    hostSessionTokens.set(session.token, session)
+  }
+}
+
+function buildHostSessionPayload(session) {
+  if (!session) return null
+  return {
+    username: session.username,
+    displayName: session.displayName,
+    role: session.role,
+    canManageAccounts: Boolean(session.canManageAccounts),
+    roomCode: session.roomCode || "",
+    sessionToken: session.token || "",
+  }
+}
+
+function pruneExpiredHostSessionTokens() {
+  const now = Date.now()
+  for (const [token, session] of hostSessionTokens.entries()) {
+    if (!session?.expiresAt || session.expiresAt > now) continue
+    hostSessionTokens.delete(token)
+    for (const [socketId, activeSession] of hostSessions.entries()) {
+      if (activeSession?.token === token) {
+        hostSessions.delete(socketId)
+      }
+    }
+  }
+}
+
+function getHostSessionByToken(token) {
+  pruneExpiredHostSessionTokens()
+  const normalizedToken = String(token || "").trim()
+  if (!normalizedToken) return null
+  const session = hostSessionTokens.get(normalizedToken) ?? null
+  if (!session) return null
+  session.expiresAt = Date.now() + HOST_SESSION_TTL_MS
+  hostSessionTokens.set(normalizedToken, session)
+  return session
+}
+
+function invalidateHostSessionTokensForUsername(username) {
+  const normalizedUsername = normalizeTeacherUsername(username)
+  if (!normalizedUsername) return
+
+  for (const [token, session] of hostSessionTokens.entries()) {
+    if (session?.username === normalizedUsername) {
+      hostSessionTokens.delete(token)
+    }
+  }
+
+  for (const [socketId, session] of hostSessions.entries()) {
+    if (session?.username !== normalizedUsername) continue
+    hostSessions.set(socketId, {
+      ...session,
+      token: "",
+      expiresAt: Date.now(),
+    })
+  }
+}
+
+function detachHostSessionTokenFromOtherSockets(token, currentSocketId) {
+  const normalizedToken = String(token || "").trim()
+  if (!normalizedToken) return
+
+  for (const [socketId, session] of hostSessions.entries()) {
+    if (socketId === currentSocketId || session?.token !== normalizedToken) continue
+    hostSocketIds.delete(socketId)
+    hostSessions.delete(socketId)
+  }
+}
+
+function clearHostSession(socketId, { invalidateToken = false } = {}) {
+  const session = hostSessions.get(socketId) ?? null
   hostSessions.delete(socketId)
+  if (invalidateToken && session?.token) {
+    hostSessionTokens.delete(session.token)
+  }
 }
 
 function isHostOwner(socketId) {
@@ -3766,14 +3862,54 @@ io.on("connection", (socket) => {
     const reclaimableRoom = requestedCode ? rooms.get(requestedCode) : null
     const room = reclaimableRoom ?? getRoomBySocketId(socket.id) ?? createRoom(socket.id)
     claimRoomForHost(room, socket.id)
-    hostSessions.set(socket.id, account)
-    socket.emit("host:login:success", {
-      username: account.username,
-      displayName: account.displayName,
-      role: account.role,
-      canManageAccounts: account.canManageAccounts,
-      roomCode: room.code,
-    })
+    clearHostSession(socket.id, { invalidateToken: true })
+    const session = createHostSession(account, room.code)
+    rememberHostRoomForSession(session, room.code)
+    hostSessions.set(socket.id, session)
+    socket.emit("host:login:success", buildHostSessionPayload(session))
+    socket.emit("host:room:update", { roomCode: room.code })
+    if (room.game.mode === "lesson" && room.lesson?.phases?.length) {
+      socket.emit("host:generate-lesson:success", {
+        count: room.lesson.phases.length,
+        provider: room.game.source || null,
+        providerLabel: room.game.providerLabel || null,
+        lessonModel: room.lesson.model,
+        hasPracticeTest: Boolean(room.lesson.practiceTest?.questions?.length),
+        hasPresentation: Boolean(room.lesson.presentation?.slides?.length),
+      })
+    } else {
+      socket.emit("host:generate:success", {
+        count: room.questions.length,
+        provider: room.game.source || null,
+        providerLabel: room.game.providerLabel || null,
+      })
+    }
+    emitLessonLibraryToSocket(socket)
+    emitSessionHistoryToSocket(socket)
+    emitTeacherAccountsToSocket(socket)
+    emitStateToRoom(room)
+    emitStateToSocket(socket, room)
+  })
+
+  socket.on("host:restore-session", ({ sessionToken, roomCode }) => {
+    const session = getHostSessionByToken(sessionToken)
+    if (!session) {
+      socket.emit("host:error", { message: "Je docentsessie is verlopen. Log opnieuw in." })
+      return
+    }
+
+    const requestedCode = String(roomCode ?? session.roomCode ?? "").trim().toUpperCase()
+    const reclaimableRoom = requestedCode ? rooms.get(requestedCode) : null
+    const rememberedRoom = session.roomCode ? rooms.get(session.roomCode) : null
+    const room = reclaimableRoom ?? rememberedRoom ?? getRoomBySocketId(socket.id) ?? createRoom(socket.id)
+
+    clearHostSession(socket.id, { invalidateToken: true })
+    detachHostSessionTokenFromOtherSockets(session.token, socket.id)
+    claimRoomForHost(room, socket.id)
+    rememberHostRoomForSession(session, room.code)
+    hostSessions.set(socket.id, session)
+
+    socket.emit("host:login:success", buildHostSessionPayload(session))
     socket.emit("host:room:update", { roomCode: room.code })
     if (room.game.mode === "lesson" && room.lesson?.phases?.length) {
       socket.emit("host:generate-lesson:success", {
@@ -3916,6 +4052,7 @@ io.on("connection", (socket) => {
     account.updatedAt = new Date().toISOString()
 
     persistTeacherAccounts()
+    invalidateHostSessionTokensForUsername(account.username)
     emitTeacherAccountsToOwners()
     socket.emit("host:teacher-accounts:success", {
       message: `Docentaccount ${account.displayName} is bijgewerkt.`,
@@ -3935,6 +4072,7 @@ io.on("connection", (socket) => {
 
     teacherAccounts = teacherAccounts.filter((entry) => entry.id !== accountId)
     persistTeacherAccounts()
+    invalidateHostSessionTokensForUsername(account.username)
     emitTeacherAccountsToOwners()
     socket.emit("host:teacher-accounts:success", {
       message: `Docentaccount ${account.displayName} is verwijderd.`,
@@ -3943,7 +4081,7 @@ io.on("connection", (socket) => {
 
   socket.on("host:logout", () => {
     hostSocketIds.delete(socket.id)
-    clearHostSession(socket.id)
+    clearHostSession(socket.id, { invalidateToken: true })
     const room = getRoomBySocketId(socket.id)
     socketToRoom.delete(socket.id)
     if (!room) {
@@ -4011,6 +4149,7 @@ io.on("connection", (socket) => {
     room.questions = []
     room.currentQuestionIndex = -1
     room.game = createIdleGameState()
+    rememberHostRoomForSession(getHostSession(socket.id), room.code)
     socket.emit("host:room:update", { roomCode: room.code })
     emitStateToRoom(room)
   })
