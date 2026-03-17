@@ -424,7 +424,7 @@ function HostPage() {
     }
     const onError = ({ message }) => {
       setStatus(`Fout: ${message}`)
-      if (/onjuiste docentgegevens|sessie verlopen|sessie niet meer geldig|log eerst in als docent/i.test(String(message))) {
+      if (/onjuiste docentgegevens|sessie verlopen|sessie niet meer geldig/i.test(String(message))) {
         setHostSession(DEFAULT_HOST_SESSION)
       }
     }
@@ -1469,8 +1469,8 @@ function PlayerPage() {
       return
     }
 
-    if (!sourceTeams.some((team) => team.id === teamId)) {
-      setTeamId(sourceTeams[0].id)
+    if (teamId && !sourceTeams.some((team) => team.id === teamId)) {
+      setTeamId("")
     }
   }, [joined, roomPreview, teamId, teams])
 
@@ -1494,9 +1494,6 @@ function PlayerPage() {
             ? `Rekenroom ${payload.roomCode} gevonden. De instaptoets heeft ${payload.intakeTotal || 0} vragen.`
             : `Room ${payload.roomCode} gevonden.`
         )
-        if (payload.teams?.[0]?.id) {
-          setTeamId((current) => current || payload.teams[0].id)
-        }
       } else if (roomCode.length >= 5) {
         setStatus("Deze spelcode bestaat niet.")
       }
@@ -1605,7 +1602,6 @@ function PlayerPage() {
       const canReconnect =
         joined &&
         normalizedCode.length >= 5 &&
-        teamId &&
         ((roomPreview.mode === "math" && /^\d{4}$/.test(learnerCode)) || Boolean(name.trim()))
       if (canReconnect) {
         socket.emit("player:join", {
@@ -1690,7 +1686,7 @@ function PlayerPage() {
   const isMathPreview = roomPreview.mode === "math" || game.mode === "math"
   const canJoinRoom =
     roomPreview.valid &&
-    (isMathPreview ? /^\d{4}$/.test(learnerCode) : Boolean(name.trim() && teamId))
+    (isMathPreview ? /^\d{4}$/.test(learnerCode) : Boolean(name.trim()))
 
   return (
     <main className="page-shell player-shell">
@@ -1707,8 +1703,9 @@ function PlayerPage() {
 
           {!isMathPreview ? (
             <label className="field">
-              <span>Team</span>
+              <span>Groep (optioneel)</span>
               <select value={teamId} onChange={(event) => setTeamId(event.target.value)}>
+                <option value="">Geen groep</option>
                 {availableTeams.map((team) => (
                   <option key={team.id} value={team.id}>
                     {team.name}

@@ -2126,7 +2126,12 @@ function reassignPlayersToExistingTeams(room) {
   const fallbackTeamId = room.teams[0]?.id ?? "team-1"
   room.players = room.players.map((player) => ({
     ...player,
-    teamId: room.teams.some((team) => team.id === player.teamId) ? player.teamId : fallbackTeamId,
+    teamId:
+      room.game.mode !== "math" && !String(player.teamId ?? "").trim()
+        ? ""
+        : room.teams.some((team) => team.id === player.teamId)
+          ? player.teamId
+          : fallbackTeamId,
   }))
 }
 
@@ -5808,6 +5813,7 @@ io.on("connection", (socket) => {
   socket.on("player:join", ({ name, teamId, roomCode, playerSessionId, learnerCode }) => {
     const requestedPlayerSessionId = String(playerSessionId ?? "").trim()
     const requestedLearnerCode = normalizeLearnerCode(learnerCode)
+    const requestedTeamId = String(teamId ?? "").trim()
     const room = rooms.get(String(roomCode ?? "").trim().toUpperCase())
     if (!room) {
       socket.emit("player:error", { message: "De spelcode klopt niet." })
@@ -5816,9 +5822,17 @@ io.on("connection", (socket) => {
 
     const trimmedName = String(name ?? "").trim()
     const isMathRoom = room.game.mode === "math"
-    const selectedTeamId = room.teams.some((team) => team.id === teamId) ? teamId : room.teams[0]?.id
-    if ((!trimmedName && !isMathRoom) || !selectedTeamId) {
-      socket.emit("player:error", { message: "Vul een naam in en kies een team." })
+    const selectedTeamId = isMathRoom
+      ? room.teams[0]?.id || ""
+      : room.teams.some((team) => team.id === requestedTeamId)
+        ? requestedTeamId
+        : ""
+    if (!trimmedName && !isMathRoom) {
+      socket.emit("player:error", { message: "Vul eerst een naam in." })
+      return
+    }
+    if (isMathRoom && !selectedTeamId) {
+      socket.emit("player:error", { message: "De rekenroom is nog niet klaar. Laat de docent de route opnieuw starten." })
       return
     }
     if (isMathRoom && !isValidLearnerCode(requestedLearnerCode)) {
