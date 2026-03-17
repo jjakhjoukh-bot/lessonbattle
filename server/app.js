@@ -97,7 +97,7 @@ const INVALID_IMAGE_SIGNATURE_WINDOW_MS = 10 * 60 * 1000
 const HOST_SESSION_TTL_MS = 12 * 60 * 60 * 1000
 const MATH_LEVELS = ["0f", "1f", "2f", "3f", "4f"]
 const MATH_ROOM_GRACE_MS = 7 * 24 * 60 * 60 * 1000
-const MATH_INTAKE_QUESTION_COUNT = 12
+const MATH_INTAKE_QUESTION_COUNT = 16
 const MAX_MATH_ANSWER_HISTORY = 24
 const MATH_ACTIVE_WINDOW_MS = 5 * 60 * 1000
 const MATH_STALE_WINDOW_MS = 20 * 60 * 1000
@@ -349,291 +349,777 @@ function createMathTask({
   }
 }
 
-function generate0FMathTask(difficulty, phase = "practice") {
-  const safeDifficulty = clampMathDifficulty(difficulty)
-  const templates = [
-    () => {
-      const a = randomInt(1, 10 + safeDifficulty * 4)
-      const b = randomInt(1, 10 + safeDifficulty * 3)
-      return createMathTask({
-        level: "0f",
-        difficulty: safeDifficulty,
-        phase,
-        domain: "optellen",
-        prompt: `Hoeveel is ${a} + ${b}?`,
-        answer: a + b,
-        explanation: `${a} + ${b} = ${a + b}.`,
-        hint: "Tel rustig vanaf het grootste getal verder.",
-        points: 8 + safeDifficulty * 2,
-      })
-    },
-    () => {
-      const total = randomInt(12 + safeDifficulty * 4, 30 + safeDifficulty * 10)
-      const taken = randomInt(2, Math.max(3, total - 4))
-      return createMathTask({
-        level: "0f",
-        difficulty: safeDifficulty,
-        phase,
-        domain: "aftrekken",
-        prompt: `Je hebt ${total} stickers en je geeft er ${taken} weg. Hoeveel houd je over?`,
-        answer: total - taken,
-        explanation: `${total} - ${taken} = ${total - taken}.`,
-        hint: "Haal het kleinere getal van het grotere af.",
-        points: 8 + safeDifficulty * 2,
-      })
-    },
-    () => {
-      const number = randomInt(10, 80 + safeDifficulty * 20)
-      return createMathTask({
-        level: "0f",
-        difficulty: safeDifficulty,
-        phase,
-        domain: "telrij",
-        prompt: `Welk getal komt direct na ${number}?`,
-        answer: number + 1,
-        explanation: `Na ${number} komt ${number + 1}.`,
-        hint: "Tel er 1 bij op.",
-        points: 7 + safeDifficulty * 2,
-      })
-    },
-  ]
+const MATH_DOMAIN_KEYS = ["getallen", "verhoudingen", "meten en meetkunde", "verbanden"]
+
+function pickMathTaskFromBank(bank, preferredDomain = "") {
+  const safeDomain = MATH_DOMAIN_KEYS.includes(preferredDomain) ? preferredDomain : ""
+  const templates = safeDomain
+    ? bank[safeDomain] || []
+    : MATH_DOMAIN_KEYS.flatMap((domain) => bank[domain] || [])
+
+  if (!templates.length) {
+    throw new Error(`Geen rekentemplates beschikbaar voor domein '${preferredDomain || "alle"}'.`)
+  }
   return pickOne(templates)()
 }
 
-function generate1FMathTask(difficulty, phase = "practice") {
+function generate0FMathTask(difficulty, phase = "practice", preferredDomain = "") {
   const safeDifficulty = clampMathDifficulty(difficulty)
-  const templates = [
-    () => {
-      const a = randomInt(2, 10 + safeDifficulty)
-      const b = randomInt(2, 10 + safeDifficulty)
-      return createMathTask({
-        level: "1f",
-        difficulty: safeDifficulty,
-        phase,
-        domain: "tafels",
-        prompt: `Hoeveel is ${a} x ${b}?`,
-        answer: a * b,
-        explanation: `${a} keer ${b} is ${a * b}.`,
-        hint: "Gebruik de tafels of splitst het in makkelijke stukjes.",
-        points: 12 + safeDifficulty * 3,
-      })
-    },
-    () => {
-      const divisor = randomInt(2, 10)
-      const answer = randomInt(3, 10 + safeDifficulty)
-      const dividend = divisor * answer
-      return createMathTask({
-        level: "1f",
-        difficulty: safeDifficulty,
-        phase,
-        domain: "delen",
-        prompt: `Hoeveel is ${dividend} : ${divisor}?`,
-        answer,
-        explanation: `${dividend} gedeeld door ${divisor} is ${answer}.`,
-        hint: "Denk aan de bijbehorende tafel.",
-        points: 12 + safeDifficulty * 3,
-      })
-    },
-    () => {
-      const percent = pickOne([10, 25, 50])
-      const base = pickOne([40, 60, 80, 100, 120, 200])
-      return createMathTask({
-        level: "1f",
-        difficulty: safeDifficulty,
-        phase,
-        domain: "procenten",
-        prompt: `Hoeveel is ${percent}% van ${base}?`,
-        answer: roundTo((percent / 100) * base, 2),
-        tolerance: 0.01,
-        explanation: `${percent}% van ${base} is ${(percent / 100) * base}.`,
-        hint: "Zet het percentage om naar een breuk of decimaal getal.",
-        points: 12 + safeDifficulty * 3,
-      })
-    },
-  ]
-  return pickOne(templates)()
+  const bank = {
+    getallen: [
+      () => {
+        const a = randomInt(6, 20 + safeDifficulty * 6)
+        const b = randomInt(4, 15 + safeDifficulty * 5)
+        return createMathTask({
+          level: "0f",
+          difficulty: safeDifficulty,
+          phase,
+          domain: "getallen",
+          prompt: `Hoeveel is ${a} + ${b}?`,
+          answer: a + b,
+          explanation: `Tel eerst ${a}. Tel daarna ${b} erbij. Dan kom je op ${a + b}.`,
+          hint: "Begin bij het grootste getal en tel verder.",
+          points: 8 + safeDifficulty * 2,
+        })
+      },
+      () => {
+        const total = randomInt(18, 40 + safeDifficulty * 8)
+        const away = randomInt(3, Math.max(6, total - 5))
+        return createMathTask({
+          level: "0f",
+          difficulty: safeDifficulty,
+          phase,
+          domain: "getallen",
+          prompt: `Je hebt ${total} knikkers. Je geeft er ${away} weg. Hoeveel houd je over?`,
+          answer: total - away,
+          explanation: `Je begint met ${total}. Daar haal je ${away} af. Dan blijft ${total - away} over.`,
+          hint: "Reken het stap voor stap terug.",
+          points: 8 + safeDifficulty * 2,
+        })
+      },
+    ],
+    verhoudingen: [
+      () => {
+        const boxes = pickOne([2, 3, 4, 5])
+        const perBox = pickOne([2, 3, 4, 5])
+        return createMathTask({
+          level: "0f",
+          difficulty: safeDifficulty,
+          phase,
+          domain: "verhoudingen",
+          prompt: `In 1 doos zitten ${perBox} stiften. Hoeveel stiften zitten er in ${boxes} dozen?`,
+          answer: boxes * perBox,
+          explanation: `In elke doos zitten ${perBox} stiften. Dus ${boxes} dozen is ${boxes} x ${perBox} = ${boxes * perBox}.`,
+          hint: "Tel steeds hetzelfde aantal erbij op.",
+          points: 8 + safeDifficulty * 2,
+        })
+      },
+      () => {
+        const cookies = pickOne([12, 16, 20, 24])
+        const plates = pickOne([2, 4])
+        return createMathTask({
+          level: "0f",
+          difficulty: safeDifficulty,
+          phase,
+          domain: "verhoudingen",
+          prompt: `${cookies} koekjes worden eerlijk verdeeld over ${plates} borden. Hoeveel koekjes komen op 1 bord?`,
+          answer: cookies / plates,
+          explanation: `Eerlijk verdelen betekent delen. Dus ${cookies} : ${plates} = ${cookies / plates}.`,
+          hint: "Verdeel het totaal in gelijke groepjes.",
+          points: 8 + safeDifficulty * 2,
+        })
+      },
+    ],
+    "meten en meetkunde": [
+      () => {
+        const euros = pickOne([2, 3, 4, 5])
+        const cents = pickOne([20, 50, 80])
+        const answer = roundTo(euros + cents / 100, 2)
+        return createMathTask({
+          level: "0f",
+          difficulty: safeDifficulty,
+          phase,
+          domain: "meten en meetkunde",
+          prompt: `Je hebt ${euros} euro en ${cents} cent. Hoeveel euro heb je samen?`,
+          answer,
+          tolerance: 0.01,
+          explanation: `${cents} cent is ${formatMathAnswer(cents / 100)} euro. Samen is dat ${euros} + ${formatMathAnswer(cents / 100)} = ${formatMathAnswer(answer)} euro.`,
+          hint: "100 cent is 1 euro.",
+          points: 9 + safeDifficulty * 2,
+        })
+      },
+      () => {
+        const total = pickOne([80, 95, 120, 150])
+        const cut = pickOne([15, 20, 25, 30])
+        return createMathTask({
+          level: "0f",
+          difficulty: safeDifficulty,
+          phase,
+          domain: "meten en meetkunde",
+          prompt: `Een lint is ${total} cm lang. Je knipt ${cut} cm eraf. Hoeveel cm blijft over?`,
+          answer: total - cut,
+          explanation: `Je haalt ${cut} cm van ${total} cm af. Dan blijft ${total - cut} cm over.`,
+          hint: "Trek het afgeknipte stuk van het totaal af.",
+          points: 9 + safeDifficulty * 2,
+        })
+      },
+    ],
+    verbanden: [
+      () => {
+        const start = pickOne([2, 3, 4])
+        const step = pickOne([2, 5, 10])
+        return createMathTask({
+          level: "0f",
+          difficulty: safeDifficulty,
+          phase,
+          domain: "verbanden",
+          prompt: `In een spaartabel staat: week 1 = ${start} euro, week 2 = ${start + step} euro, week 3 = ${start + step * 2} euro. Hoeveel euro hoort bij week 4?`,
+          answer: start + step * 3,
+          explanation: `Er komt elke week ${step} euro bij. Dus bij week 4 krijg je ${start + step * 2} + ${step} = ${start + step * 3}.`,
+          hint: "Kijk hoeveel er elke stap bijkomt.",
+          points: 8 + safeDifficulty * 2,
+        })
+      },
+      () => {
+        const jumpA = pickOne([2, 3, 4])
+        const jumpB = jumpA + pickOne([1, 2, 3])
+        const jumpC = jumpB + pickOne([1, 2, 3])
+        return createMathTask({
+          level: "0f",
+          difficulty: safeDifficulty,
+          phase,
+          domain: "verbanden",
+          prompt: `Noa springt op maandag ${jumpA} meter, op dinsdag ${jumpB} meter en op woensdag ${jumpC} meter. Hoeveel meter springt ze het verst op 1 dag?`,
+          answer: Math.max(jumpA, jumpB, jumpC),
+          explanation: `Vergelijk de drie afstanden. De grootste afstand is ${Math.max(jumpA, jumpB, jumpC)} meter.`,
+          hint: "Zoek het grootste getal.",
+          points: 8 + safeDifficulty * 2,
+        })
+      },
+    ],
+  }
+
+  return pickMathTaskFromBank(bank, preferredDomain)
 }
 
-function generate2FMathTask(difficulty, phase = "practice") {
+function generate1FMathTask(difficulty, phase = "practice", preferredDomain = "") {
   const safeDifficulty = clampMathDifficulty(difficulty)
-  const templates = [
-    () => {
-      const base = pickOne([40, 60, 80, 120, 160, 240, 320])
-      const discount = pickOne([10, 15, 20, 25, 30])
-      const answer = roundTo(base * (1 - discount / 100), 2)
-      return createMathTask({
-        level: "2f",
-        difficulty: safeDifficulty,
-        phase,
-        domain: "korting",
-        prompt: `Een jas kost ${base} euro. Er gaat ${discount}% korting af. Wat betaal je?`,
-        answer,
-        tolerance: 0.01,
-        explanation: `${discount}% korting betekent dat je ${answer} euro betaalt.`,
-        hint: "Bereken eerst de korting of reken direct met het deel dat overblijft.",
-        points: 18 + safeDifficulty * 4,
-      })
-    },
-    () => {
-      const packs = randomInt(3, 7 + safeDifficulty)
-      const items = packs * pickOne([3, 4, 5, 6])
-      const wantedPacks = packs + randomInt(2, 5)
-      const answer = (items / packs) * wantedPacks
-      return createMathTask({
-        level: "2f",
-        difficulty: safeDifficulty,
-        phase,
-        domain: "verhouding",
-        prompt: `Bij ${packs} pakken horen ${items} flessen water. Hoeveel flessen horen bij ${wantedPacks} pakken?`,
-        answer,
-        explanation: `Per pak horen ${items / packs} flessen. Dus bij ${wantedPacks} pakken horen ${answer} flessen.`,
-        hint: "Zoek eerst hoeveel er bij 1 pak hoort.",
-        points: 18 + safeDifficulty * 4,
-      })
-    },
-    () => {
-      const kilometers = pickOne([1.5, 2.25, 3.5, 4.75, 6.2])
-      const answer = roundTo(kilometers * 1000, 2)
-      return createMathTask({
-        level: "2f",
-        difficulty: safeDifficulty,
-        phase,
-        domain: "omrekenen",
-        prompt: `Hoeveel meter is ${String(kilometers).replace(".", ",")} kilometer?`,
-        answer,
-        tolerance: 0.01,
-        explanation: `1 kilometer is 1000 meter. Dus ${kilometers} km is ${answer} meter.`,
-        hint: "Vermenigvuldig kilometers met 1000.",
-        points: 17 + safeDifficulty * 4,
-      })
-    },
-  ]
-  return pickOne(templates)()
+  const bank = {
+    getallen: [
+      () => {
+        const a = randomInt(4, 12)
+        const b = randomInt(3, 12)
+        return createMathTask({
+          level: "1f",
+          difficulty: safeDifficulty,
+          phase,
+          domain: "getallen",
+          prompt: `Hoeveel is ${a} x ${b}?`,
+          answer: a * b,
+          explanation: `${a} keer ${b} is hetzelfde als ${b} groepjes van ${a}. Dat is ${a * b}.`,
+          hint: "Gebruik de tafel of splits het in makkelijke stukken.",
+          points: 12 + safeDifficulty * 3,
+        })
+      },
+      () => {
+        const price = pickOne([1.5, 2.25, 2.5, 3.75, 4.5])
+        const count = pickOne([2, 3, 4, 5])
+        const answer = roundTo(price * count, 2)
+        return createMathTask({
+          level: "1f",
+          difficulty: safeDifficulty,
+          phase,
+          domain: "getallen",
+          prompt: `Een broodje kost ${formatMathAnswer(price)} euro. Je koopt er ${count}. Hoeveel betaal je samen?`,
+          answer,
+          tolerance: 0.01,
+          explanation: `Je rekent ${count} x ${formatMathAnswer(price)}. Dat is ${formatMathAnswer(answer)} euro.`,
+          hint: "Vermenigvuldig de prijs van 1 broodje met het aantal broodjes.",
+          points: 13 + safeDifficulty * 3,
+        })
+      },
+    ],
+    verhoudingen: [
+      () => {
+        const percent = pickOne([10, 25, 50])
+        const base = pickOne([40, 60, 80, 100, 120, 200])
+        const answer = roundTo((percent / 100) * base, 2)
+        return createMathTask({
+          level: "1f",
+          difficulty: safeDifficulty,
+          phase,
+          domain: "verhoudingen",
+          prompt: `Hoeveel is ${percent}% van ${base}?`,
+          answer,
+          tolerance: 0.01,
+          explanation: `${percent}% betekent ${percent} van de 100. Van ${base} is dat ${formatMathAnswer(answer)}.`,
+          hint: "Denk aan 10%, 25% of de helft.",
+          points: 13 + safeDifficulty * 3,
+        })
+      },
+      () => {
+        const actualMetersPerCentimeter = pickOne([100, 200, 500])
+        const mapDistance = pickOne([2, 3, 4, 5, 6])
+        const answer = actualMetersPerCentimeter * mapDistance
+        return createMathTask({
+          level: "1f",
+          difficulty: safeDifficulty,
+          phase,
+          domain: "verhoudingen",
+          prompt: `Op een plattegrond is 1 cm in het echt ${actualMetersPerCentimeter} meter. Twee plekken liggen ${mapDistance} cm uit elkaar op de kaart. Hoeveel meter is dat in het echt?`,
+          answer,
+          explanation: `Elke centimeter is ${actualMetersPerCentimeter} meter. Dus ${mapDistance} cm is ${mapDistance} x ${actualMetersPerCentimeter} = ${answer} meter.`,
+          hint: "Reken eerst uit wat 1 cm betekent en vermenigvuldig daarna.",
+          points: 14 + safeDifficulty * 3,
+        })
+      },
+    ],
+    "meten en meetkunde": [
+      () => {
+        const width = pickOne([4, 5, 6, 7, 8])
+        const height = pickOne([3, 4, 5, 6, 7])
+        const answer = 2 * (width + height)
+        return createMathTask({
+          level: "1f",
+          difficulty: safeDifficulty,
+          phase,
+          domain: "meten en meetkunde",
+          prompt: `Een rechthoek is ${width} cm lang en ${height} cm breed. Hoeveel cm is de omtrek?`,
+          answer,
+          explanation: `De omtrek is alle kanten samen: ${width} + ${height} + ${width} + ${height} = ${answer} cm.`,
+          hint: "Bij een rechthoek tel je lengte en breedte twee keer.",
+          points: 14 + safeDifficulty * 3,
+        })
+      },
+      () => {
+        const meters = pickOne([1.5, 2.25, 3.5, 4.75])
+        const answer = roundTo(meters * 100, 2)
+        return createMathTask({
+          level: "1f",
+          difficulty: safeDifficulty,
+          phase,
+          domain: "meten en meetkunde",
+          prompt: `Hoeveel centimeter is ${formatMathAnswer(meters)} meter?`,
+          answer,
+          tolerance: 0.01,
+          explanation: `1 meter is 100 centimeter. Dus ${formatMathAnswer(meters)} meter is ${formatMathAnswer(answer)} centimeter.`,
+          hint: "Vermenigvuldig het aantal meters met 100.",
+          points: 13 + safeDifficulty * 3,
+        })
+      },
+    ],
+    verbanden: [
+      () => {
+        const first = pickOne([3, 4, 5])
+        const step = pickOne([2, 3, 4])
+        return createMathTask({
+          level: "1f",
+          difficulty: safeDifficulty,
+          phase,
+          domain: "verbanden",
+          prompt: `In een tabel staat: rit 1 = ${first} km, rit 2 = ${first + step} km, rit 3 = ${first + step * 2} km. Hoeveel km hoort bij rit 5?`,
+          answer: first + step * 4,
+          explanation: `Elke rit komt er ${step} km bij. Dus rit 5 is ${first + step * 4} km.`,
+          hint: "Kijk hoeveel er per stap bijkomt en tel door.",
+          points: 12 + safeDifficulty * 3,
+        })
+      },
+      () => {
+        const klas1 = pickOne([18, 20, 22])
+        const klas2 = klas1 + pickOne([2, 3, 4])
+        const klas3 = klas2 + pickOne([1, 2, 3])
+        return createMathTask({
+          level: "1f",
+          difficulty: safeDifficulty,
+          phase,
+          domain: "verbanden",
+          prompt: `Een staafdiagram laat zien: klas A = ${klas1} leerlingen, klas B = ${klas2} leerlingen, klas C = ${klas3} leerlingen. Hoeveel leerlingen heeft klas B?`,
+          answer: klas2,
+          explanation: `Je leest in het diagram het getal bij klas B af. Dat is ${klas2}.`,
+          hint: "Lees alleen de juiste balk af.",
+          points: 12 + safeDifficulty * 3,
+        })
+      },
+    ],
+  }
+
+  return pickMathTaskFromBank(bank, preferredDomain)
 }
 
-function generate3FMathTask(difficulty, phase = "practice") {
+function generate2FMathTask(difficulty, phase = "practice", preferredDomain = "") {
   const safeDifficulty = clampMathDifficulty(difficulty)
-  const templates = [
-    () => {
-      const original = pickOne([80, 120, 150, 200, 240])
-      const discount = pickOne([10, 20, 25, 30])
-      const paid = roundTo(original * (1 - discount / 100), 2)
-      return createMathTask({
-        level: "3f",
-        difficulty: safeDifficulty,
-        phase,
-        domain: "terugrekenen procenten",
-        prompt: `Na ${discount}% korting betaal je ${formatMathAnswer(paid)} euro. Wat was de oude prijs?`,
-        answer: original,
-        tolerance: 0.01,
-        explanation: `Je betaalde ${100 - discount}% van de oude prijs. De oude prijs was ${original} euro.`,
-        hint: "Bedenk welk percentage overblijft na de korting.",
-        points: 24 + safeDifficulty * 5,
-      })
-    },
-    () => {
-      const speed = pickOne([18, 24, 30, 45, 60])
-      const hours = pickOne([1.5, 2, 2.5, 3, 3.5])
-      const answer = roundTo(speed * hours, 2)
-      return createMathTask({
-        level: "3f",
-        difficulty: safeDifficulty,
-        phase,
-        domain: "snelheid",
-        prompt: `Je fietst ${speed} km per uur en rijdt ${formatMathAnswer(hours)} uur. Hoeveel kilometer leg je af?`,
-        answer,
-        tolerance: 0.01,
-        explanation: `Afstand = snelheid x tijd. Dus ${speed} x ${hours} = ${answer}.`,
-        hint: "Gebruik de formule afstand = snelheid x tijd.",
-        points: 24 + safeDifficulty * 5,
-      })
-    },
-    () => {
-      const x = randomInt(4, 14)
-      const multiplier = pickOne([2, 3, 4, 5])
-      const add = randomInt(3, 12)
-      const total = multiplier * x + add
-      return createMathTask({
-        level: "3f",
-        difficulty: safeDifficulty,
-        phase,
-        domain: "vergelijking",
-        prompt: `Los op: ${multiplier}x + ${add} = ${total}. Wat is x?`,
-        answer: x,
-        explanation: `Haal eerst ${add} eraf en deel daarna door ${multiplier}. Dan krijg je x = ${x}.`,
-        hint: "Werk in twee stappen terug.",
-        points: 23 + safeDifficulty * 5,
-      })
-    },
-  ]
-  return pickOne(templates)()
+  const bank = {
+    getallen: [
+      () => {
+        const a = pickOne([2.4, 3.75, 4.6, 5.25, 7.8])
+        const b = pickOne([1.35, 2.2, 2.75, 3.4])
+        const answer = roundTo(a + b, 2)
+        return createMathTask({
+          level: "2f",
+          difficulty: safeDifficulty,
+          phase,
+          domain: "getallen",
+          prompt: `Hoeveel is ${formatMathAnswer(a)} + ${formatMathAnswer(b)}?`,
+          answer,
+          tolerance: 0.01,
+          explanation: `Tel de hele getallen en decimalen netjes bij elkaar op. Dan krijg je ${formatMathAnswer(answer)}.`,
+          hint: "Zet de komma's recht onder elkaar in je hoofd of op papier.",
+          points: 18 + safeDifficulty * 4,
+        })
+      },
+      () => {
+        const total = pickOne([48, 56, 72, 84, 96])
+        const fraction = pickOne([
+          { label: "3/4", value: 0.75 },
+          { label: "2/3", value: 2 / 3 },
+          { label: "5/6", value: 5 / 6 },
+        ])
+        const answer = roundTo(total * fraction.value, 2)
+        return createMathTask({
+          level: "2f",
+          difficulty: safeDifficulty,
+          phase,
+          domain: "getallen",
+          prompt: `Hoeveel is ${fraction.label} van ${total}?`,
+          answer,
+          tolerance: 0.01,
+          explanation: `Je deelt ${total} eerst door de noemer en vermenigvuldigt daarna met de teller. Dan krijg je ${formatMathAnswer(answer)}.`,
+          hint: "Eerst delen, daarna vermenigvuldigen.",
+          points: 18 + safeDifficulty * 4,
+        })
+      },
+    ],
+    verhoudingen: [
+      () => {
+        const price = pickOne([60, 80, 120, 160, 240])
+        const discount = pickOne([15, 20, 25, 30])
+        const answer = roundTo(price * (1 - discount / 100), 2)
+        return createMathTask({
+          level: "2f",
+          difficulty: safeDifficulty,
+          phase,
+          domain: "verhoudingen",
+          prompt: `Een jas kost ${price} euro. Er gaat ${discount}% korting af. Wat betaal je dan?`,
+          answer,
+          tolerance: 0.01,
+          explanation: `Na ${discount}% korting blijft ${100 - discount}% over. Dat is ${formatMathAnswer(answer)} euro.`,
+          hint: "Reken uit hoeveel procent je nog wel betaalt.",
+          points: 19 + safeDifficulty * 4,
+        })
+      },
+      () => {
+        const scale = pickOne([10000, 25000, 50000])
+        const mapDistance = pickOne([4, 5, 6, 8])
+        const answer = roundTo((mapDistance * scale) / 100000, 2)
+        return createMathTask({
+          level: "2f",
+          difficulty: safeDifficulty,
+          phase,
+          domain: "verhoudingen",
+          prompt: `Op een kaart met schaal 1 : ${scale.toLocaleString("nl-NL")} is een route ${mapDistance} cm. Hoeveel kilometer is die route in het echt?`,
+          answer,
+          tolerance: 0.01,
+          explanation: `Bij schaal 1 : ${scale.toLocaleString("nl-NL")} is 1 cm op de kaart ${scale} cm in het echt. Reken dat om naar kilometer. Dan krijg je ${formatMathAnswer(answer)} km.`,
+          hint: "Reken eerst naar echte centimeters en daarna naar kilometers.",
+          points: 20 + safeDifficulty * 4,
+        })
+      },
+    ],
+    "meten en meetkunde": [
+      () => {
+        const width = pickOne([3.2, 4.5, 5.6, 6.8])
+        const length = pickOne([4.5, 5.5, 6.2, 7.4])
+        const answer = roundTo(width * length, 2)
+        return createMathTask({
+          level: "2f",
+          difficulty: safeDifficulty,
+          phase,
+          domain: "meten en meetkunde",
+          prompt: `Een kamer is ${formatMathAnswer(length)} m lang en ${formatMathAnswer(width)} m breed. Wat is de oppervlakte in m2?`,
+          answer,
+          tolerance: 0.01,
+          explanation: `Oppervlakte van een rechthoek is lengte x breedte. Dus ${formatMathAnswer(length)} x ${formatMathAnswer(width)} = ${formatMathAnswer(answer)} m2.`,
+          hint: "Gebruik lengte x breedte.",
+          points: 19 + safeDifficulty * 4,
+        })
+      },
+      () => {
+        const liters = pickOne([1.5, 2.25, 3.75, 4.5])
+        const answer = roundTo(liters * 1000, 2)
+        return createMathTask({
+          level: "2f",
+          difficulty: safeDifficulty,
+          phase,
+          domain: "meten en meetkunde",
+          prompt: `Hoeveel milliliter is ${formatMathAnswer(liters)} liter?`,
+          answer,
+          tolerance: 0.01,
+          explanation: `1 liter is 1000 milliliter. Dus ${formatMathAnswer(liters)} liter is ${formatMathAnswer(answer)} milliliter.`,
+          hint: "Vermenigvuldig liters met 1000.",
+          points: 18 + safeDifficulty * 4,
+        })
+      },
+    ],
+    verbanden: [
+      () => {
+        const values = [pickOne([6, 7, 8]), pickOne([7, 8, 9]), pickOne([8, 9, 10]), pickOne([9, 10, 11])]
+        const answer = roundTo(values.reduce((sum, value) => sum + value, 0) / values.length, 2)
+        return createMathTask({
+          level: "2f",
+          difficulty: safeDifficulty,
+          phase,
+          domain: "verbanden",
+          prompt: `Je hebt de cijfers ${values.join(", ")}. Wat is het gemiddelde?`,
+          answer,
+          tolerance: 0.01,
+          explanation: `Tel alle cijfers op en deel door ${values.length}. Dan krijg je ${formatMathAnswer(answer)}.`,
+          hint: "Gemiddelde = som van alles gedeeld door het aantal getallen.",
+          points: 18 + safeDifficulty * 4,
+        })
+      },
+      () => {
+        const start = pickOne([5, 8, 10])
+        const step = pickOne([3, 4, 5])
+        const index = pickOne([6, 7, 8])
+        const answer = start + step * (index - 1)
+        return createMathTask({
+          level: "2f",
+          difficulty: safeDifficulty,
+          phase,
+          domain: "verbanden",
+          prompt: `In een tabel kost 1 kaartje ${start} euro. Elk extra kaartje kost ook ${step} euro extra. Wat kosten ${index} kaartjes samen?`,
+          answer,
+          explanation: `Je begint met ${start} euro voor 1 kaartje. Daarna komen er ${index - 1} stappen van ${step} euro bij. Samen is dat ${answer} euro.`,
+          hint: `Reken vanaf 1 kaartje door naar ${index} kaartjes.`,
+          points: 19 + safeDifficulty * 4,
+        })
+      },
+    ],
+  }
+
+  return pickMathTaskFromBank(bank, preferredDomain)
 }
 
-function generate4FMathTask(difficulty, phase = "practice") {
+function generate3FMathTask(difficulty, phase = "practice", preferredDomain = "") {
   const safeDifficulty = clampMathDifficulty(difficulty)
-  const templates = [
-    () => {
-      const principal = pickOne([500, 750, 1000, 1200, 1500])
-      const rate = pickOne([2, 3, 4, 5])
-      const years = pickOne([2, 3, 4])
-      const answer = roundTo(principal * (1 + rate / 100) ** years, 2)
-      return createMathTask({
-        level: "4f",
-        difficulty: safeDifficulty,
-        phase,
-        domain: "samengestelde rente",
-        prompt: `Je zet ${principal} euro op de bank tegen ${rate}% rente per jaar. Hoeveel staat er na ${years} jaar op de rekening?`,
-        answer,
-        tolerance: 0.05,
-        explanation: `Je rekent elk jaar verder met het nieuwe bedrag. Na ${years} jaar is dat ${formatMathAnswer(answer)} euro.`,
-        hint: "Gebruik bedrag x (1 + rente)^aantal jaren.",
-        points: 30 + safeDifficulty * 6,
-      })
-    },
-    () => {
-      const x = pickOne([4, 5, 6, 7, 8, 9])
-      const offset = pickOne([2, 3, 4, 5])
-      const total = 2 * (x - offset) + 5
-      return createMathTask({
-        level: "4f",
-        difficulty: safeDifficulty,
-        phase,
-        domain: "haakjesvergelijking",
-        prompt: `Los op: 2(x - ${offset}) + 5 = ${total}. Wat is x?`,
-        answer: x,
-        explanation: `Werk eerst de +5 weg, daarna deel je door 2 en tel je ${offset} erbij op. Dan krijg je x = ${x}.`,
-        hint: "Werk stap voor stap terug.",
-        points: 29 + safeDifficulty * 6,
-      })
-    },
-    () => {
-      const width = pickOne([3.2, 4.5, 6.8, 7.5, 8.4])
-      const height = pickOne([2.5, 3.6, 4.2, 5.5])
-      const answer = roundTo(width * height, 2)
-      return createMathTask({
-        level: "4f",
-        difficulty: safeDifficulty,
-        phase,
-        domain: "oppervlakte",
-        prompt: `Een rechthoek is ${formatMathAnswer(width)} m breed en ${formatMathAnswer(height)} m lang. Wat is de oppervlakte in m2?`,
-        answer,
-        tolerance: 0.01,
-        explanation: `Oppervlakte = lengte x breedte. Dus ${formatMathAnswer(width)} x ${formatMathAnswer(height)} = ${formatMathAnswer(answer)}.`,
-        hint: "Gebruik de formule oppervlakte = lengte x breedte.",
-        points: 28 + safeDifficulty * 6,
-      })
-    },
-  ]
-  return pickOne(templates)()
+  const bank = {
+    getallen: [
+      () => {
+        const a = pickOne([1.8, 2.4, 3.6, 4.25])
+        const b = pickOne([1.25, 1.5, 2.2, 2.75])
+        const answer = roundTo(a * b, 2)
+        return createMathTask({
+          level: "3f",
+          difficulty: safeDifficulty,
+          phase,
+          domain: "getallen",
+          prompt: `Hoeveel is ${formatMathAnswer(a)} x ${formatMathAnswer(b)}?`,
+          answer,
+          tolerance: 0.01,
+          explanation: `Vermenigvuldig de getallen en zet daarna de komma op de juiste plek. Dan krijg je ${formatMathAnswer(answer)}.`,
+          hint: "Je mag dit ook eerst zonder komma uitrekenen en daarna terugplaatsen.",
+          points: 24 + safeDifficulty * 5,
+        })
+      },
+      () => {
+        const start = pickOne([-4, -3, -2, 5])
+        const change = pickOne([7, 8, 9, 10])
+        const answer = start + change
+        return createMathTask({
+          level: "3f",
+          difficulty: safeDifficulty,
+          phase,
+          domain: "getallen",
+          prompt: `De temperatuur is ${start} graden en stijgt met ${change} graden. Wat is de nieuwe temperatuur?`,
+          answer,
+          explanation: `Je telt de stijging op bij de begintemperatuur: ${start} + ${change} = ${answer}.`,
+          hint: "Begin op het startgetal en tel omhoog.",
+          points: 23 + safeDifficulty * 5,
+        })
+      },
+    ],
+    verhoudingen: [
+      () => {
+        const original = pickOne([80, 120, 150, 200, 240])
+        const discount = pickOne([10, 20, 25, 30])
+        const paid = roundTo(original * (1 - discount / 100), 2)
+        return createMathTask({
+          level: "3f",
+          difficulty: safeDifficulty,
+          phase,
+          domain: "verhoudingen",
+          prompt: `Na ${discount}% korting betaal je ${formatMathAnswer(paid)} euro. Wat was de oude prijs?`,
+          answer: original,
+          tolerance: 0.01,
+          explanation: `Je betaalde nog ${100 - discount}% van de oude prijs. Daarom deel je ${formatMathAnswer(paid)} door ${formatMathAnswer((100 - discount) / 100)}. Dan krijg je ${original}.`,
+          hint: "Bedenk eerst welk percentage overblijft na korting.",
+          points: 25 + safeDifficulty * 5,
+        })
+      },
+      () => {
+        const price = pickOne([250, 400, 650, 800])
+        const increase = pickOne([6, 8, 12, 15])
+        const answer = roundTo(price * (1 + increase / 100), 2)
+        return createMathTask({
+          level: "3f",
+          difficulty: safeDifficulty,
+          phase,
+          domain: "verhoudingen",
+          prompt: `Een scooter kost ${price} euro en wordt ${increase}% duurder. Wat is de nieuwe prijs?`,
+          answer,
+          tolerance: 0.01,
+          explanation: `Je rekent ${increase}% erbij. Dus je vermenigvuldigt met ${formatMathAnswer(1 + increase / 100)}. Dan krijg je ${formatMathAnswer(answer)} euro.`,
+          hint: "Meer procent betekent groeifactor 1 + percentage.",
+          points: 25 + safeDifficulty * 5,
+        })
+      },
+    ],
+    "meten en meetkunde": [
+      () => {
+        const speed = pickOne([18, 24, 30, 45, 60])
+        const hours = pickOne([1.5, 2, 2.25, 2.5, 3])
+        const answer = roundTo(speed * hours, 2)
+        return createMathTask({
+          level: "3f",
+          difficulty: safeDifficulty,
+          phase,
+          domain: "meten en meetkunde",
+          prompt: `Je fietst ${speed} km per uur en rijdt ${formatMathAnswer(hours)} uur. Hoeveel kilometer leg je af?`,
+          answer,
+          tolerance: 0.01,
+          explanation: `Afstand = snelheid x tijd. Dus ${speed} x ${formatMathAnswer(hours)} = ${formatMathAnswer(answer)} kilometer.`,
+          hint: "Gebruik de formule afstand = snelheid x tijd.",
+          points: 24 + safeDifficulty * 5,
+        })
+      },
+      () => {
+        const radius = pickOne([3, 4, 5, 6, 7])
+        const answer = roundTo(2 * Math.PI * radius, 2)
+        return createMathTask({
+          level: "3f",
+          difficulty: safeDifficulty,
+          phase,
+          domain: "meten en meetkunde",
+          prompt: `Een cirkel heeft straal ${radius} cm. Hoeveel cm is de omtrek? Rond af op 2 decimalen.`,
+          answer,
+          tolerance: 0.05,
+          explanation: `De omtrek van een cirkel is 2 x pi x straal. Dus 2 x pi x ${radius} = ${formatMathAnswer(answer)} cm.`,
+          hint: "Gebruik 2 x pi x straal.",
+          points: 25 + safeDifficulty * 5,
+        })
+      },
+    ],
+    verbanden: [
+      () => {
+        const x = randomInt(4, 14)
+        const multiplier = pickOne([2, 3, 4, 5])
+        const add = randomInt(3, 12)
+        const total = multiplier * x + add
+        return createMathTask({
+          level: "3f",
+          difficulty: safeDifficulty,
+          phase,
+          domain: "verbanden",
+          prompt: `Los op: ${multiplier}x + ${add} = ${total}. Wat is x?`,
+          answer: x,
+          explanation: `Haal eerst ${add} van ${total} af. Deel daarna door ${multiplier}. Dan krijg je x = ${x}.`,
+          hint: "Werk stap voor stap terug.",
+          points: 24 + safeDifficulty * 5,
+        })
+      },
+      () => {
+        const start = pickOne([10, 15, 20])
+        const step = pickOne([4, 5, 6])
+        const x = pickOne([7, 8, 9])
+        const answer = start + step * x
+        return createMathTask({
+          level: "3f",
+          difficulty: safeDifficulty,
+          phase,
+          domain: "verbanden",
+          prompt: `Bij de formule y = ${step}x + ${start}, wat is y als x = ${x}?`,
+          answer,
+          explanation: `Vul ${x} in op de plek van x. Dan krijg je y = ${step} x ${x} + ${start} = ${answer}.`,
+          hint: "Vervang x door het gegeven getal en reken uit.",
+          points: 23 + safeDifficulty * 5,
+        })
+      },
+    ],
+  }
+
+  return pickMathTaskFromBank(bank, preferredDomain)
 }
 
-function generateMathTaskForLevel(level, difficulty = 2, phase = "practice") {
+function generate4FMathTask(difficulty, phase = "practice", preferredDomain = "") {
+  const safeDifficulty = clampMathDifficulty(difficulty)
+  const bank = {
+    getallen: [
+      () => {
+        const principal = pickOne([500, 750, 1000, 1200, 1500])
+        const rate = pickOne([2, 3, 4, 5])
+        const years = pickOne([2, 3, 4])
+        const answer = roundTo(principal * (1 + rate / 100) ** years, 2)
+        return createMathTask({
+          level: "4f",
+          difficulty: safeDifficulty,
+          phase,
+          domain: "getallen",
+          prompt: `Je zet ${principal} euro op de bank tegen ${rate}% rente per jaar. Hoeveel staat er na ${years} jaar op de rekening?`,
+          answer,
+          tolerance: 0.05,
+          explanation: `Elk jaar groeit het bedrag opnieuw. Daarom reken je ${principal} x (1 + ${formatMathAnswer(rate / 100)})^${years}. Dat geeft ${formatMathAnswer(answer)} euro.`,
+          hint: "Gebruik samengestelde rente: beginbedrag x groeifactor^jaren.",
+          points: 30 + safeDifficulty * 6,
+        })
+      },
+      () => {
+        const growth = pickOne([1.03, 1.05, 1.08, 1.12])
+        const years = pickOne([3, 4, 5])
+        const start = pickOne([200, 400, 800])
+        const answer = roundTo(start * growth ** years, 2)
+        return createMathTask({
+          level: "4f",
+          difficulty: safeDifficulty,
+          phase,
+          domain: "getallen",
+          prompt: `Een bedrag van ${start} euro groeit ${years} jaar lang met factor ${formatMathAnswer(growth)}. Hoeveel euro heb je dan?`,
+          answer,
+          tolerance: 0.05,
+          explanation: `Je vermenigvuldigt ${years} keer met de groeifactor ${formatMathAnswer(growth)}. Dan krijg je ${formatMathAnswer(answer)} euro.`,
+          hint: "Gebruik startbedrag x groeifactor^tijd.",
+          points: 30 + safeDifficulty * 6,
+        })
+      },
+    ],
+    verhoudingen: [
+      () => {
+        const excl = pickOne([80, 120, 175, 240])
+        const vat = 21
+        const answer = roundTo(excl * 1.21, 2)
+        return createMathTask({
+          level: "4f",
+          difficulty: safeDifficulty,
+          phase,
+          domain: "verhoudingen",
+          prompt: `Een product kost ${excl} euro zonder btw. Hoeveel betaal je met ${vat}% btw erbij?`,
+          answer,
+          tolerance: 0.01,
+          explanation: `Met btw betaal je 121% van de prijs zonder btw. Dus ${excl} x 1,21 = ${formatMathAnswer(answer)} euro.`,
+          hint: "Gebruik een groeifactor van 1,21.",
+          points: 30 + safeDifficulty * 6,
+        })
+      },
+      () => {
+        const afterTax = pickOne([144, 180, 216, 242])
+        const tax = pickOne([20, 25])
+        const answer = roundTo(afterTax / (1 + tax / 100), 2)
+        return createMathTask({
+          level: "4f",
+          difficulty: safeDifficulty,
+          phase,
+          domain: "verhoudingen",
+          prompt: `Na ${tax}% opslag kost een kaartje ${afterTax} euro. Wat was de prijs eerst?`,
+          answer,
+          tolerance: 0.05,
+          explanation: `Na opslag is het bedrag ${100 + tax}% van eerst. Daarom deel je door ${formatMathAnswer(1 + tax / 100)}. Dan krijg je ${formatMathAnswer(answer)} euro.`,
+          hint: "Reken terug met de groeifactor.",
+          points: 29 + safeDifficulty * 6,
+        })
+      },
+    ],
+    "meten en meetkunde": [
+      () => {
+        const radius = pickOne([2.5, 3, 3.5, 4])
+        const height = pickOne([8, 10, 12, 15])
+        const answer = roundTo(Math.PI * radius * radius * height, 2)
+        return createMathTask({
+          level: "4f",
+          difficulty: safeDifficulty,
+          phase,
+          domain: "meten en meetkunde",
+          prompt: `Een cilinder heeft straal ${formatMathAnswer(radius)} cm en hoogte ${height} cm. Wat is de inhoud in cm3? Rond af op 2 decimalen.`,
+          answer,
+          tolerance: 0.1,
+          explanation: `Inhoud cilinder = pi x straal x straal x hoogte. Dat wordt ${formatMathAnswer(answer)} cm3.`,
+          hint: "Gebruik pi x r x r x h.",
+          points: 30 + safeDifficulty * 6,
+        })
+      },
+      () => {
+        const width = pickOne([4, 5, 6])
+        const height = pickOne([6, 7, 8])
+        const cutWidth = pickOne([1.5, 2, 2.5])
+        const cutHeight = pickOne([2, 3, 3.5])
+        const answer = roundTo(width * height - cutWidth * cutHeight, 2)
+        return createMathTask({
+          level: "4f",
+          difficulty: safeDifficulty,
+          phase,
+          domain: "meten en meetkunde",
+          prompt: `Een L-vorm ontstaat uit een rechthoek van ${width} m bij ${height} m waar een hoek van ${formatMathAnswer(cutWidth)} m bij ${formatMathAnswer(cutHeight)} m uit is gehaald. Wat is de oppervlakte in m2?`,
+          answer,
+          tolerance: 0.01,
+          explanation: `Reken eerst de grote rechthoek uit en haal daarna het uitgesneden stuk eraf. Dan blijft ${formatMathAnswer(answer)} m2 over.`,
+          hint: "Grote oppervlakte min kleine uitgesneden oppervlakte.",
+          points: 29 + safeDifficulty * 6,
+        })
+      },
+    ],
+    verbanden: [
+      () => {
+        const x = pickOne([4, 5, 6, 7, 8, 9])
+        const offset = pickOne([2, 3, 4, 5])
+        const total = 2 * (x - offset) + 5
+        return createMathTask({
+          level: "4f",
+          difficulty: safeDifficulty,
+          phase,
+          domain: "verbanden",
+          prompt: `Los op: 2(x - ${offset}) + 5 = ${total}. Wat is x?`,
+          answer: x,
+          explanation: `Werk eerst de +5 weg, deel daarna door 2 en tel als laatste ${offset} erbij op. Dan krijg je x = ${x}.`,
+          hint: "Werk terug in de omgekeerde volgorde.",
+          points: 29 + safeDifficulty * 6,
+        })
+      },
+      () => {
+        const slope = pickOne([2, 3, 4, 5])
+        const intercept = pickOne([6, 8, 10, 12])
+        const x = pickOne([7, 8, 9])
+        const answer = slope * x + intercept
+        return createMathTask({
+          level: "4f",
+          difficulty: safeDifficulty,
+          phase,
+          domain: "verbanden",
+          prompt: `Bij de formule y = ${slope}x + ${intercept}, wat is y als x = ${x}?`,
+          answer,
+          explanation: `Vul ${x} in voor x. Dan krijg je y = ${slope} x ${x} + ${intercept} = ${answer}.`,
+          hint: "Vervang x door het gegeven getal en reken uit.",
+          points: 28 + safeDifficulty * 6,
+        })
+      },
+    ],
+  }
+
+  return pickMathTaskFromBank(bank, preferredDomain)
+}
+
+function generateMathTaskForLevel(level, difficulty = 2, phase = "practice", preferredDomain = "") {
   const safeLevel = normalizeMathLevel(level)
-  if (safeLevel === "0f") return generate0FMathTask(difficulty, phase)
-  if (safeLevel === "1f") return generate1FMathTask(difficulty, phase)
-  if (safeLevel === "2f") return generate2FMathTask(difficulty, phase)
-  if (safeLevel === "3f") return generate3FMathTask(difficulty, phase)
-  return generate4FMathTask(difficulty, phase)
+  if (safeLevel === "0f") return generate0FMathTask(difficulty, phase, preferredDomain)
+  if (safeLevel === "1f") return generate1FMathTask(difficulty, phase, preferredDomain)
+  if (safeLevel === "2f") return generate2FMathTask(difficulty, phase, preferredDomain)
+  if (safeLevel === "3f") return generate3FMathTask(difficulty, phase, preferredDomain)
+  return generate4FMathTask(difficulty, phase, preferredDomain)
+}
+
+function buildLevelIntakeTasks(level, count, baseDifficulty = 1) {
+  return Array.from({ length: count }, (_, index) => {
+    const domain = MATH_DOMAIN_KEYS[index % MATH_DOMAIN_KEYS.length]
+    const difficulty = clampMathDifficulty(baseDifficulty + Math.floor(index / MATH_DOMAIN_KEYS.length))
+    return generateMathTaskForLevel(level, difficulty, "intake", domain)
+  })
 }
 
 function buildMathIntakePlan(selectedBand) {
@@ -641,16 +1127,20 @@ function buildMathIntakePlan(selectedBand) {
   const bandIndex = mathLevelIndex(safeBand)
   const previousLevel = MATH_LEVELS[Math.max(0, bandIndex - 1)]
   const nextLevel = MATH_LEVELS[Math.min(MATH_LEVELS.length - 1, bandIndex + 1)]
-  const plan =
-    bandIndex === 0
-      ? [...Array(8).fill("0f"), ...Array(4).fill("1f")]
-      : bandIndex === MATH_LEVELS.length - 1
-        ? [...Array(4).fill(previousLevel), ...Array(8).fill(safeBand)]
-        : [...Array(4).fill(previousLevel), ...Array(4).fill(safeBand), ...Array(4).fill(nextLevel)]
 
-  return plan.slice(0, MATH_INTAKE_QUESTION_COUNT).map((level, index) =>
-    generateMathTaskForLevel(level, index < 3 ? 1 : index < 6 ? 2 : index < 9 ? 3 : 4, "intake")
-  )
+  if (bandIndex === 0) {
+    return [...buildLevelIntakeTasks("0f", 8, 1), ...buildLevelIntakeTasks("1f", 8, 2)].slice(0, MATH_INTAKE_QUESTION_COUNT)
+  }
+
+  if (bandIndex === MATH_LEVELS.length - 1) {
+    return [...buildLevelIntakeTasks(previousLevel, 8, 2), ...buildLevelIntakeTasks("4f", 8, 3)].slice(0, MATH_INTAKE_QUESTION_COUNT)
+  }
+
+  return [
+    ...buildLevelIntakeTasks(previousLevel, 4, 1),
+    ...buildLevelIntakeTasks(safeBand, 8, 2),
+    ...buildLevelIntakeTasks(nextLevel, 4, 3),
+  ].slice(0, MATH_INTAKE_QUESTION_COUNT)
 }
 
 function buildMathSession(selectedBand = MATH_LEVELS[1]) {
@@ -718,9 +1208,20 @@ function determineMathPlacement(mathState, progress) {
   const attemptedLevels = new Map()
   for (const answer of progress?.intakeAnswers || []) {
     const level = normalizeMathLevel(answer.level)
-    const bucket = attemptedLevels.get(level) || { total: 0, correct: 0 }
+    const bucket =
+      attemptedLevels.get(level) ||
+      {
+        total: 0,
+        correct: 0,
+        domains: new Map(),
+      }
     bucket.total += 1
     if (answer.correct) bucket.correct += 1
+    const domainKey = MATH_DOMAIN_KEYS.includes(answer.domain) ? answer.domain : "getallen"
+    const domainBucket = bucket.domains.get(domainKey) || { total: 0, correct: 0 }
+    domainBucket.total += 1
+    if (answer.correct) domainBucket.correct += 1
+    bucket.domains.set(domainKey, domainBucket)
     attemptedLevels.set(level, bucket)
   }
 
@@ -731,7 +1232,18 @@ function determineMathPlacement(mathState, progress) {
   for (const level of attemptedOrder) {
     const bucket = attemptedLevels.get(level)
     if (!bucket?.total) continue
-    if (bucket.correct / bucket.total >= 0.7) {
+    const overallRate = bucket.correct / bucket.total
+    const overallThreshold = bucket.total >= 8 ? 0.75 : 1
+    const hasBroadCoverage =
+      bucket.total >= 8
+        ? MATH_DOMAIN_KEYS.every((domainKey) => {
+            const domainBucket = bucket.domains.get(domainKey)
+            if (!domainBucket?.total) return false
+            return domainBucket.correct / domainBucket.total >= 0.5
+          })
+        : true
+
+    if (overallRate >= overallThreshold && hasBroadCoverage) {
       placement = level
     }
   }
@@ -979,6 +1491,7 @@ function deserializeMathState(rawMathState) {
                 ? progress.intakeAnswers.map((entry) => ({
                     questionId: String(entry?.questionId ?? ""),
                     level: normalizeMathLevel(entry?.level),
+                    domain: MATH_DOMAIN_KEYS.includes(entry?.domain) ? entry.domain : "",
                     correct: Boolean(entry?.correct),
                   }))
                 : [],
@@ -6270,6 +6783,7 @@ io.on("connection", (socket) => {
       progress.intakeAnswers.push({
         questionId: task.id,
         level: task.level,
+        domain: task.domain,
         correct: evaluation.correct,
       })
 
