@@ -2184,6 +2184,116 @@ body::after {
   padding: 18px;
 }
 
+.math-band-selector,
+.math-host-panel,
+.math-student-panel,
+.learner-code-card {
+  display: grid;
+  gap: 16px;
+}
+
+.math-band-row,
+.math-summary-row,
+.math-answer-row,
+.math-code-row,
+.learner-code-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.math-band-row {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.math-summary-row,
+.learner-code-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.math-config-card,
+.math-task-card,
+.math-host-card,
+.learner-code-card {
+  padding: 16px 18px;
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(8, 16, 34, 0.42);
+}
+
+.math-config-card span,
+.learner-code-grid span {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.math-config-card p,
+.learner-code-card p,
+.math-host-hero p,
+.math-task-preview {
+  margin: 0;
+  color: rgba(237, 241, 255, 0.78);
+}
+
+.math-host-hero,
+.math-host-card-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.math-summary-stack,
+.math-student-strip,
+.math-host-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.math-host-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.math-host-card-head strong,
+.learner-code-grid strong {
+  display: block;
+}
+
+.math-host-card-head span {
+  color: rgba(237, 241, 255, 0.64);
+  font-size: 0.88rem;
+}
+
+.math-code-input,
+.math-answer-input {
+  width: 100%;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.07);
+  color: #f7f7fb;
+  padding: 14px 16px;
+  font: inherit;
+}
+
+.math-code-row,
+.math-answer-row {
+  grid-template-columns: 1fr auto;
+  align-items: center;
+}
+
+.math-task-card h3,
+.learner-code-card h3 {
+  margin: 0;
+}
+
+.learner-code-note {
+  margin: 0;
+}
+
 @media (max-width: 1150px) {
   .hero-card,
   .host-grid,
@@ -2200,12 +2310,16 @@ body::after {
   .toggle-grid,
   .presentation-stage,
   .distribution-grid,
-  .action-row {
+  .action-row,
+  .math-band-row,
+  .math-host-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .field-row,
-  .podium {
+  .podium,
+  .math-summary-row,
+  .learner-code-grid {
     grid-template-columns: 1fr;
   }
 
@@ -2246,7 +2360,13 @@ body::after {
   .lesson-summary-grid,
   .lesson-stage-grid,
   .teacher-form-grid,
-  .distribution-grid {
+  .distribution-grid,
+  .math-band-row,
+  .math-host-grid,
+  .math-summary-row,
+  .learner-code-grid,
+  .math-code-row,
+  .math-answer-row {
     grid-template-columns: 1fr;
   }
 

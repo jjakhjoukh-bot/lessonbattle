@@ -95,6 +95,9 @@ const MAX_REMOTE_IMAGE_BYTES = 5 * 1024 * 1024
 const INVALID_IMAGE_SIGNATURE_LIMIT = 12
 const INVALID_IMAGE_SIGNATURE_WINDOW_MS = 10 * 60 * 1000
 const HOST_SESSION_TTL_MS = 12 * 60 * 60 * 1000
+const MATH_LEVELS = ["0f", "1f", "2f", "3f", "4f"]
+const MATH_ROOM_GRACE_MS = 7 * 24 * 60 * 60 * 1000
+const MATH_INTAKE_QUESTION_COUNT = 6
 const BASE_CORRECT_POINTS = 100
 const MAX_SPEED_BONUS = 100
 const FINAL_SPRINT_QUESTIONS = 2
@@ -129,6 +132,7 @@ function ensureManualImagesDir() {
 
 function createPlayerRecord({
   id = generateEntityId("player"),
+  learnerCode = "",
   socketId = null,
   name = "",
   teamId = "",
@@ -137,6 +141,7 @@ function createPlayerRecord({
 } = {}) {
   return {
     id: String(id),
+    learnerCode: String(learnerCode || id).trim() || String(id),
     socketId: socketId ? String(socketId) : null,
     name: String(name).trim(),
     teamId: String(teamId).trim(),
@@ -210,6 +215,698 @@ function createEmptyLessonState() {
     includePracticeTest: false,
     includePresentation: false,
     includeVideoPlan: false,
+  }
+}
+
+function createEmptyMathState() {
+  return {
+    title: "",
+    selectedBand: "",
+    intakeQuestions: [],
+    playerProgress: new Map(),
+    startedAt: null,
+    updatedAt: null,
+  }
+}
+
+function normalizeMathLevel(value) {
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "")
+  return MATH_LEVELS.includes(normalized) ? normalized : MATH_LEVELS[1]
+}
+
+function mathLevelIndex(level) {
+  return MATH_LEVELS.indexOf(normalizeMathLevel(level))
+}
+
+function formatMathLevel(level) {
+  return normalizeMathLevel(level).toUpperCase()
+}
+
+function getNextMathLevel(level) {
+  const index = mathLevelIndex(level)
+  return MATH_LEVELS[Math.min(MATH_LEVELS.length - 1, Math.max(0, index + 1))]
+}
+
+function clampMathDifficulty(value) {
+  return Math.max(1, Math.min(5, Number(value) || 1))
+}
+
+function randomInt(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min
+}
+
+function pickOne(values) {
+  return values[randomInt(0, values.length - 1)]
+}
+
+function roundTo(value, decimals = 2) {
+  const factor = 10 ** decimals
+  return Math.round((Number(value) + Number.EPSILON) * factor) / factor
+}
+
+function formatMathAnswer(value, decimals = 2) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return String(value ?? "")
+  if (Math.abs(numeric - Math.round(numeric)) < 0.000001) return String(Math.round(numeric))
+  return numeric.toFixed(decimals).replace(/\.?0+$/, "").replace(".", ",")
+}
+
+function parseMathAnswer(rawValue) {
+  const normalized = String(rawValue ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(",", ".")
+    .replace(/€/g, "")
+  if (!normalized) return null
+  const match = normalized.match(/-?\d+(?:\.\d+)?/)
+  if (!match) return null
+  const value = Number(match[0])
+  return Number.isFinite(value) ? value : null
+}
+
+function createMathTask({
+  level,
+  difficulty = 2,
+  prompt = "",
+  answer = 0,
+  tolerance = 0,
+  domain = "rekenen",
+  explanation = "",
+  hint = "",
+  points = 0,
+  phase = "practice",
+}) {
+  const safeLevel = normalizeMathLevel(level)
+  const safeDifficulty = clampMathDifficulty(difficulty)
+  const safeAnswer = Number(answer)
+  return {
+    id: generateEntityId("math"),
+    level: safeLevel,
+    difficulty: safeDifficulty,
+    prompt: String(prompt).trim(),
+    answer: Number.isFinite(safeAnswer) ? safeAnswer : 0,
+    tolerance: Math.max(0, Number(tolerance) || 0),
+    domain: String(domain).trim() || "rekenen",
+    explanation: String(explanation).trim(),
+    hint: String(hint).trim(),
+    points: Math.max(5, Number(points) || 5),
+    phase,
+  }
+}
+
+function generate0FMathTask(difficulty, phase = "practice") {
+  const safeDifficulty = clampMathDifficulty(difficulty)
+  const templates = [
+    () => {
+      const a = randomInt(1, 10 + safeDifficulty * 4)
+      const b = randomInt(1, 10 + safeDifficulty * 3)
+      return createMathTask({
+        level: "0f",
+        difficulty: safeDifficulty,
+        phase,
+        domain: "optellen",
+        prompt: `Hoeveel is ${a} + ${b}?`,
+        answer: a + b,
+        explanation: `${a} + ${b} = ${a + b}.`,
+        hint: "Tel rustig vanaf het grootste getal verder.",
+        points: 8 + safeDifficulty * 2,
+      })
+    },
+    () => {
+      const total = randomInt(12 + safeDifficulty * 4, 30 + safeDifficulty * 10)
+      const taken = randomInt(2, Math.max(3, total - 4))
+      return createMathTask({
+        level: "0f",
+        difficulty: safeDifficulty,
+        phase,
+        domain: "aftrekken",
+        prompt: `Je hebt ${total} stickers en je geeft er ${taken} weg. Hoeveel houd je over?`,
+        answer: total - taken,
+        explanation: `${total} - ${taken} = ${total - taken}.`,
+        hint: "Haal het kleinere getal van het grotere af.",
+        points: 8 + safeDifficulty * 2,
+      })
+    },
+    () => {
+      const number = randomInt(10, 80 + safeDifficulty * 20)
+      return createMathTask({
+        level: "0f",
+        difficulty: safeDifficulty,
+        phase,
+        domain: "telrij",
+        prompt: `Welk getal komt direct na ${number}?`,
+        answer: number + 1,
+        explanation: `Na ${number} komt ${number + 1}.`,
+        hint: "Tel er 1 bij op.",
+        points: 7 + safeDifficulty * 2,
+      })
+    },
+  ]
+  return pickOne(templates)()
+}
+
+function generate1FMathTask(difficulty, phase = "practice") {
+  const safeDifficulty = clampMathDifficulty(difficulty)
+  const templates = [
+    () => {
+      const a = randomInt(2, 10 + safeDifficulty)
+      const b = randomInt(2, 10 + safeDifficulty)
+      return createMathTask({
+        level: "1f",
+        difficulty: safeDifficulty,
+        phase,
+        domain: "tafels",
+        prompt: `Hoeveel is ${a} x ${b}?`,
+        answer: a * b,
+        explanation: `${a} keer ${b} is ${a * b}.`,
+        hint: "Gebruik de tafels of splitst het in makkelijke stukjes.",
+        points: 12 + safeDifficulty * 3,
+      })
+    },
+    () => {
+      const divisor = randomInt(2, 10)
+      const answer = randomInt(3, 10 + safeDifficulty)
+      const dividend = divisor * answer
+      return createMathTask({
+        level: "1f",
+        difficulty: safeDifficulty,
+        phase,
+        domain: "delen",
+        prompt: `Hoeveel is ${dividend} : ${divisor}?`,
+        answer,
+        explanation: `${dividend} gedeeld door ${divisor} is ${answer}.`,
+        hint: "Denk aan de bijbehorende tafel.",
+        points: 12 + safeDifficulty * 3,
+      })
+    },
+    () => {
+      const percent = pickOne([10, 25, 50])
+      const base = pickOne([40, 60, 80, 100, 120, 200])
+      return createMathTask({
+        level: "1f",
+        difficulty: safeDifficulty,
+        phase,
+        domain: "procenten",
+        prompt: `Hoeveel is ${percent}% van ${base}?`,
+        answer: roundTo((percent / 100) * base, 2),
+        tolerance: 0.01,
+        explanation: `${percent}% van ${base} is ${(percent / 100) * base}.`,
+        hint: "Zet het percentage om naar een breuk of decimaal getal.",
+        points: 12 + safeDifficulty * 3,
+      })
+    },
+  ]
+  return pickOne(templates)()
+}
+
+function generate2FMathTask(difficulty, phase = "practice") {
+  const safeDifficulty = clampMathDifficulty(difficulty)
+  const templates = [
+    () => {
+      const base = pickOne([40, 60, 80, 120, 160, 240, 320])
+      const discount = pickOne([10, 15, 20, 25, 30])
+      const answer = roundTo(base * (1 - discount / 100), 2)
+      return createMathTask({
+        level: "2f",
+        difficulty: safeDifficulty,
+        phase,
+        domain: "korting",
+        prompt: `Een jas kost ${base} euro. Er gaat ${discount}% korting af. Wat betaal je?`,
+        answer,
+        tolerance: 0.01,
+        explanation: `${discount}% korting betekent dat je ${answer} euro betaalt.`,
+        hint: "Bereken eerst de korting of reken direct met het deel dat overblijft.",
+        points: 18 + safeDifficulty * 4,
+      })
+    },
+    () => {
+      const packs = randomInt(3, 7 + safeDifficulty)
+      const items = packs * pickOne([3, 4, 5, 6])
+      const wantedPacks = packs + randomInt(2, 5)
+      const answer = (items / packs) * wantedPacks
+      return createMathTask({
+        level: "2f",
+        difficulty: safeDifficulty,
+        phase,
+        domain: "verhouding",
+        prompt: `Bij ${packs} pakken horen ${items} flessen water. Hoeveel flessen horen bij ${wantedPacks} pakken?`,
+        answer,
+        explanation: `Per pak horen ${items / packs} flessen. Dus bij ${wantedPacks} pakken horen ${answer} flessen.`,
+        hint: "Zoek eerst hoeveel er bij 1 pak hoort.",
+        points: 18 + safeDifficulty * 4,
+      })
+    },
+    () => {
+      const kilometers = pickOne([1.5, 2.25, 3.5, 4.75, 6.2])
+      const answer = roundTo(kilometers * 1000, 2)
+      return createMathTask({
+        level: "2f",
+        difficulty: safeDifficulty,
+        phase,
+        domain: "omrekenen",
+        prompt: `Hoeveel meter is ${String(kilometers).replace(".", ",")} kilometer?`,
+        answer,
+        tolerance: 0.01,
+        explanation: `1 kilometer is 1000 meter. Dus ${kilometers} km is ${answer} meter.`,
+        hint: "Vermenigvuldig kilometers met 1000.",
+        points: 17 + safeDifficulty * 4,
+      })
+    },
+  ]
+  return pickOne(templates)()
+}
+
+function generate3FMathTask(difficulty, phase = "practice") {
+  const safeDifficulty = clampMathDifficulty(difficulty)
+  const templates = [
+    () => {
+      const original = pickOne([80, 120, 150, 200, 240])
+      const discount = pickOne([10, 20, 25, 30])
+      const paid = roundTo(original * (1 - discount / 100), 2)
+      return createMathTask({
+        level: "3f",
+        difficulty: safeDifficulty,
+        phase,
+        domain: "terugrekenen procenten",
+        prompt: `Na ${discount}% korting betaal je ${formatMathAnswer(paid)} euro. Wat was de oude prijs?`,
+        answer: original,
+        tolerance: 0.01,
+        explanation: `Je betaalde ${100 - discount}% van de oude prijs. De oude prijs was ${original} euro.`,
+        hint: "Bedenk welk percentage overblijft na de korting.",
+        points: 24 + safeDifficulty * 5,
+      })
+    },
+    () => {
+      const speed = pickOne([18, 24, 30, 45, 60])
+      const hours = pickOne([1.5, 2, 2.5, 3, 3.5])
+      const answer = roundTo(speed * hours, 2)
+      return createMathTask({
+        level: "3f",
+        difficulty: safeDifficulty,
+        phase,
+        domain: "snelheid",
+        prompt: `Je fietst ${speed} km per uur en rijdt ${formatMathAnswer(hours)} uur. Hoeveel kilometer leg je af?`,
+        answer,
+        tolerance: 0.01,
+        explanation: `Afstand = snelheid x tijd. Dus ${speed} x ${hours} = ${answer}.`,
+        hint: "Gebruik de formule afstand = snelheid x tijd.",
+        points: 24 + safeDifficulty * 5,
+      })
+    },
+    () => {
+      const x = randomInt(4, 14)
+      const multiplier = pickOne([2, 3, 4, 5])
+      const add = randomInt(3, 12)
+      const total = multiplier * x + add
+      return createMathTask({
+        level: "3f",
+        difficulty: safeDifficulty,
+        phase,
+        domain: "vergelijking",
+        prompt: `Los op: ${multiplier}x + ${add} = ${total}. Wat is x?`,
+        answer: x,
+        explanation: `Haal eerst ${add} eraf en deel daarna door ${multiplier}. Dan krijg je x = ${x}.`,
+        hint: "Werk in twee stappen terug.",
+        points: 23 + safeDifficulty * 5,
+      })
+    },
+  ]
+  return pickOne(templates)()
+}
+
+function generate4FMathTask(difficulty, phase = "practice") {
+  const safeDifficulty = clampMathDifficulty(difficulty)
+  const templates = [
+    () => {
+      const principal = pickOne([500, 750, 1000, 1200, 1500])
+      const rate = pickOne([2, 3, 4, 5])
+      const years = pickOne([2, 3, 4])
+      const answer = roundTo(principal * (1 + rate / 100) ** years, 2)
+      return createMathTask({
+        level: "4f",
+        difficulty: safeDifficulty,
+        phase,
+        domain: "samengestelde rente",
+        prompt: `Je zet ${principal} euro op de bank tegen ${rate}% rente per jaar. Hoeveel staat er na ${years} jaar op de rekening?`,
+        answer,
+        tolerance: 0.05,
+        explanation: `Je rekent elk jaar verder met het nieuwe bedrag. Na ${years} jaar is dat ${formatMathAnswer(answer)} euro.`,
+        hint: "Gebruik bedrag x (1 + rente)^aantal jaren.",
+        points: 30 + safeDifficulty * 6,
+      })
+    },
+    () => {
+      const x = pickOne([4, 5, 6, 7, 8, 9])
+      const offset = pickOne([2, 3, 4, 5])
+      const total = 2 * (x - offset) + 5
+      return createMathTask({
+        level: "4f",
+        difficulty: safeDifficulty,
+        phase,
+        domain: "haakjesvergelijking",
+        prompt: `Los op: 2(x - ${offset}) + 5 = ${total}. Wat is x?`,
+        answer: x,
+        explanation: `Werk eerst de +5 weg, daarna deel je door 2 en tel je ${offset} erbij op. Dan krijg je x = ${x}.`,
+        hint: "Werk stap voor stap terug.",
+        points: 29 + safeDifficulty * 6,
+      })
+    },
+    () => {
+      const width = pickOne([3.2, 4.5, 6.8, 7.5, 8.4])
+      const height = pickOne([2.5, 3.6, 4.2, 5.5])
+      const answer = roundTo(width * height, 2)
+      return createMathTask({
+        level: "4f",
+        difficulty: safeDifficulty,
+        phase,
+        domain: "oppervlakte",
+        prompt: `Een rechthoek is ${formatMathAnswer(width)} m breed en ${formatMathAnswer(height)} m lang. Wat is de oppervlakte in m2?`,
+        answer,
+        tolerance: 0.01,
+        explanation: `Oppervlakte = lengte x breedte. Dus ${formatMathAnswer(width)} x ${formatMathAnswer(height)} = ${formatMathAnswer(answer)}.`,
+        hint: "Gebruik de formule oppervlakte = lengte x breedte.",
+        points: 28 + safeDifficulty * 6,
+      })
+    },
+  ]
+  return pickOne(templates)()
+}
+
+function generateMathTaskForLevel(level, difficulty = 2, phase = "practice") {
+  const safeLevel = normalizeMathLevel(level)
+  if (safeLevel === "0f") return generate0FMathTask(difficulty, phase)
+  if (safeLevel === "1f") return generate1FMathTask(difficulty, phase)
+  if (safeLevel === "2f") return generate2FMathTask(difficulty, phase)
+  if (safeLevel === "3f") return generate3FMathTask(difficulty, phase)
+  return generate4FMathTask(difficulty, phase)
+}
+
+function buildMathIntakePlan(selectedBand) {
+  const safeBand = normalizeMathLevel(selectedBand)
+  const bandIndex = mathLevelIndex(safeBand)
+  const previousLevel = MATH_LEVELS[Math.max(0, bandIndex - 1)]
+  const nextLevel = MATH_LEVELS[Math.min(MATH_LEVELS.length - 1, bandIndex + 1)]
+  const plan =
+    bandIndex === 0
+      ? ["0f", "0f", "0f", "1f", "1f", "1f"]
+      : bandIndex === MATH_LEVELS.length - 1
+        ? [previousLevel, previousLevel, safeBand, safeBand, safeBand, safeBand]
+        : [previousLevel, previousLevel, safeBand, safeBand, nextLevel, nextLevel]
+
+  return plan.slice(0, MATH_INTAKE_QUESTION_COUNT).map((level, index) =>
+    generateMathTaskForLevel(level, index < 2 ? 1 : index < 4 ? 2 : 3, "intake")
+  )
+}
+
+function buildMathSession(selectedBand = MATH_LEVELS[1]) {
+  const safeBand = normalizeMathLevel(selectedBand)
+  const now = new Date().toISOString()
+  return {
+    title: `Rekenroute ${formatMathLevel(safeBand)}`,
+    selectedBand: safeBand,
+    intakeQuestions: buildMathIntakePlan(safeBand),
+    playerProgress: new Map(),
+    startedAt: now,
+    updatedAt: now,
+  }
+}
+
+function cloneMathTask(task) {
+  if (!task || typeof task !== "object") return null
+  return {
+    ...task,
+    prompt: String(task.prompt ?? "").trim(),
+    explanation: String(task.explanation ?? "").trim(),
+    hint: String(task.hint ?? "").trim(),
+    level: normalizeMathLevel(task.level),
+    difficulty: clampMathDifficulty(task.difficulty),
+    answer: Number(task.answer) || 0,
+    tolerance: Math.max(0, Number(task.tolerance) || 0),
+    points: Math.max(5, Number(task.points) || 5),
+    phase: String(task.phase ?? "practice"),
+  }
+}
+
+function createMathProgress(mathState, playerId) {
+  const firstTask = mathState?.intakeQuestions?.[0] ? cloneMathTask(mathState.intakeQuestions[0]) : null
+  return {
+    playerId,
+    phase: firstTask ? "intake" : "practice",
+    intakeIndex: 0,
+    intakeAnswers: [],
+    placementLevel: "",
+    targetLevel: "",
+    practiceDifficulty: 2,
+    streak: 0,
+    practiceQuestionCount: 0,
+    practiceCorrectCount: 0,
+    currentTask: firstTask,
+    awaitingNext: false,
+    lastResult: null,
+    lastAnsweredAt: null,
+    updatedAt: new Date().toISOString(),
+  }
+}
+
+function ensureMathProgress(room, playerId) {
+  if (!room?.math?.selectedBand) return null
+  const existing = room.math.playerProgress.get(playerId)
+  if (existing) return existing
+  const created = createMathProgress(room.math, playerId)
+  room.math.playerProgress.set(playerId, created)
+  room.math.updatedAt = new Date().toISOString()
+  return created
+}
+
+function determineMathPlacement(mathState, progress) {
+  const attemptedLevels = new Map()
+  for (const answer of progress?.intakeAnswers || []) {
+    const level = normalizeMathLevel(answer.level)
+    const bucket = attemptedLevels.get(level) || { total: 0, correct: 0 }
+    bucket.total += 1
+    if (answer.correct) bucket.correct += 1
+    attemptedLevels.set(level, bucket)
+  }
+
+  const attemptedOrder = [...attemptedLevels.keys()].sort((left, right) => mathLevelIndex(left) - mathLevelIndex(right))
+  const fallbackLevel = attemptedOrder[0] || normalizeMathLevel(mathState?.selectedBand || MATH_LEVELS[1])
+  let placement = fallbackLevel
+
+  for (const level of attemptedOrder) {
+    const bucket = attemptedLevels.get(level)
+    if (!bucket?.total) continue
+    if (bucket.correct / bucket.total >= 0.6) {
+      placement = level
+    }
+  }
+
+  return placement
+}
+
+function generateAdaptivePracticeTask(progress) {
+  const targetLevel = normalizeMathLevel(progress?.targetLevel || progress?.placementLevel || MATH_LEVELS[1])
+  const difficulty = clampMathDifficulty(progress?.practiceDifficulty || 2)
+  return cloneMathTask(generateMathTaskForLevel(targetLevel, difficulty, "practice"))
+}
+
+function evaluateMathTask(task, rawAnswer) {
+  const candidate = parseMathAnswer(rawAnswer)
+  const expected = Number(task?.answer)
+  const tolerance = Math.max(0, Number(task?.tolerance) || 0)
+  const correct = candidate !== null && Math.abs(candidate - expected) <= tolerance
+
+  return {
+    candidate,
+    correct,
+    expected,
+  }
+}
+
+function updateMathDifficulty(progress, correct) {
+  const currentDifficulty = clampMathDifficulty(progress.practiceDifficulty || 2)
+  const currentStreak = Number(progress.streak) || 0
+  const nextStreak = correct ? Math.max(1, currentStreak + 1) : Math.min(-1, currentStreak - 1)
+
+  let nextDifficulty = currentDifficulty
+  if (nextStreak >= 2) {
+    nextDifficulty = clampMathDifficulty(currentDifficulty + 1)
+  } else if (nextStreak <= -2) {
+    nextDifficulty = clampMathDifficulty(currentDifficulty - 1)
+  }
+
+  progress.practiceDifficulty = nextDifficulty
+  progress.streak = Math.abs(nextStreak) >= 2 ? (correct ? 0 : 0) : nextStreak
+}
+
+function sanitizeMathTask(task, viewer = "player") {
+  if (!task) return null
+  const clonedTask = cloneMathTask(task)
+  const payload = {
+    id: clonedTask.id,
+    prompt: clonedTask.prompt,
+    domain: clonedTask.domain,
+    level: formatMathLevel(clonedTask.level),
+    difficulty: clonedTask.difficulty,
+    hint: clonedTask.hint,
+    phase: clonedTask.phase,
+  }
+
+  if (viewer === "host") {
+    return {
+      ...payload,
+      answer: clonedTask.answer,
+      explanation: clonedTask.explanation,
+      points: clonedTask.points,
+    }
+  }
+
+  return payload
+}
+
+function sanitizeMathState(room, viewer = "host", playerId = "") {
+  if (!room?.math?.selectedBand) return null
+
+  if (viewer === "player") {
+    const progress = playerId ? ensureMathProgress(room, playerId) : null
+    return {
+      title: room.math.title,
+      selectedBand: formatMathLevel(room.math.selectedBand),
+      learnerCode: playerId || "",
+      phase: progress?.phase || "intake",
+      intakeIndex: Number(progress?.intakeIndex) || 0,
+      intakeTotal: room.math.intakeQuestions.length,
+      placementLevel: progress?.placementLevel ? formatMathLevel(progress.placementLevel) : "",
+      targetLevel: progress?.targetLevel ? formatMathLevel(progress.targetLevel) : "",
+      practiceDifficulty: clampMathDifficulty(progress?.practiceDifficulty || 2),
+      streak: Number(progress?.streak) || 0,
+      practiceQuestionCount: Number(progress?.practiceQuestionCount) || 0,
+      practiceCorrectCount: Number(progress?.practiceCorrectCount) || 0,
+      currentTask: sanitizeMathTask(progress?.currentTask, "player"),
+      awaitingNext: Boolean(progress?.awaitingNext),
+      lastResult: progress?.lastResult
+        ? {
+            ...progress.lastResult,
+            placementLevel: progress.lastResult.placementLevel
+              ? formatMathLevel(progress.lastResult.placementLevel)
+              : "",
+            targetLevel: progress.lastResult.targetLevel ? formatMathLevel(progress.lastResult.targetLevel) : "",
+          }
+        : null,
+      updatedAt: progress?.updatedAt || null,
+    }
+  }
+
+  const playerRows = room.players.map((player) => {
+    const progress = room.math.playerProgress.get(player.id) || null
+    return {
+      playerId: player.id,
+      learnerCode: player.learnerCode || "",
+      name: player.name,
+      connected: player.connected !== false,
+      placementLevel: progress?.placementLevel ? formatMathLevel(progress.placementLevel) : "",
+      targetLevel: progress?.targetLevel ? formatMathLevel(progress.targetLevel) : "",
+      phase: progress?.phase || "intake",
+      practiceDifficulty: clampMathDifficulty(progress?.practiceDifficulty || 2),
+      practiceQuestionCount: Number(progress?.practiceQuestionCount) || 0,
+      practiceCorrectCount: Number(progress?.practiceCorrectCount) || 0,
+      awaitingNext: Boolean(progress?.awaitingNext),
+      currentTask: sanitizeMathTask(progress?.currentTask, "host"),
+      lastAnsweredAt: progress?.lastAnsweredAt || null,
+    }
+  })
+
+  return {
+    title: room.math.title,
+    selectedBand: formatMathLevel(room.math.selectedBand),
+    intakeTotal: room.math.intakeQuestions.length,
+    playerCount: playerRows.length,
+    intakeCount: playerRows.filter((player) => player.phase === "intake").length,
+    practiceCount: playerRows.filter((player) => player.phase === "practice").length,
+    players: playerRows,
+  }
+}
+
+function serializeMathState(mathState) {
+  if (!mathState?.selectedBand) {
+    return {
+      title: "",
+      selectedBand: "",
+      intakeQuestions: [],
+      playerProgress: [],
+      startedAt: null,
+      updatedAt: null,
+    }
+  }
+  return {
+    title: mathState.title,
+    selectedBand: normalizeMathLevel(mathState.selectedBand),
+    intakeQuestions: (mathState.intakeQuestions || []).map(cloneMathTask).filter(Boolean),
+    playerProgress: [...(mathState.playerProgress || new Map()).entries()].map(([playerId, progress]) => [
+      String(playerId),
+      {
+        ...progress,
+        currentTask: cloneMathTask(progress?.currentTask),
+      },
+    ]),
+    startedAt: mathState.startedAt || null,
+    updatedAt: mathState.updatedAt || null,
+  }
+}
+
+function deserializeMathState(rawMathState) {
+  if (!rawMathState || !rawMathState.selectedBand) return createEmptyMathState()
+  return {
+    title: String(rawMathState.title ?? `Rekenroute ${formatMathLevel(rawMathState.selectedBand)}`),
+    selectedBand: normalizeMathLevel(rawMathState.selectedBand),
+    intakeQuestions: Array.isArray(rawMathState.intakeQuestions)
+      ? rawMathState.intakeQuestions.map(cloneMathTask).filter(Boolean)
+      : [],
+    playerProgress: new Map(
+      Array.isArray(rawMathState.playerProgress)
+        ? rawMathState.playerProgress.map(([playerId, progress]) => [
+            String(playerId),
+            {
+              playerId: String(playerId),
+              phase: String(progress?.phase ?? "intake"),
+              intakeIndex: Number(progress?.intakeIndex) || 0,
+              intakeAnswers: Array.isArray(progress?.intakeAnswers)
+                ? progress.intakeAnswers.map((entry) => ({
+                    questionId: String(entry?.questionId ?? ""),
+                    level: normalizeMathLevel(entry?.level),
+                    correct: Boolean(entry?.correct),
+                  }))
+                : [],
+              placementLevel: progress?.placementLevel ? normalizeMathLevel(progress.placementLevel) : "",
+              targetLevel: progress?.targetLevel ? normalizeMathLevel(progress.targetLevel) : "",
+              practiceDifficulty: clampMathDifficulty(progress?.practiceDifficulty || 2),
+              streak: Number(progress?.streak) || 0,
+              practiceQuestionCount: Number(progress?.practiceQuestionCount) || 0,
+              practiceCorrectCount: Number(progress?.practiceCorrectCount) || 0,
+              currentTask: cloneMathTask(progress?.currentTask),
+              awaitingNext: Boolean(progress?.awaitingNext),
+              lastResult: progress?.lastResult
+                ? {
+                    ...progress.lastResult,
+                    placementLevel: progress.lastResult.placementLevel
+                      ? normalizeMathLevel(progress.lastResult.placementLevel)
+                      : "",
+                    targetLevel: progress.lastResult.targetLevel
+                      ? normalizeMathLevel(progress.lastResult.targetLevel)
+                      : "",
+                  }
+                : null,
+              lastAnsweredAt: progress?.lastAnsweredAt || null,
+              updatedAt: progress?.updatedAt || null,
+            },
+          ])
+        : []
+    ),
+    startedAt: rawMathState.startedAt || null,
+    updatedAt: rawMathState.updatedAt || null,
   }
 }
 
@@ -839,6 +1536,7 @@ function createRoom(hostSocketId) {
     playerAnswers: new Map(),
     lessonResponses: new Map(),
     lesson: createEmptyLessonState(),
+    math: createEmptyMathState(),
     closingTimeout: null,
     game: createIdleGameState(),
   }
@@ -1412,13 +2110,21 @@ function reassignPlayersToExistingTeams(room) {
   }))
 }
 
-function buildStatePayload(room, viewer = "host") {
+function buildStatePayload(room, viewer = "host", playerId = "") {
   syncTeamScores(room)
   const race = getTeamRaceSnapshot(room)
   const lessonPhase = currentLessonPhase(room)
   const onlinePlayers = getOnlinePlayers(room)
+  const mathState = sanitizeMathState(room, viewer, playerId)
   const answeredCount =
-    room.game.mode === "lesson" && lessonPhase ? room.lessonResponses.size : room.answeredPlayers.size
+    room.game.mode === "math"
+      ? room.players.filter((player) => {
+          const progress = room.math?.playerProgress?.get(player.id)
+          return Boolean(progress?.lastAnsweredAt)
+        }).length
+      : room.game.mode === "lesson" && lessonPhase
+        ? room.lessonResponses.size
+        : room.answeredPlayers.size
   const totalPlayers = onlinePlayers.length
   const activeQuestion = currentQuestion(room)
   const questionDurationSec =
@@ -1449,6 +2155,7 @@ function buildStatePayload(room, viewer = "host") {
       allAnswered: totalPlayers > 0 && answeredCount >= totalPlayers,
       question: sanitizeQuestion(activeQuestion, viewer, room),
       lesson: sanitizeLesson(room.lesson, viewer),
+      math: mathState,
     },
   }
 }
@@ -1885,6 +2592,7 @@ function buildSessionHistoryEntryFromRoom(room, type = "lesson") {
 function sanitizePersistedPlayer(rawPlayer) {
   return createPlayerRecord({
     id: rawPlayer?.id,
+    learnerCode: rawPlayer?.learnerCode,
     name: rawPlayer?.name,
     teamId: rawPlayer?.teamId,
     score: rawPlayer?.score,
@@ -1900,6 +2608,7 @@ function serializeRoomSnapshot(room) {
     updatedAt: room.updatedAt || new Date().toISOString(),
     players: room.players.map((player) => ({
       id: player.id,
+      learnerCode: player.learnerCode,
       name: player.name,
       teamId: player.teamId,
       score: player.score,
@@ -1912,6 +2621,7 @@ function serializeRoomSnapshot(room) {
     playerAnswers: [...room.playerAnswers.entries()],
     lessonResponses: [...room.lessonResponses.entries()],
     lesson: cloneLessonForRoom(room.lesson, room.lesson?.libraryId || null),
+    math: serializeMathState(room.math),
     game: {
       ...room.game,
       questionStartedAt: room.game.questionStartedAt,
@@ -1974,6 +2684,7 @@ function deserializeRoomSnapshot(snapshot) {
         : []
     ),
     lesson: cloneLessonForRoom(snapshot.lesson || createEmptyLessonState(), snapshot.lesson?.libraryId || null),
+    math: deserializeMathState(snapshot.math),
     closingTimeout: null,
     game: {
       ...createIdleGameState(),
@@ -2040,6 +2751,34 @@ function buildHostInsights(room) {
       teamName: room.teams.find((team) => team.id === player.teamId)?.name || "",
       connected: player.connected !== false,
     }))
+
+  if (room.game.mode === "math") {
+    return {
+      mode: "math",
+      selectedBand: formatMathLevel(room.math?.selectedBand || MATH_LEVELS[1]),
+      intakeTotal: room.math?.intakeQuestions?.length || 0,
+      players: room.players.map((player) => {
+        const progress = room.math?.playerProgress?.get(player.id) || ensureMathProgress(room, player.id)
+        return {
+          playerId: player.id,
+          learnerCode: player.learnerCode || "",
+          name: player.name,
+          teamId: player.teamId,
+          teamName: room.teams.find((team) => team.id === player.teamId)?.name || "",
+          connected: player.connected !== false,
+          phase: progress?.phase || "intake",
+          placementLevel: progress?.placementLevel ? formatMathLevel(progress.placementLevel) : "",
+          targetLevel: progress?.targetLevel ? formatMathLevel(progress.targetLevel) : "",
+          practiceDifficulty: clampMathDifficulty(progress?.practiceDifficulty || 2),
+          practiceQuestionCount: Number(progress?.practiceQuestionCount) || 0,
+          practiceCorrectCount: Number(progress?.practiceCorrectCount) || 0,
+          awaitingNext: Boolean(progress?.awaitingNext),
+          currentTaskPrompt: progress?.currentTask?.prompt || "",
+          lastAnsweredAt: progress?.lastAnsweredAt || null,
+        }
+      }),
+    }
+  }
 
   if (room.game.mode === "lesson") {
     const phase = currentLessonPhase(room)
@@ -2169,7 +2908,6 @@ function emitLessonPromptUpdate(room) {
 function emitStateToRoom(room) {
   markRoomUpdated(room)
   const hostPayload = buildStatePayload(room, "host")
-  const playerPayload = buildStatePayload(room, "player")
 
   if (room.hostSocketId) {
     io.to(room.hostSocketId).emit("players:update", hostPayload.players)
@@ -2179,6 +2917,7 @@ function emitStateToRoom(room) {
   }
 
   for (const player of getOnlinePlayers(room)) {
+    const playerPayload = buildStatePayload(room, "player", player.id)
     io.to(player.socketId).emit("players:update", playerPayload.players)
     io.to(player.socketId).emit("teams:update", playerPayload.teams)
     io.to(player.socketId).emit("leaderboard:update", playerPayload.leaderboard)
@@ -2190,7 +2929,11 @@ function emitStateToRoom(room) {
 
 function emitStateToSocket(socket, room) {
   const payload = room
-    ? buildStatePayload(room, hostSocketIds.has(socket.id) ? "host" : "player")
+    ? buildStatePayload(
+        room,
+        hostSocketIds.has(socket.id) ? "host" : "player",
+        hostSocketIds.has(socket.id) ? "" : getPlayerBySocketId(room, socket.id)?.id || ""
+      )
     : {
         players: [],
         teams: createTeams(),
@@ -2216,6 +2959,7 @@ function emitStateToSocket(socket, room) {
           roomCodeActive: false,
           question: null,
           lesson: null,
+          math: null,
         },
       }
   socket.emit("state:init", payload)
@@ -2266,6 +3010,7 @@ function scheduleRoomClosure(room) {
   clearRoomClosingTimeout(room)
   room.hostOnline = false
   room.hostSocketId = null
+  const graceMs = room?.game?.mode === "math" ? MATH_ROOM_GRACE_MS : ROOM_HOST_GRACE_MS
   room.closingTimeout = setTimeout(() => {
     for (const player of room.players) {
       if (player.socketId) {
@@ -2275,7 +3020,7 @@ function scheduleRoomClosure(room) {
     }
     rooms.delete(room.code)
     schedulePersistActiveRooms()
-  }, ROOM_HOST_GRACE_MS)
+  }, graceMs)
   schedulePersistActiveRooms()
 }
 
@@ -4146,6 +4891,7 @@ io.on("connection", (socket) => {
     room.playerAnswers = new Map()
     room.lessonResponses = new Map()
     room.lesson = createEmptyLessonState()
+    room.math = createEmptyMathState()
     room.questions = []
     room.currentQuestionIndex = -1
     room.game = createIdleGameState()
@@ -4192,6 +4938,7 @@ io.on("connection", (socket) => {
       room.playerAnswers = new Map()
       room.lessonResponses = new Map()
       room.lesson = createEmptyLessonState()
+      room.math = createEmptyMathState()
       room.game = {
         ...createIdleGameState(),
         topic: String(topic ?? "").trim(),
@@ -4207,6 +4954,7 @@ io.on("connection", (socket) => {
     room.playerAnswers = new Map()
     room.lessonResponses = new Map()
     room.lesson = createEmptyLessonState()
+    room.math = createEmptyMathState()
     room.game = {
       ...createIdleGameState(),
       topic: String(topic ?? "").trim(),
@@ -4229,6 +4977,47 @@ io.on("connection", (socket) => {
       count: room.questions.length,
       provider: generationResult?.provider || null,
       providerLabel: generationResult?.providerLabel || null,
+    })
+  })
+
+  socket.on("host:start-math", ({ band }) => {
+    const room = requireHostRoom(socket)
+    if (!room) return
+
+    const selectedBand = normalizeMathLevel(band)
+    room.questions = []
+    room.currentQuestionIndex = -1
+    room.answeredPlayers = new Set()
+    room.playerAnswers = new Map()
+    room.lessonResponses = new Map()
+    room.lesson = createEmptyLessonState()
+    room.math = buildMathSession(selectedBand)
+    room.players = room.players.map((player) => ({ ...player, score: 0 }))
+    room.teams = createTeams(["Rekenroute"])
+    reassignPlayersToExistingTeams(room)
+
+    for (const player of room.players) {
+      ensureMathProgress(room, player.id)
+    }
+
+    room.game = {
+      ...createIdleGameState(),
+      topic: `Rekenen ${formatMathLevel(selectedBand)}`,
+      audience: "vmbo",
+      status: "live",
+      source: "math",
+      providerLabel: "Adaptieve rekenroute",
+      generatedAt: new Date().toISOString(),
+      mode: "math",
+      questionCount: 0,
+      questionDurationSec: 0,
+    }
+
+    emitStateToRoom(room)
+    socket.emit("host:generate:success", {
+      count: room.math.intakeQuestions.length,
+      provider: "math",
+      providerLabel: "Adaptieve rekenroute",
     })
   })
 
@@ -4288,6 +5077,7 @@ io.on("connection", (socket) => {
       room.playerAnswers = new Map()
       room.lessonResponses = new Map()
       room.lesson = createEmptyLessonState()
+      room.math = createEmptyMathState()
       room.game = {
         ...createIdleGameState(),
         mode: "lesson",
@@ -4337,6 +5127,7 @@ io.on("connection", (socket) => {
     room.answeredPlayers = new Set()
     room.playerAnswers = new Map()
     room.lessonResponses = new Map()
+    room.math = createEmptyMathState()
     room.lesson = {
       ...withLessonPhaseContext(
         {
@@ -4397,6 +5188,7 @@ io.on("connection", (socket) => {
     room.answeredPlayers = new Set()
     room.playerAnswers = new Map()
     room.lessonResponses = new Map()
+    room.math = createEmptyMathState()
     room.game = {
       ...createIdleGameState(),
       topic: room.game.topic,
@@ -4472,6 +5264,7 @@ io.on("connection", (socket) => {
     room.answeredPlayers = new Set()
     room.playerAnswers = new Map()
     room.lessonResponses = new Map()
+    room.math = createEmptyMathState()
     room.lesson = {
       ...withLessonPhaseContext(cloneLessonForRoom(entry.lesson, entry.id), 0),
     }
@@ -4656,6 +5449,7 @@ io.on("connection", (socket) => {
     room.answeredPlayers = new Set()
     room.playerAnswers = new Map()
     room.lessonResponses = new Map()
+    room.math = createEmptyMathState()
 
     if (entry.type === "lesson" && entry.lesson) {
       room.questions = []
@@ -4678,6 +5472,7 @@ io.on("connection", (socket) => {
     } else {
       room.questions = cloneQuestionsForStorage(entry.questions)
       room.lesson = createEmptyLessonState()
+      room.math = createEmptyMathState()
 
       if (entry.type === "practice") {
         room.currentQuestionIndex = room.questions.length ? 0 : -1
@@ -4879,6 +5674,7 @@ io.on("connection", (socket) => {
     room.playerAnswers = new Map()
     room.lessonResponses = new Map()
     room.lesson = createEmptyLessonState()
+    room.math = createEmptyMathState()
     room.game = createIdleGameState()
     emitStateToRoom(room)
   })
@@ -4894,6 +5690,7 @@ io.on("connection", (socket) => {
     room.answeredPlayers.delete(playerId)
     room.playerAnswers.delete(playerId)
     room.lessonResponses.delete(playerId)
+    room.math?.playerProgress?.delete(playerId)
     if (playerToRemove.socketId) socketToRoom.delete(playerToRemove.socketId)
 
     if (playerToRemove.socketId) {
@@ -4905,8 +5702,48 @@ io.on("connection", (socket) => {
     emitStateToRoom(room)
   })
 
+  socket.on("host:learner-code:update", ({ playerId, learnerCode }) => {
+    const room = requireHostRoom(socket)
+    if (!room) return
+
+    const player = room.players.find((entry) => entry.id === String(playerId ?? "").trim())
+    if (!player) {
+      socket.emit("host:error", { message: "Deze leerling staat niet meer in de room." })
+      return
+    }
+
+    const normalizedCode = String(learnerCode ?? "")
+      .trim()
+      .replace(/\s+/g, "-")
+      .replace(/[^a-z0-9_-]/gi, "")
+    if (normalizedCode.length < 4) {
+      socket.emit("host:error", { message: "Een leercode moet minimaal 4 tekens hebben." })
+      return
+    }
+    if (room.players.some((entry) => entry.id !== player.id && entry.learnerCode === normalizedCode)) {
+      socket.emit("host:error", { message: "Deze leercode is al in gebruik binnen deze room." })
+      return
+    }
+
+    player.learnerCode = normalizedCode
+    if (player.socketId) {
+      io.to(player.socketId).emit("player:profile:update", {
+        playerId: player.id,
+        playerSessionId: player.learnerCode,
+      })
+    }
+
+    emitStateToRoom(room)
+    socket.emit("host:learner-code:success", {
+      message: `Leercode van ${player.name} is bijgewerkt.`,
+    })
+  })
+
   socket.on("player:join", ({ name, teamId, roomCode, playerSessionId }) => {
-    const requestedPlayerId = String(playerSessionId ?? "").trim()
+    const requestedLearnerCode = String(playerSessionId ?? "")
+      .trim()
+      .replace(/\s+/g, "-")
+      .replace(/[^a-z0-9_-]/gi, "")
     const room = rooms.get(String(roomCode ?? "").trim().toUpperCase())
     if (!room) {
       socket.emit("player:error", { message: "De spelcode klopt niet." })
@@ -4915,7 +5752,6 @@ io.on("connection", (socket) => {
 
     const trimmedName = String(name ?? "").trim()
     const selectedTeamId = room.teams.some((team) => team.id === teamId) ? teamId : room.teams[0]?.id
-    const playerId = requestedPlayerId || generateEntityId("player")
     if (!trimmedName || !selectedTeamId) {
       socket.emit("player:error", { message: "Vul een naam in en kies een team." })
       return
@@ -4936,19 +5772,20 @@ io.on("connection", (socket) => {
 
     socketToRoom.set(socket.id, room.code)
     const existingPlayer =
-      room.players.find((player) => player.id === playerId) ??
+      room.players.find((player) => player.learnerCode === requestedLearnerCode) ??
+      room.players.find((player) => player.id === requestedLearnerCode) ??
       room.players.find((player) => player.socketId === socket.id) ??
       null
     if (existingPlayer) {
-      existingPlayer.id = playerId
       existingPlayer.socketId = socket.id
       existingPlayer.name = trimmedName
       existingPlayer.teamId = selectedTeamId
+      existingPlayer.learnerCode = requestedLearnerCode || existingPlayer.learnerCode || existingPlayer.id
       existingPlayer.connected = true
     } else {
       room.players.push(
         createPlayerRecord({
-          id: playerId,
+          learnerCode: requestedLearnerCode || generateEntityId("learner"),
           socketId: socket.id,
           name: trimmedName,
           teamId: selectedTeamId,
@@ -4958,17 +5795,20 @@ io.on("connection", (socket) => {
       )
     }
 
-    const joinedPlayer = room.players.find((player) => player.id === playerId)
+    const joinedPlayer =
+      room.players.find((player) => player.learnerCode === requestedLearnerCode) ??
+      room.players.find((player) => player.socketId === socket.id) ??
+      null
     socket.emit("player:joined", {
-      playerId: joinedPlayer?.id ?? playerId,
-      playerSessionId: joinedPlayer?.id ?? playerId,
+      playerId: joinedPlayer?.id ?? "",
+      playerSessionId: joinedPlayer?.learnerCode ?? requestedLearnerCode,
       teamId: selectedTeamId,
       roomCode: room.code,
     })
     emitStateToSocket(socket, room)
     emitStateToRoom(room)
 
-    const storedAnswer = room.playerAnswers.get(joinedPlayer?.id ?? playerId)
+    const storedAnswer = room.playerAnswers.get(joinedPlayer?.id ?? "")
     if (storedAnswer) {
       const activeQuestion = currentQuestion(room)
       if (room.game.source === "practice" && activeQuestion) {
@@ -4991,7 +5831,7 @@ io.on("connection", (socket) => {
       }
     }
 
-    const storedLessonResponse = room.lessonResponses.get(joinedPlayer?.id ?? playerId)
+    const storedLessonResponse = room.lessonResponses.get(joinedPlayer?.id ?? "")
     if (storedLessonResponse) {
       socket.emit("player:lesson-response:result", {
         isCorrect: storedLessonResponse.isCorrect,
@@ -5052,6 +5892,126 @@ io.on("connection", (socket) => {
         teamScore: room.teams.find((team) => team.id === player.teamId)?.score ?? 0,
       })
     }
+    emitStateToRoom(room)
+  })
+
+  socket.on("player:math:answer", ({ answer }) => {
+    const room = getRoomBySocketId(socket.id)
+    if (!room || room.game.mode !== "math") return
+
+    const player = getPlayerBySocketId(room, socket.id)
+    if (!player) return
+    const progress = ensureMathProgress(room, player.id)
+    if (!progress?.currentTask || progress.awaitingNext) {
+      socket.emit("player:error", { message: "Open eerst de volgende rekensom." })
+      return
+    }
+
+    const task = progress.currentTask
+    const evaluation = evaluateMathTask(task, answer)
+    const submittedAt = new Date().toISOString()
+    const expectedAnswer = formatMathAnswer(evaluation.expected)
+    const answeredValue =
+      evaluation.candidate === null ? String(answer ?? "").trim() : formatMathAnswer(evaluation.candidate)
+
+    progress.lastAnsweredAt = submittedAt
+    progress.updatedAt = submittedAt
+    room.math.updatedAt = submittedAt
+
+    if (progress.phase === "intake") {
+      progress.intakeAnswers.push({
+        questionId: task.id,
+        level: task.level,
+        correct: evaluation.correct,
+      })
+
+      const hasMoreIntakeQuestions = progress.intakeIndex + 1 < room.math.intakeQuestions.length
+      if (hasMoreIntakeQuestions) {
+        progress.intakeIndex += 1
+        progress.awaitingNext = true
+        progress.currentTask = null
+        progress.lastResult = {
+          phase: "intake",
+          correct: evaluation.correct,
+          expectedAnswer,
+          answeredValue,
+          explanation: task.explanation,
+          feedback: evaluation.correct
+            ? "Goed gedaan. Tik op 'Volgende vraag' voor de rest van de instaptoets."
+            : `Nog niet goed. Het juiste antwoord was ${expectedAnswer}. Tik op 'Volgende vraag' om verder te gaan.`,
+          pointsAwarded: 0,
+        }
+      } else {
+        const placementLevel = determineMathPlacement(room.math, progress)
+        const targetLevel = getNextMathLevel(placementLevel)
+        progress.phase = "practice"
+        progress.placementLevel = placementLevel
+        progress.targetLevel = targetLevel
+        progress.practiceDifficulty = Math.max(2, clampMathDifficulty(mathLevelIndex(targetLevel) + 1))
+        progress.awaitingNext = true
+        progress.currentTask = null
+        progress.lastResult = {
+          phase: "placement",
+          correct: evaluation.correct,
+          expectedAnswer,
+          answeredValue,
+          explanation: task.explanation,
+          placementLevel,
+          targetLevel,
+          feedback: `Instaptoets klaar. Jij zit nu op ${formatMathLevel(placementLevel)} en gaat oefenen op ${formatMathLevel(targetLevel)}.`,
+          pointsAwarded: 0,
+        }
+      }
+    } else {
+      progress.practiceQuestionCount += 1
+      if (evaluation.correct) {
+        progress.practiceCorrectCount += 1
+        player.score += Number(task.points) || 0
+      }
+      updateMathDifficulty(progress, evaluation.correct)
+      progress.awaitingNext = true
+      progress.currentTask = null
+      progress.lastResult = {
+        phase: "practice",
+        correct: evaluation.correct,
+        expectedAnswer,
+        answeredValue,
+        explanation: task.explanation,
+        placementLevel: progress.placementLevel,
+        targetLevel: progress.targetLevel,
+        feedback: evaluation.correct
+          ? `Goed! Je krijgt ${task.points} punten. De volgende som sluit aan op ${formatMathLevel(progress.targetLevel)}.`
+          : `Nog niet goed. Het juiste antwoord was ${expectedAnswer}. De volgende som past zich aan.`,
+        pointsAwarded: evaluation.correct ? Number(task.points) || 0 : 0,
+      }
+    }
+
+    syncTeamScores(room)
+    emitStateToRoom(room)
+  })
+
+  socket.on("player:math:next", () => {
+    const room = getRoomBySocketId(socket.id)
+    if (!room || room.game.mode !== "math") return
+
+    const player = getPlayerBySocketId(room, socket.id)
+    if (!player) return
+    const progress = ensureMathProgress(room, player.id)
+    if (!progress?.awaitingNext) return
+
+    if (progress.phase === "intake") {
+      progress.currentTask = cloneMathTask(room.math.intakeQuestions[progress.intakeIndex])
+    } else {
+      if (!progress.targetLevel) {
+        progress.targetLevel = getNextMathLevel(progress.placementLevel || room.math.selectedBand)
+      }
+      progress.currentTask = generateAdaptivePracticeTask(progress)
+    }
+
+    progress.awaitingNext = false
+    progress.lastResult = null
+    progress.updatedAt = new Date().toISOString()
+    room.math.updatedAt = progress.updatedAt
     emitStateToRoom(room)
   })
 

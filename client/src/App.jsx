@@ -8,6 +8,7 @@ const PLAYER_SESSION_KEY = "lessonbattle-player-session"
 const IMAGE_RENDER_VERSION = "20260316b"
 const MAX_MANUAL_UPLOAD_FILE_BYTES = 10 * 1024 * 1024
 const MAX_MANUAL_UPLOAD_DATA_BYTES = 4 * 1024 * 1024
+const MATH_LEVEL_OPTIONS = ["0f", "1f", "2f", "3f", "4f"]
 const DEFAULT_HOST_SESSION = {
   authenticated: false,
   username: "",
@@ -114,6 +115,15 @@ function buildAnswerStatusText(payload) {
   return "Niet correct. Kijk naar de uitleg en ga daarna verder."
 }
 
+function formatMathLevelLabel(level) {
+  return String(level || "").trim().toUpperCase()
+}
+
+function formatMathDifficultyLabel(difficulty) {
+  const safeDifficulty = Math.max(1, Math.min(5, Number(difficulty) || 1))
+  return ["instap", "basis", "stevig", "uitdagend", "topniveau"][safeDifficulty - 1]
+}
+
 function readFileAsDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
@@ -206,6 +216,7 @@ function useQuizState() {
     totalPhases: 0,
     question: null,
     lesson: null,
+    math: null,
   })
 
   useEffect(() => {
@@ -266,6 +277,7 @@ function HostPage() {
   const [questionDurationSec, setQuestionDurationSec] = useState(20)
   const [lessonModel, setLessonModel] = useState("edi")
   const [lessonPackage, setLessonPackage] = useState("lesson")
+  const [mathBand, setMathBand] = useState("1f")
   const [lessonDurationMinutes, setLessonDurationMinutes] = useState(45)
   const [presentationSlideCount, setPresentationSlideCount] = useState(6)
   const [practiceQuestionCount, setPracticeQuestionCount] = useState(8)
@@ -286,19 +298,39 @@ function HostPage() {
     role: "teacher",
   })
   const [teacherPasswordDrafts, setTeacherPasswordDrafts] = useState({})
+  const [learnerCodeDrafts, setLearnerCodeDrafts] = useState({})
   const [loginForm, setLoginForm] = useState(storedHostSession.loginForm)
   const [hostSession, setHostSession] = useState(storedHostSession.hostSession)
   const [manualSlideImageUrlDraft, setManualSlideImageUrlDraft] = useState("")
   const [manualSlideImageAltDraft, setManualSlideImageAltDraft] = useState("")
   const [manualSlideUploadName, setManualSlideUploadName] = useState("")
 
-  const activeMode = game.mode === "lesson" ? "lesson" : sessionMode === "battle" ? "battle" : "lesson"
+  const activeMode =
+    game.mode === "math"
+      ? "math"
+      : game.mode === "lesson"
+        ? "lesson"
+        : sessionMode === "math"
+          ? "math"
+          : sessionMode === "battle"
+            ? "battle"
+            : "lesson"
   const includePracticeTest = lessonPackage === "practice" || lessonPackage === "complete"
   const includePresentation = lessonPackage === "presentation" || lessonPackage === "complete"
   const selectedSuiteMode =
-    sessionMode === "battle" ? "battle" : includePresentation ? "presentation" : includePracticeTest ? "practice" : "lesson"
-  const buildActionLabel =
     sessionMode === "battle"
+      ? "battle"
+      : sessionMode === "math"
+        ? "math"
+        : includePresentation
+          ? "presentation"
+          : includePracticeTest
+            ? "practice"
+            : "lesson"
+  const buildActionLabel =
+    selectedSuiteMode === "math"
+      ? "Rekenroute starten"
+      : sessionMode === "battle"
       ? "Ronde klaarzetten"
       : selectedSuiteMode === "presentation"
         ? "Presentatie opbouwen"
@@ -317,6 +349,15 @@ function HostPage() {
     if (game.lessonModel) setLessonModel(game.lessonModel)
     if (game.lessonDurationMinutes) setLessonDurationMinutes(game.lessonDurationMinutes)
   }, [game.lessonDurationMinutes, game.lessonModel])
+
+  useEffect(() => {
+    if (game.mode === "math") {
+      setSessionMode("math")
+    }
+    if (game.math?.selectedBand) {
+      setMathBand(String(game.math.selectedBand).toLowerCase())
+    }
+  }, [game.math?.selectedBand, game.mode])
 
   useEffect(() => {
     if (game.mode !== "lesson") return
@@ -388,7 +429,9 @@ function HostPage() {
     }
     const onSuccess = ({ count, providerLabel }) =>
       setStatus(
-        `${count} AI-vragen klaar${providerLabel ? ` via ${providerLabel}` : ""}. De eerste vraag staat klaar in docent-preview. Klik op Start vraag om hem live te zetten.`
+        providerLabel === "Adaptieve rekenroute"
+          ? `De rekenroute staat live. Leerlingen krijgen eerst ${count} instapvragen en gaan daarna adaptief verder.`
+          : `${count} AI-vragen klaar${providerLabel ? ` via ${providerLabel}` : ""}. De eerste vraag staat klaar in docent-preview. Klik op Start vraag om hem live te zetten.`
       )
     const onLessonSuccess = ({ count, providerLabel, lessonModel: nextLessonModel, hasPracticeTest, hasPresentation }) =>
       setStatus(
@@ -408,6 +451,9 @@ function HostPage() {
       setTeacherAccountForm((current) => ({ ...current, username: "", displayName: "", password: "" }))
       setTeacherPasswordDrafts({})
       setStatus(message || "Docentaccounts bijgewerkt.")
+    }
+    const onLearnerCodeSuccess = ({ message }) => {
+      setStatus(message || "Leercode bijgewerkt.")
     }
     const onPresentationImageSuccess = ({ manualImageUrl }) => {
       setManualSlideImageUrlDraft(manualImageUrl || "")
@@ -434,6 +480,7 @@ function HostPage() {
     socket.on("host:history:load:success", onHistoryLoadSuccess)
     socket.on("host:history:delete:success", onHistoryDeleteSuccess)
     socket.on("host:teacher-accounts:success", onTeacherAccountsSuccess)
+    socket.on("host:learner-code:success", onLearnerCodeSuccess)
     socket.on("host:presentation-image:success", onPresentationImageSuccess)
 
     return () => {
@@ -456,6 +503,7 @@ function HostPage() {
       socket.off("host:history:load:success", onHistoryLoadSuccess)
       socket.off("host:history:delete:success", onHistoryDeleteSuccess)
       socket.off("host:teacher-accounts:success", onTeacherAccountsSuccess)
+      socket.off("host:learner-code:success", onLearnerCodeSuccess)
       socket.off("host:presentation-image:success", onPresentationImageSuccess)
     }
   }, [])
@@ -465,6 +513,19 @@ function HostPage() {
     setManualSlideImageAltDraft(currentPresentationSlide?.imageAlt || currentPresentationSlide?.title || "")
     setManualSlideUploadName("")
   }, [currentPresentationSlide?.id, currentPresentationSlide?.manualImageUrl, currentPresentationSlide?.imageAlt, currentPresentationSlide?.title])
+
+  useEffect(() => {
+    if (!game.math?.players?.length) return
+    setLearnerCodeDrafts((current) => {
+      const nextDrafts = { ...current }
+      for (const player of game.math.players) {
+        if (!nextDrafts[player.playerId]) {
+          nextDrafts[player.playerId] = player.learnerCode || ""
+        }
+      }
+      return nextDrafts
+    })
+  }, [game.math?.players])
 
   useEffect(() => {
     window.sessionStorage.setItem(
@@ -608,6 +669,11 @@ function HostPage() {
       return
     }
 
+    if (nextMode === "math") {
+      setSessionMode("math")
+      return
+    }
+
     setSessionMode(nextMode)
 
     if (nextMode === "lesson") {
@@ -649,6 +715,11 @@ function HostPage() {
       questionDurationSec,
       teamNames: preparedTeamNames,
     })
+  }
+
+  const generateMathSession = () => {
+    setStatus("Adaptieve rekenroute wordt klaargezet...")
+    socket.emit("host:start-math", { band: mathBand })
   }
 
   const startBattleQuestion = () => {
@@ -735,6 +806,12 @@ function HostPage() {
     socket.emit("host:teacher-accounts:delete", { accountId })
   }
 
+  const updateLearnerCode = (playerId) => {
+    const learnerCode = learnerCodeDrafts[playerId] || ""
+    setStatus("Leercode wordt bijgewerkt...")
+    socket.emit("host:learner-code:update", { playerId, learnerCode })
+  }
+
   const updateLessonPrompt = () => {
     setStatus("Live lesvraag wordt bijgewerkt...")
     socket.emit("host:lesson-prompt:update", {
@@ -814,8 +891,8 @@ function HostPage() {
             <span>Verbonden spelers</span>
           </div>
           <div className="hero-stat">
-            <strong>{game.mode === "lesson" ? game.totalPhases || 0 : game.totalQuestions || questionCount}</strong>
-            <span>{game.mode === "lesson" ? "Lesstappen klaar" : "Battlevragen klaar"}</span>
+            <strong>{game.mode === "lesson" ? game.totalPhases || 0 : game.mode === "math" ? game.math?.intakeTotal || 0 : game.totalQuestions || questionCount}</strong>
+            <span>{game.mode === "lesson" ? "Lesstappen klaar" : game.mode === "math" ? "Instapvragen klaar" : "Battlevragen klaar"}</span>
           </div>
           <button className="button-secondary present-button" onClick={togglePresenterMode} type="button">
             {presenterMode ? presenterFullscreen ? "Sluit digibordmodus" : "Sluit presentatie" : "Digibordmodus"}
@@ -915,6 +992,13 @@ function HostPage() {
               >
                 Oefentoets
               </button>
+              <button
+                className={`mode-chip ${selectedSuiteMode === "math" ? "is-active" : ""}`}
+                onClick={() => selectSessionMode("math")}
+                type="button"
+              >
+                Rekenen
+              </button>
             </div>
             <div className="battle-shortcut-row">
               <button
@@ -928,31 +1012,46 @@ function HostPage() {
             </div>
           </div>
 
-          <label className="field">
-            <span>Onderwerp</span>
-            <textarea
-              rows="4"
-              value={topic}
-              onChange={(event) => setTopic(event.target.value)}
-              placeholder={
-                activeMode === "lesson"
-                  ? "Bijv. procenten rekenen met korting voor vmbo basis, 45 minuten, veel interactie"
-                  : "Bijv. economie vmbo leerjaar 3 over verzekeringen en sparen"
-              }
-            />
-          </label>
+          {activeMode === "math" ? (
+            <MathBandSelector selectedBand={mathBand} onChange={setMathBand} />
+          ) : (
+            <label className="field">
+              <span>Onderwerp</span>
+              <textarea
+                rows="4"
+                value={topic}
+                onChange={(event) => setTopic(event.target.value)}
+                placeholder={
+                  activeMode === "lesson"
+                    ? "Bijv. procenten rekenen met korting voor vmbo basis, 45 minuten, veel interactie"
+                    : "Bijv. economie vmbo leerjaar 3 over verzekeringen en sparen"
+                }
+              />
+            </label>
+          )}
 
           <div className="field-row">
-            <label className="field">
-              <span>Doelgroep</span>
-              <select value={audience} onChange={(event) => setAudience(event.target.value)}>
-                <option value="vmbo">VMBO</option>
-                <option value="brugklas">Brugklas</option>
-                <option value="mavo/havo">Mavo/Havo</option>
-                <option value="mbo">MBO</option>
-                <option value="algemeen">Algemeen</option>
-              </select>
-            </label>
+            {activeMode === "math" ? (
+              <div className="field math-config-card">
+                <span>Rekenroute</span>
+                <p>
+                  Leerlingen krijgen eerst een instaptoets. Daarna plaatst de site hen op een F-niveau en biedt
+                  automatisch sommen aan op het volgende niveau. Hun leercode blijft zichtbaar zodat ze later weer
+                  verder kunnen.
+                </p>
+              </div>
+            ) : (
+              <label className="field">
+                <span>Doelgroep</span>
+                <select value={audience} onChange={(event) => setAudience(event.target.value)}>
+                  <option value="vmbo">VMBO</option>
+                  <option value="brugklas">Brugklas</option>
+                  <option value="mavo/havo">Mavo/Havo</option>
+                  <option value="mbo">MBO</option>
+                  <option value="algemeen">Algemeen</option>
+                </select>
+              </label>
+            )}
 
             {activeMode === "lesson" ? (
               selectedSuiteMode === "lesson" ? (
@@ -1020,6 +1119,14 @@ function HostPage() {
                   </label>
                 </>
               )
+            ) : activeMode === "math" ? (
+              <div className="field math-config-card">
+                <span>Doel</span>
+                <p>
+                  De intake bepaalt het instapniveau. Bij een uitkomst op 1F gaat de leerling bijvoorbeeld verder met
+                  2F-opgaven. Bij goede antwoorden loopt de moeilijkheid binnen dat niveau op.
+                </p>
+              </div>
             ) : (
               <>
                 <label className="field">
@@ -1046,18 +1153,20 @@ function HostPage() {
             )}
           </div>
 
-          <label className="field">
-            <span>Teams</span>
-            <textarea
-              rows="4"
-              value={teamNamesInput}
-              onChange={(event) => {
-                setIsEditingTeams(true)
-                setTeamNamesInput(event.target.value)
-              }}
-              placeholder="Eén team per regel"
-            />
-          </label>
+          {activeMode !== "math" ? (
+            <label className="field">
+              <span>Teams</span>
+              <textarea
+                rows="4"
+                value={teamNamesInput}
+                onChange={(event) => {
+                  setIsEditingTeams(true)
+                  setTeamNamesInput(event.target.value)
+                }}
+                placeholder="Eén team per regel"
+              />
+            </label>
+          ) : null}
 
           {activeMode === "lesson" ? (
             <LessonSummaryCard
@@ -1068,21 +1177,23 @@ function HostPage() {
           ) : null}
 
           <div className="action-row">
-            <button
-              className="button-secondary"
-              disabled={!hostSession.authenticated}
-              onClick={configureTeams}
-              type="button"
-            >
-              Teams opslaan
-            </button>
+            {activeMode !== "math" ? (
+              <button
+                className="button-secondary"
+                disabled={!hostSession.authenticated}
+                onClick={configureTeams}
+                type="button"
+              >
+                Teams opslaan
+              </button>
+            ) : null}
             <button
               className="button-primary"
               disabled={!hostSession.authenticated}
-              onClick={activeMode === "lesson" ? generateLesson : generate}
+              onClick={activeMode === "math" ? generateMathSession : activeMode === "lesson" ? generateLesson : generate}
               type="button"
             >
-              {activeMode === "lesson" ? buildActionLabel : "Ronde starten"}
+              {activeMode === "lesson" || activeMode === "math" ? buildActionLabel : "Ronde starten"}
             </button>
             {game.mode === "battle" && game.source !== "practice" && game.question && game.status === "preview" ? (
               <button
@@ -1104,20 +1215,22 @@ function HostPage() {
                 Toon antwoord
               </button>
             ) : null}
-            <button
-              className="button-secondary"
-              disabled={!hostSession.authenticated}
-              onClick={goToNextStep}
-              type="button"
-            >
-              {game.mode === "lesson"
-                ? hostInsights?.canAdvance
-                  ? "Volgende lesstap (iedereen klaar)"
-                  : "Volgende lesstap"
-                : hostInsights?.canAdvance
-                  ? "Volgende vraag (iedereen klaar)"
-                  : "Volgende vraag"}
-            </button>
+            {game.mode !== "math" ? (
+              <button
+                className="button-secondary"
+                disabled={!hostSession.authenticated}
+                onClick={goToNextStep}
+                type="button"
+              >
+                {game.mode === "lesson"
+                  ? hostInsights?.canAdvance
+                    ? "Volgende lesstap (iedereen klaar)"
+                    : "Volgende lesstap"
+                  : hostInsights?.canAdvance
+                    ? "Volgende vraag (iedereen klaar)"
+                    : "Volgende vraag"}
+              </button>
+            ) : null}
             <button
               className="button-ghost"
               disabled={!hostSession.authenticated}
@@ -1131,13 +1244,17 @@ function HostPage() {
 
         <div className="glass question-stage">
           <div className="section-head">
-            <h2>{game.mode === "lesson" ? "Live les" : "Live vraag"}</h2>
+            <h2>{game.mode === "lesson" ? "Live les" : game.mode === "math" ? "Live rekenen" : "Live vraag"}</h2>
             <div className="pill-row">
               <span className="pill timer-pill">
                 {game.mode === "lesson"
                   ? game.lesson?.currentPhase
                     ? `${game.lesson.currentPhase.minutes} min`
                     : "Les"
+                  : game.mode === "math"
+                    ? game.math?.selectedBand
+                      ? `Route ${formatMathLevelLabel(game.math.selectedBand)}`
+                      : "Rekenen"
                   : game.status === "preview"
                     ? "Preview"
                   : game.status === "live"
@@ -1153,6 +1270,8 @@ function HostPage() {
                     : game.status === "finished"
                       ? "Les afgerond"
                       : "Nog niet gestart"
+                  : game.mode === "math"
+                    ? `${players.length} leerlingen in route`
                   : game.status === "preview"
                     ? `Preview ${game.currentQuestionIndex + 1} / ${game.totalQuestions}`
                   : game.status === "live"
@@ -1168,6 +1287,8 @@ function HostPage() {
 
           {game.mode === "lesson" ? (
             <LessonProgress lesson={game.lesson} />
+          ) : game.mode === "math" ? (
+            <MathHostSummary math={game.math} players={players} />
           ) : (
             <ProgressBar
               current={game.currentQuestionIndex + 1}
@@ -1177,7 +1298,17 @@ function HostPage() {
             />
           )}
 
-          {game.mode === "lesson" && game.lesson?.currentPhase ? (
+          {game.mode === "math" && game.math ? (
+            <MathHostPanel
+              learnerCodeDrafts={learnerCodeDrafts}
+              math={game.math}
+              onLearnerCodeChange={(playerId, value) =>
+                setLearnerCodeDrafts((current) => ({ ...current, [playerId]: value }))
+              }
+              onLearnerCodeSave={updateLearnerCode}
+              insights={hostInsights}
+            />
+          ) : game.mode === "lesson" && game.lesson?.currentPhase ? (
             <>
               <LessonStageCard lesson={game.lesson} hostView />
               <LessonPresentationPanel
@@ -1293,26 +1424,29 @@ function PlayerPage() {
   const [playerSession, setPlayerSession] = useState(() => {
     try {
       const stored = window.localStorage.getItem(PLAYER_SESSION_KEY)
-      return stored ? JSON.parse(stored) : { name: "", teamId: "", roomCode: "", joined: false, playerSessionId: createPlayerSessionId() }
+      return stored ? JSON.parse(stored) : { name: "", teamId: "", roomCode: "", joined: false, playerId: "", playerSessionId: createPlayerSessionId() }
     } catch {
-      return { name: "", teamId: "", roomCode: "", joined: false, playerSessionId: createPlayerSessionId() }
+      return { name: "", teamId: "", roomCode: "", joined: false, playerId: "", playerSessionId: createPlayerSessionId() }
     }
   })
   const [name, setName] = useState(playerSession.name || "")
   const [teamId, setTeamId] = useState(playerSession.teamId || "")
   const [roomCode, setRoomCode] = useState(playerSession.roomCode || "")
+  const [playerId, setPlayerId] = useState(playerSession.playerId || "")
   const [playerSessionId, setPlayerSessionId] = useState(playerSession.playerSessionId || createPlayerSessionId())
   const [roomPreview, setRoomPreview] = useState({ valid: false, teams: [] })
   const [joined, setJoined] = useState(Boolean(playerSession.joined))
   const [result, setResult] = useState(null)
   const [chosenAnswer, setChosenAnswer] = useState(null)
   const [answerLocked, setAnswerLocked] = useState(false)
+  const [mathAnswer, setMathAnswer] = useState("")
   const [lessonAnswer, setLessonAnswer] = useState("")
   const [lessonResult, setLessonResult] = useState(null)
   const [status, setStatus] = useState("Vul je gegevens in en sluit aan.")
   const timeLeft = useQuestionCountdown(game)
+  const liveResult = game.mode === "math" ? game.math?.lastResult || null : result
 
-  useSoundEffects(result, game.status)
+  useSoundEffects(liveResult, game.status)
 
   useEffect(() => {
     const sourceTeams = joined ? teams : roomPreview.valid ? roomPreview.teams : teams
@@ -1328,19 +1462,20 @@ function PlayerPage() {
   }, [joined, roomPreview, teamId, teams])
 
   useEffect(() => {
-    const onJoined = () => {
+    const onJoined = (nextMode = roomPreview.mode) => {
       setJoined(true)
-      setStatus("Je bent verbonden. Wacht op de volgende vraag.")
+      setStatus(nextMode === "math" ? "Je bent verbonden. Je rekensom of instaptoets staat voor je klaar." : "Je bent verbonden. Wacht op de volgende vraag.")
     }
-    const onJoinedPayload = ({ playerSessionId: nextPlayerSessionId }) => {
+    const onJoinedPayload = ({ playerId: nextPlayerId, playerSessionId: nextPlayerSessionId }) => {
+      if (nextPlayerId) setPlayerId(nextPlayerId)
       if (nextPlayerSessionId) setPlayerSessionId(nextPlayerSessionId)
-      onJoined()
+      onJoined(roomPreview.mode)
     }
     const onPlayerError = ({ message }) => setStatus(message)
     const onRoomPreview = (payload) => {
       setRoomPreview(payload)
       if (payload.valid) {
-        setStatus(`Room ${payload.roomCode} gevonden.`)
+        setStatus(payload.mode === "math" ? `Rekenroom ${payload.roomCode} gevonden.` : `Room ${payload.roomCode} gevonden.`)
         if (payload.teams?.[0]?.id) {
           setTeamId((current) => current || payload.teams[0].id)
         }
@@ -1373,6 +1508,11 @@ function PlayerPage() {
             : "Je reactie is ontvangen. Kijk nog eens naar de opdracht."
       )
     }
+    const onProfileUpdate = ({ playerId: nextPlayerId, playerSessionId: nextPlayerSessionId }) => {
+      if (nextPlayerId) setPlayerId(nextPlayerId)
+      if (nextPlayerSessionId) setPlayerSessionId(nextPlayerSessionId)
+      setStatus("Je leercode is bijgewerkt. Je voortgang blijft bewaard.")
+    }
 
     socket.on("player:joined", onJoinedPayload)
     socket.on("player:error", onPlayerError)
@@ -1380,6 +1520,7 @@ function PlayerPage() {
     socket.on("player:room:preview", onRoomPreview)
     socket.on("player:answer:result", onAnswerResult)
     socket.on("player:lesson-response:result", onLessonResponseResult)
+    socket.on("player:profile:update", onProfileUpdate)
 
     return () => {
       socket.off("player:joined", onJoinedPayload)
@@ -1388,14 +1529,15 @@ function PlayerPage() {
       socket.off("player:room:preview", onRoomPreview)
       socket.off("player:answer:result", onAnswerResult)
       socket.off("player:lesson-response:result", onLessonResponseResult)
+      socket.off("player:profile:update", onProfileUpdate)
     }
   }, [roomCode.length])
 
   useEffect(() => {
-    const nextSession = { name, teamId, roomCode, joined, playerSessionId }
+    const nextSession = { name, teamId, roomCode, joined, playerId, playerSessionId }
     setPlayerSession(nextSession)
     window.localStorage.setItem(PLAYER_SESSION_KEY, JSON.stringify(nextSession))
-  }, [joined, name, roomCode, teamId, playerSessionId])
+  }, [joined, name, playerId, playerSessionId, roomCode, teamId])
 
   useEffect(() => {
     if (roomCode.trim().length < 5) {
@@ -1422,6 +1564,7 @@ function PlayerPage() {
     setResult(null)
     setChosenAnswer(null)
     setAnswerLocked(false)
+    setMathAnswer("")
     setLessonAnswer("")
     setLessonResult(null)
   }, [game.question?.id])
@@ -1430,6 +1573,10 @@ function PlayerPage() {
     setLessonAnswer("")
     setLessonResult(null)
   }, [game.lesson?.currentPhase?.id, game.lesson?.currentPhase?.prompt, game.lesson?.promptVersion])
+
+  useEffect(() => {
+    setMathAnswer("")
+  }, [game.math?.currentTask?.id])
 
   useEffect(() => {
     const onConnect = () => {
@@ -1450,6 +1597,14 @@ function PlayerPage() {
     socket.emit("player:join", { name: name.trim(), teamId, roomCode: roomCode.trim().toUpperCase(), playerSessionId })
   }
 
+  const submitMathAnswer = () => {
+    socket.emit("player:math:answer", { answer: mathAnswer })
+  }
+
+  const goToNextMathTask = () => {
+    socket.emit("player:math:next")
+  }
+
   const submitLessonAnswer = () => {
     socket.emit("player:lesson-response", { response: lessonAnswer })
   }
@@ -1457,11 +1612,12 @@ function PlayerPage() {
   const availableTeams = joined ? teams : roomPreview.valid ? roomPreview.teams : teams
   const selectedTeam = availableTeams.find((team) => team.id === teamId)
   const currentPlayer = useMemo(
-    () => players.find((player) => player.id === playerSessionId) || leaderboard.find((player) => player.id === playerSessionId) || null,
-    [leaderboard, playerSessionId, players]
+    () => players.find((player) => player.id === playerId) || leaderboard.find((player) => player.id === playerId) || null,
+    [leaderboard, playerId, players]
   )
   const currentTeam = teams.find((team) => team.id === (currentPlayer?.teamId || teamId)) || selectedTeam || null
   const currentRank = currentPlayer ? leaderboard.findIndex((player) => player.id === currentPlayer.id) + 1 : 0
+  const isMathLive = game.mode === "math" && Boolean(game.math)
   const isPracticeTestLive = game.source === "practice"
   const isLastPracticeQuestion = isPracticeTestLive && game.currentQuestionIndex + 1 >= game.totalQuestions
   const canAdvancePracticeQuestion =
@@ -1485,13 +1641,25 @@ function PlayerPage() {
     !battleRevealVisible &&
     !result
   const canSubmitAnswer = joined && game.question && (canAnswerLiveQuestion || isPracticeTestLive) && !answerLocked
+  const canSubmitMathAnswer =
+    joined &&
+    isMathLive &&
+    Boolean(game.math?.currentTask) &&
+    !game.math?.awaitingNext &&
+    Boolean(mathAnswer.trim())
+  const showMathNextButton =
+    joined &&
+    isMathLive &&
+    !game.math?.currentTask &&
+    Boolean(game.math?.awaitingNext)
+  const isMathPreview = roomPreview.mode === "math" || game.mode === "math"
 
   return (
     <main className="page-shell player-shell">
       <section className="player-layout">
         <div className="glass join-card">
           <span className="eyebrow">Deelnemen</span>
-          <h1>Join de battle</h1>
+          <h1>{isMathPreview ? "Start rekenen" : "Join de battle"}</h1>
           <p className="muted">{status}</p>
 
           <label className="field">
@@ -1499,16 +1667,18 @@ function PlayerPage() {
             <input value={name} onChange={(event) => setName(event.target.value)} placeholder="Bijv. Amina" />
           </label>
 
-          <label className="field">
-            <span>Team</span>
-            <select value={teamId} onChange={(event) => setTeamId(event.target.value)}>
-              {availableTeams.map((team) => (
-                <option key={team.id} value={team.id}>
-                  {team.name}
-                </option>
-              ))}
-            </select>
-          </label>
+          {!isMathPreview ? (
+            <label className="field">
+              <span>Team</span>
+              <select value={teamId} onChange={(event) => setTeamId(event.target.value)}>
+                {availableTeams.map((team) => (
+                  <option key={team.id} value={team.id}>
+                    {team.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
 
           <label className="field">
             <span>Spelcode</span>
@@ -1519,26 +1689,42 @@ function PlayerPage() {
             />
           </label>
 
+          <label className="field">
+            <span>Jouw leercode</span>
+            <input
+              value={playerSessionId}
+              onChange={(event) => setPlayerSessionId(event.target.value.trim())}
+              placeholder="Wordt automatisch onthouden"
+            />
+          </label>
+
           <button className="button-primary" disabled={!roomPreview.valid} onClick={join} type="button">
             {joined ? "Opnieuw koppelen" : "Ik doe mee"}
           </button>
 
-          {selectedTeam ? (
+          {selectedTeam && !isMathPreview ? (
             <div className="team-chip" style={{ "--team-accent": selectedTeam.color }}>
               {selectedTeam.name}
             </div>
           ) : null}
+          {isMathPreview ? <p className="muted learner-code-note">Gebruik later dezelfde spelcode en leercode om verder te gaan.</p> : null}
         </div>
 
         <div className="glass battle-card">
           <div className="section-head">
-            <h2>{game.mode === "lesson" ? "Jouw lesstap" : "Jouw battlevraag"}</h2>
+            <h2>{game.mode === "lesson" ? "Jouw lesstap" : game.mode === "math" ? "Jouw rekenroute" : "Jouw battlevraag"}</h2>
             <div className="pill-row">
               <span className="pill timer-pill">
                 {game.mode === "lesson"
                   ? game.lesson?.currentPhase
                     ? `${game.lesson.currentPhase.minutes} min`
                     : "Wachten"
+                  : game.mode === "math"
+                    ? game.math?.placementLevel
+                      ? `Route ${game.math.targetLevel || game.math.placementLevel}`
+                      : game.math?.selectedBand
+                        ? `Instap ${game.math.selectedBand}`
+                        : "Rekenen"
                   : game.status === "preview"
                     ? "Wacht"
                   : game.status === "live"
@@ -1552,6 +1738,10 @@ function PlayerPage() {
                   ? game.status === "live"
                     ? `Fase ${game.currentPhaseIndex + 1}`
                     : "Wachten"
+                  : game.mode === "math"
+                    ? game.math?.phase === "practice"
+                      ? `${game.math.practiceQuestionCount || 0} sommen gemaakt`
+                      : `Instap ${Math.min((game.math?.intakeIndex || 0) + (game.math?.currentTask ? 1 : 0), game.math?.intakeTotal || 0)} / ${game.math?.intakeTotal || 0}`
                   : game.status === "preview"
                     ? "De docent zet zo de vraag live"
                   : game.status === "live"
@@ -1580,7 +1770,17 @@ function PlayerPage() {
             </div>
           ) : null}
 
-          {game.mode === "lesson" && game.lesson?.currentPhase ? (
+          {game.mode === "math" && game.math ? (
+            <MathStudentPanel
+              math={game.math}
+              answer={mathAnswer}
+              onAnswerChange={setMathAnswer}
+              onNext={goToNextMathTask}
+              onSubmit={submitMathAnswer}
+              canSubmit={canSubmitMathAnswer}
+              showNextButton={showMathNextButton}
+            />
+          ) : game.mode === "lesson" && game.lesson?.currentPhase ? (
             <>
               {hasLessonPresentation ? (
                 <LessonPresentationPanel compact presentation={game.lesson?.presentation} />
@@ -1705,10 +1905,12 @@ function PlayerPage() {
             )
           ) : (
             <div className="empty-state">
-              <h3>{game.mode === "lesson" ? "De les verschijnt zo" : "Wacht op de volgende vraag"}</h3>
+              <h3>{game.mode === "lesson" ? "De les verschijnt zo" : game.mode === "math" ? "De rekenroute verschijnt zo" : "Wacht op de volgende vraag"}</h3>
               <p>
                 {game.mode === "lesson"
                   ? "De huidige lesstap verschijnt hier vanzelf zodra die live staat."
+                  : game.mode === "math"
+                    ? "Zodra de docent de rekenroute start, zie je hier je instaptoets en daarna je adaptieve sommen."
                   : "De docent bekijkt de vraag eerst en zet hem daarna live voor jou."}
               </p>
             </div>
@@ -1716,11 +1918,189 @@ function PlayerPage() {
         </div>
 
         <div className="glass side-column">
+          {game.mode === "math" && game.math ? <LearnerCodeCard learnerCode={playerSessionId} roomCode={roomCode} /> : null}
           <ScoreBoard teams={teams} leaderboard={leaderboard} compact />
           <RosterBoard players={players} teams={teams} compact />
         </div>
       </section>
     </main>
+  )
+}
+
+function MathBandSelector({ selectedBand, onChange }) {
+  return (
+    <section className="math-band-selector">
+      <div className="section-head">
+        <h3>Rekenen</h3>
+        <span className="pill">Kies een route</span>
+      </div>
+      <p className="muted">Start met een F-route. De instaptoets bepaalt daarna op welk niveau de leerling verdergaat.</p>
+      <div className="math-band-row">
+        {MATH_LEVEL_OPTIONS.map((band) => (
+          <button
+            className={`mode-chip math-band-chip ${selectedBand === band ? "is-active" : ""}`}
+            key={band}
+            onClick={() => onChange(band)}
+            type="button"
+          >
+            {formatMathLevelLabel(band)}
+          </button>
+        ))}
+      </div>
+    </section>
+  )
+}
+
+function MathHostSummary({ math, players }) {
+  if (!math) return null
+
+  return (
+    <div className="math-summary-row">
+      <div className="player-score-pill">
+        <span>Route</span>
+        <strong>{math.selectedBand || "-"}</strong>
+      </div>
+      <div className="player-score-pill">
+        <span>Instapvragen</span>
+        <strong>{math.intakeTotal || 0}</strong>
+      </div>
+      <div className="player-score-pill">
+        <span>Actieve leerlingen</span>
+        <strong>{players.length}</strong>
+      </div>
+    </div>
+  )
+}
+
+function MathHostPanel({ math, insights, learnerCodeDrafts, onLearnerCodeChange, onLearnerCodeSave }) {
+  if (!math) return null
+
+  const playerRows = insights?.mode === "math" ? insights.players || [] : math.players || []
+
+  return (
+    <section className="math-host-panel">
+      <div className="math-host-hero">
+        <div>
+          <span className="eyebrow">Adaptief rekenen</span>
+          <h3>{math.title || `Rekenroute ${math.selectedBand}`}</h3>
+          <p>
+            Leerlingen maken eerst de instaptoets. Daarna krijgen ze automatisch sommen op het volgende niveau,
+            met oplopende moeilijkheid als het goed gaat.
+          </p>
+        </div>
+        <div className="math-summary-stack">
+          <span className="score-chip">Instap {math.intakeTotal || 0} vragen</span>
+          <span className="score-chip">{math.intakeCount || 0} in intake</span>
+          <span className="score-chip">{math.practiceCount || 0} aan het oefenen</span>
+        </div>
+      </div>
+
+      <div className="math-host-grid">
+        {playerRows.map((player) => (
+          <article className="math-host-card" key={player.playerId}>
+            <div className="math-host-card-head">
+              <div>
+                <strong>{player.name}</strong>
+                <span>{player.connected ? "online" : "offline"} · code {player.learnerCode || "-"}</span>
+              </div>
+              <span className="pill">{player.phase === "practice" ? "Adaptief" : "Instaptoets"}</span>
+            </div>
+            <div className="math-host-meta">
+              <span>Plaatsing: {player.placementLevel || "-"}</span>
+              <span>Oefenniveau: {player.targetLevel || "-"}</span>
+              <span>Moeilijkheid: {formatMathDifficultyLabel(player.practiceDifficulty)}</span>
+              <span>
+                Goed: {player.practiceCorrectCount || 0} / {player.practiceQuestionCount || 0}
+              </span>
+            </div>
+            <div className="math-code-row">
+              <input
+                className="math-code-input"
+                onChange={(event) => onLearnerCodeChange(player.playerId, event.target.value)}
+                value={learnerCodeDrafts[player.playerId] ?? player.learnerCode ?? ""}
+              />
+              <button className="button-ghost" onClick={() => onLearnerCodeSave(player.playerId)} type="button">
+                Bewaar code
+              </button>
+            </div>
+            {player.currentTaskPrompt ? <p className="math-task-preview">{player.currentTaskPrompt}</p> : null}
+          </article>
+        ))}
+      </div>
+    </section>
+  )
+}
+
+function MathStudentPanel({ math, answer, onAnswerChange, onSubmit, onNext, canSubmit, showNextButton }) {
+  if (!math) return null
+
+  return (
+    <section className="math-student-panel">
+      <div className="math-student-strip">
+        <span className="score-chip">Route {math.selectedBand || "-"}</span>
+        <span className="score-chip">Instap {Math.min((math.intakeIndex || 0) + (math.currentTask ? 1 : 0), math.intakeTotal || 0)} / {math.intakeTotal || 0}</span>
+        {math.placementLevel ? <span className="score-chip">Jij zit op {math.placementLevel}</span> : null}
+        {math.targetLevel ? <span className="score-chip">Je oefent op {math.targetLevel}</span> : null}
+        {math.phase === "practice" ? <span className="score-chip">{formatMathDifficultyLabel(math.practiceDifficulty)}</span> : null}
+      </div>
+
+      {math.currentTask ? (
+        <article className="math-task-card">
+          <span className="category-badge">{math.currentTask.domain}</span>
+          <h3>{math.currentTask.prompt}</h3>
+          {math.currentTask.hint ? <p className="muted">{math.currentTask.hint}</p> : null}
+          <div className="math-answer-row">
+            <input
+              className="math-answer-input"
+              inputMode="decimal"
+              onChange={(event) => onAnswerChange(event.target.value)}
+              placeholder="Typ je antwoord"
+              value={answer}
+            />
+            <button className="button-primary" disabled={!canSubmit} onClick={onSubmit} type="button">
+              Check
+            </button>
+          </div>
+        </article>
+      ) : null}
+
+      {math.lastResult ? (
+        <div className={`answer-result ${math.lastResult.correct ? "ok" : "bad"}`}>
+          <strong>{math.lastResult.correct ? "Goed bezig" : "Nog even doorpakken"}</strong>
+          <p>{math.lastResult.feedback}</p>
+          {math.lastResult.explanation ? <p>{math.lastResult.explanation}</p> : null}
+          {math.lastResult.expectedAnswer ? <span className="score-chip">Juiste antwoord: {math.lastResult.expectedAnswer}</span> : null}
+        </div>
+      ) : null}
+
+      {showNextButton ? (
+        <button className="button-secondary practice-next-button" onClick={onNext} type="button">
+          {math.phase === "practice" ? "Volgende som" : "Volgende vraag"}
+        </button>
+      ) : null}
+    </section>
+  )
+}
+
+function LearnerCodeCard({ learnerCode, roomCode }) {
+  if (!learnerCode) return null
+
+  return (
+    <section className="learner-code-card">
+      <span className="eyebrow">Verdergaan</span>
+      <h3>Bewaar deze combinatie</h3>
+      <div className="learner-code-grid">
+        <div>
+          <span>Spelcode</span>
+          <strong>{roomCode || "-"}</strong>
+        </div>
+        <div>
+          <span>Leercode</span>
+          <strong>{learnerCode}</strong>
+        </div>
+      </div>
+      <p className="muted">Vul later dezelfde code en leercode in om door te gaan waar je was gebleven.</p>
+    </section>
   )
 }
 
