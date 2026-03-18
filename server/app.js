@@ -1934,6 +1934,25 @@ function saveManualImageFromDataUrl({ dataUrl = "", entityId = "slide" }) {
   return `/manual-images/${fileName}`
 }
 
+function saveManualImageFromBuffer({ imageBuffer, mimeType = "image/jpeg", entityId = "slide" }) {
+  const extension = mimeTypeToExtension(mimeType)
+  if (!extension) {
+    throw new Error("Er is geen ondersteund afbeeldingsformaat gevonden.")
+  }
+  if (!Buffer.isBuffer(imageBuffer) || !imageBuffer.length) {
+    throw new Error("De gevonden afbeelding is leeg.")
+  }
+  if (imageBuffer.length > MAX_REMOTE_IMAGE_BYTES) {
+    throw new Error("De gevonden afbeelding is te groot. Gebruik maximaal 5 MB.")
+  }
+
+  ensureManualImagesDir()
+  const fileName = `${String(entityId || "slide").replace(/[^a-z0-9-_]/gi, "-")}-${Date.now().toString(36)}.${extension}`
+  const filePath = path.join(manualImagesPath, fileName)
+  fs.writeFileSync(filePath, imageBuffer)
+  return `/manual-images/${fileName}`
+}
+
 async function saveManualImageFromRemoteUrl({ imageUrl = "", entityId = "slide" }) {
   const normalizedUrl = sanitizeManualImageUrl(imageUrl)
   if (!normalizedUrl || isLocalManualImageUrl(normalizedUrl)) return normalizedUrl
@@ -2015,6 +2034,45 @@ function normalizePublicImageSearchQuery(value = "") {
     "on",
     "to",
     "or",
+    "de",
+    "het",
+    "een",
+    "met",
+    "zonder",
+    "van",
+    "voor",
+    "naar",
+    "bij",
+    "uit",
+    "over",
+    "onder",
+    "tussen",
+    "waar",
+    "welke",
+    "welk",
+    "wat",
+    "hoe",
+    "waarom",
+    "wanneer",
+    "wie",
+    "ligt",
+    "liggen",
+    "precies",
+    "ongeveer",
+    "dia",
+    "les",
+    "leerlingen",
+    "studenten",
+    "opdracht",
+    "bekijk",
+    "bekijken",
+    "kijk",
+    "kijken",
+    "toon",
+    "toont",
+    "kaartje",
+    "afbeelding",
+    "plaatje",
   ])
 
   const tokens = String(value || "")
@@ -2027,11 +2085,14 @@ function normalizePublicImageSearchQuery(value = "") {
   return [...new Set(tokens)].slice(0, 8).join(" ")
 }
 
-async function buildPublicImageSearchQuery({ prompt = "", category = "", kind = "slide" }) {
+async function buildPublicImageSearchQueries({ prompt = "", category = "", kind = "slide" }) {
   const fallback = normalizePublicImageSearchQuery([category, prompt].filter(Boolean).join(" "))
+  const promptOnly = normalizePublicImageSearchQuery(prompt)
+  const categoryOnly = normalizePublicImageSearchQuery(category)
   const providers = [...(openAI ? ["openai"] : []), ...(genAI ? ["gemini"] : []), ...(groq ? ["groq"] : [])]
+  const queries = [fallback, promptOnly, categoryOnly].filter(Boolean)
 
-  if (!providers.length) return fallback
+  if (!providers.length) return [...new Set(queries)]
 
   const searchPrompt = `
 Maak 1 korte zoekopdracht van 3 tot 6 Engelse kernwoorden voor een bestaande rechtenvrije afbeelding.
@@ -2057,13 +2118,13 @@ Regels:
         "Je maakt extreem korte zoekopdrachten voor rechtenvrije afbeeldingszoekmachines."
       )
       const normalized = normalizePublicImageSearchQuery(result)
-      if (normalized) return normalized
+      if (normalized) queries.unshift(normalized)
     } catch (error) {
       console.warn("[images] public image search query fallback:", error instanceof Error ? error.message : error)
     }
   }
 
-  return fallback
+  return [...new Set(queries.filter(Boolean))]
 }
 
 function isReusablePublicImageLicense(value = "") {
@@ -2081,10 +2142,7 @@ function extractCommonsMetadataValue(metadata = {}, key = "") {
   return stripHtmlTags(metadata?.[key]?.value || "")
 }
 
-async function searchReusableReferenceImage({ prompt = "", category = "", kind = "slide" }) {
-  if (kind !== "slide") return null
-
-  const searchQuery = await buildPublicImageSearchQuery({ prompt, category, kind })
+async function searchReusableReferenceImageByQuery(searchQuery = "") {
   if (!searchQuery) return null
 
   const url = new URL("https://commons.wikimedia.org/w/api.php")
@@ -2147,6 +2205,22 @@ async function searchReusableReferenceImage({ prompt = "", category = "", kind =
     sourceUrl: selectedImage.sourceUrl,
     searchQuery,
   }
+}
+
+async function searchReusableReferenceImage({ prompt = "", category = "", kind = "slide" }) {
+  if (kind !== "slide") return null
+
+  const searchQueries = await buildPublicImageSearchQueries({ prompt, category, kind })
+  for (const searchQuery of searchQueries) {
+    try {
+      const match = await searchReusableReferenceImageByQuery(searchQuery)
+      if (match) return match
+    } catch (error) {
+      console.warn("[images] reusable image search query failed:", error instanceof Error ? error.message : error)
+    }
+  }
+
+  return null
 }
 
 function wrapSvgText(value, maxChars = 26, maxLines = 3) {
@@ -6831,6 +6905,90 @@ io.on("connection", (socket) => {
     socket.emit("host:presentation-image:success", {
       slideId: normalizedSlideId,
       manualImageUrl: nextManualImageUrl,
+      imageAlt: String(imageAlt ?? "").trim() || previousSlide?.imageAlt || previousSlide?.title || "Presentatiedia",
+    })
+  })
+
+  socket.on("host:presentation-image:auto", async ({ slideId }) => {
+    const room = requireHostRoom(socket)
+    if (!room || room.game.mode !== "lesson" || !room.lesson?.presentation?.slides?.length) return
+
+    const normalizedSlideId = String(slideId ?? "").trim()
+    if (!normalizedSlideId) {
+      socket.emit("host:error", { message: "Kies eerst een dia voordat je automatisch laat zoeken." })
+      return
+    }
+
+    const targetSlide = room.lesson.presentation.slides.find((slide) => slide.id === normalizedSlideId) || null
+    if (!targetSlide) {
+      socket.emit("host:error", { message: "Deze dia bestaat niet meer in de huidige presentatie." })
+      return
+    }
+
+    const previousManualImageUrl = sanitizeManualImageUrl(targetSlide.manualImageUrl || "")
+    const searchPrompt = targetSlide.imagePrompt || `${targetSlide.title || ""} ${targetSlide.focus || targetSlide.studentViewText || ""}`.trim()
+    const searchCategory = `${room.game.topic || ""} ${targetSlide.title || ""}`.trim()
+
+    let referenceImage = null
+    try {
+      referenceImage = await searchReusableReferenceImage({
+        prompt: searchPrompt,
+        category: searchCategory,
+        kind: "slide",
+      })
+    } catch (error) {
+      socket.emit("host:error", {
+        message: error instanceof Error ? error.message : "Zoeken naar een online dia-afbeelding is mislukt.",
+      })
+      return
+    }
+
+    if (!referenceImage?.buffer) {
+      socket.emit("host:error", {
+        message: "Er is geen passende rechtenvrije internetafbeelding gevonden voor deze dia. Probeer een andere dia of upload handmatig.",
+      })
+      return
+    }
+
+    let nextManualImageUrl = ""
+    try {
+      nextManualImageUrl = saveManualImageFromBuffer({
+        imageBuffer: referenceImage.buffer,
+        mimeType: referenceImage.contentType,
+        entityId: normalizedSlideId,
+      })
+    } catch (error) {
+      socket.emit("host:error", {
+        message: error instanceof Error ? error.message : "De gevonden dia-afbeelding kon niet worden opgeslagen.",
+      })
+      return
+    }
+
+    room.lesson = {
+      ...room.lesson,
+      presentation: {
+        ...room.lesson.presentation,
+        slides: room.lesson.presentation.slides.map((slide) =>
+          slide.id === normalizedSlideId
+            ? {
+                ...slide,
+                manualImageUrl: nextManualImageUrl,
+                imageAlt: slide.imageAlt || slide.title || "Presentatiedia",
+              }
+            : slide
+        ),
+      },
+    }
+
+    if (previousManualImageUrl && previousManualImageUrl !== nextManualImageUrl) {
+      removeManualImageFileIfUnused(previousManualImageUrl)
+    }
+
+    emitStateToRoom(room)
+    socket.emit("host:presentation-image:success", {
+      slideId: normalizedSlideId,
+      manualImageUrl: nextManualImageUrl,
+      imageAlt: targetSlide.imageAlt || targetSlide.title || "Presentatiedia",
     })
   })
 
@@ -6870,6 +7028,7 @@ io.on("connection", (socket) => {
     socket.emit("host:presentation-image:success", {
       slideId: normalizedSlideId,
       manualImageUrl: "",
+      imageAlt: previousSlide?.imageAlt || previousSlide?.title || "Presentatiedia",
     })
   })
 

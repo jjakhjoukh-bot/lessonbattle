@@ -541,8 +541,9 @@ function HostPage() {
       setNewMathLearner({ name: "", learnerCode: "" })
       setStatus(message || "Leercode bijgewerkt.")
     }
-    const onPresentationImageSuccess = ({ manualImageUrl }) => {
+    const onPresentationImageSuccess = ({ manualImageUrl, imageAlt }) => {
       setManualSlideImageUrlDraft(manualImageUrl || "")
+      if (typeof imageAlt === "string") setManualSlideImageAltDraft(imageAlt)
       setManualSlideUploadName("")
       setStatus(manualImageUrl ? "Dia-afbeelding bijgewerkt." : "Handmatige dia-afbeelding verwijderd.")
     }
@@ -954,6 +955,17 @@ function HostPage() {
       slideId: currentPresentationSlide.id,
       imageUrl: manualSlideImageUrlDraft,
       imageAlt: manualSlideImageAltDraft,
+    })
+  }
+
+  const autoFindSlideImage = () => {
+    if (!currentPresentationSlide?.id) {
+      setStatus("Er is nu geen actieve dia om automatisch een afbeelding voor te zoeken.")
+      return
+    }
+    setStatus("Site zoekt nu een passende internetafbeelding voor deze dia...")
+    socket.emit("host:presentation-image:auto", {
+      slideId: currentPresentationSlide.id,
     })
   }
 
@@ -1480,6 +1492,7 @@ function HostPage() {
                 altText={manualSlideImageAltDraft}
                 hasManualImage={Boolean(currentPresentationSlide?.manualImageUrl)}
                 imageUrl={manualSlideImageUrlDraft}
+                onAutoSearch={autoFindSlideImage}
                 onAltTextChange={setManualSlideImageAltDraft}
                 onClear={clearManualSlideImage}
                 onImageUrlChange={setManualSlideImageUrlDraft}
@@ -2947,6 +2960,7 @@ function ManualSlideImageCard({
   altText,
   uploadName,
   hasManualImage,
+  onAutoSearch,
   onImageUrlChange,
   onAltTextChange,
   onSaveUrl,
@@ -2962,7 +2976,7 @@ function ManualSlideImageCard({
         <span className="pill">{slide.title}</span>
       </div>
       <p className="muted">
-        Zoek zelf een passende afbeelding en plak de directe afbeeldingslink, of upload een bestand. Deze afbeelding overschrijft AI voor deze dia.
+        Laat de site eerst zelf een passende internetafbeelding zoeken. Lukt dat niet goed, dan kun je nog steeds zelf een directe afbeeldingslink plakken of een bestand uploaden.
       </p>
       <div className="field-row manual-image-grid">
         <label className="field">
@@ -2983,6 +2997,9 @@ function ManualSlideImageCard({
         </label>
       </div>
       <div className="manual-image-actions">
+        <button className="button-primary" onClick={onAutoSearch} type="button">
+          Zoek automatisch online
+        </button>
         <button className="button-secondary" disabled={!imageUrl.trim()} onClick={onSaveUrl} type="button">
           Gebruik link
         </button>
