@@ -3120,6 +3120,7 @@ function buildStatePayload(room, viewer = "host", playerId = "") {
   const lessonPhase = currentLessonPhase(room)
   const onlinePlayers = getOnlinePlayers(room)
   const mathState = sanitizeMathState(room, viewer, playerId)
+  const hidePeerDataForPlayer = viewer === "player" && room.game.mode === "math"
   const answeredCount =
     room.game.mode === "math"
       ? room.players.filter((player) => {
@@ -3134,9 +3135,9 @@ function buildStatePayload(room, viewer = "host", playerId = "") {
   const questionDurationSec =
     Number(activeQuestion?.durationSec) || Number(room.game.questionDurationSec) || 20
   return {
-    players: room.players.map(sanitizePlayerForClient),
-    teams: room.teams,
-    leaderboard: leaderboard(room).map(sanitizePlayerForClient),
+    players: hidePeerDataForPlayer ? [] : room.players.map(sanitizePlayerForClient),
+    teams: hidePeerDataForPlayer ? [] : room.teams,
+    leaderboard: hidePeerDataForPlayer ? [] : leaderboard(room).map(sanitizePlayerForClient),
     game: {
       ...room.game,
       questionDurationSec,

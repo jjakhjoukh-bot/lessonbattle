@@ -2389,6 +2389,24 @@ body::after {
   margin: 0;
 }
 
+.join-home-note {
+  margin: 0;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.join-home-note strong,
+.join-home-note p {
+  margin: 0;
+}
+
+.join-home-note p {
+  margin-top: 6px;
+  color: rgba(237, 241, 255, 0.78);
+}
+
 @media (max-width: 1150px) {
   .hero-card,
   .host-grid,

@@ -1916,6 +1916,7 @@ function PlayerPage() {
     isHomeMathJoin
       ? Boolean(name.trim()) && /^\d{4}$/.test(learnerCode)
       : roomPreview.valid && (isMathPreview ? /^\d{4}$/.test(learnerCode) : Boolean(name.trim()))
+  const showPlayerSidebar = game.mode !== "math"
 
   return (
     <main className="page-shell player-shell">
@@ -2000,6 +2001,12 @@ function PlayerPage() {
                 ? "Vul je naam en leerlingcode in. Dan zoeken we jouw rekenroute automatisch op."
                 : "Vul hier de 4-cijferige code in die je van de docent hebt gekregen."}
             </p>
+          ) : null}
+          {!isHomeMathJoin ? (
+            <div className="join-home-note">
+              <strong>Thuis verder?</strong>
+              <p>Klik hierboven op Thuis rekenen. Dan vul je alleen je naam en leerlingcode in. Een spelcode is thuis niet nodig.</p>
+            </div>
           ) : null}
         </div>
 
@@ -2212,11 +2219,13 @@ function PlayerPage() {
           )}
         </div>
 
-        <div className="glass side-column">
-          {game.mode === "math" && game.math && learnerCode ? <LearnerCodeCard learnerCode={learnerCode} roomCode={roomCode} /> : null}
-          <ScoreBoard teams={teams} leaderboard={leaderboard} compact showGroups={liveGroupModeEnabled} />
-          <RosterBoard groupModeEnabled={liveGroupModeEnabled} players={players} teams={teams} compact />
-        </div>
+        {showPlayerSidebar || (game.mode === "math" && game.math && learnerCode) ? (
+          <div className="glass side-column">
+            {game.mode === "math" && game.math && learnerCode ? <LearnerCodeCard learnerCode={learnerCode} roomCode={roomCode} /> : null}
+            {showPlayerSidebar ? <ScoreBoard teams={teams} leaderboard={leaderboard} compact showGroups={liveGroupModeEnabled} /> : null}
+            {showPlayerSidebar ? <RosterBoard groupModeEnabled={liveGroupModeEnabled} players={players} teams={teams} compact /> : null}
+          </div>
+        ) : null}
       </section>
     </main>
   )
@@ -2524,15 +2533,17 @@ function LearnerCodeCard({ learnerCode, roomCode }) {
       <h3>Bewaar je leerlingcode</h3>
       <div className="learner-code-grid">
         <div>
-          <span>Spelcode</span>
-          <strong>{roomCode || "-"}</strong>
-        </div>
-        <div>
           <span>Leercode</span>
           <strong>{learnerCode}</strong>
         </div>
+        {roomCode ? (
+          <div>
+            <span>Spelcode in de klas</span>
+            <strong>{roomCode}</strong>
+          </div>
+        ) : null}
       </div>
-      <p className="muted">In de klas gebruik je spelcode + leerlingcode. Thuis kun je verdergaan met je naam + leerlingcode.</p>
+      <p className="muted">In de klas gebruik je spelcode + leerlingcode. Thuis ga je verder met alleen je naam + leerlingcode.</p>
     </section>
   )
 }
