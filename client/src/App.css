@@ -1876,6 +1876,12 @@ body::after {
   cursor: pointer;
 }
 
+.manual-upload-button.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+  pointer-events: none;
+}
+
 .manual-upload-button input {
   position: absolute;
   inset: 0;

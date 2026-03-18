@@ -18,6 +18,10 @@ const PLAYER_SESSION_KEY = "lessonbattle-player-session"
 const IMAGE_RENDER_VERSION = "20260318a"
 const MAX_MANUAL_UPLOAD_FILE_BYTES = 10 * 1024 * 1024
 const MAX_MANUAL_UPLOAD_DATA_BYTES = 4 * 1024 * 1024
+const TARGET_MANUAL_UPLOAD_DATA_BYTES = 1400 * 1024
+const MAX_MANUAL_UPLOAD_DIMENSION = 1280
+const MIN_MANUAL_UPLOAD_DIMENSION = 640
+const MANUAL_UPLOAD_QUALITY_STEPS = [0.82, 0.72, 0.62, 0.52]
 const MATH_LEVEL_OPTIONS = ["0f", "1f", "2f", "3f", "4f"]
 const PLAYER_JOIN_MODE_CLASSROOM = "classroom"
 const PLAYER_JOIN_MODE_HOME_MATH = "home-math"
@@ -218,12 +222,12 @@ function estimateDataUrlBytes(dataUrl) {
   return Math.floor((base64Payload.length * 3) / 4)
 }
 
-function loadImageElement(dataUrl) {
+function loadImageElement(source) {
   return new Promise((resolve, reject) => {
     const image = new Image()
     image.onload = () => resolve(image)
     image.onerror = () => reject(new Error("Afbeelding kon niet worden geopend."))
-    image.src = dataUrl
+    image.src = source
   })
 }
 
@@ -240,28 +244,56 @@ async function optimizeImageFile(file) {
     return dataUrl
   }
 
-  const image = await loadImageElement(dataUrl)
-  const maxWidth = 1600
-  const maxHeight = 1200
-  const scale = Math.min(1, maxWidth / image.width, maxHeight / image.height)
-  const width = Math.max(1, Math.round(image.width * scale))
-  const height = Math.max(1, Math.round(image.height * scale))
-  const canvas = document.createElement("canvas")
-  canvas.width = width
-  canvas.height = height
-  const context = canvas.getContext("2d")
-  if (!context) {
-    if (estimateDataUrlBytes(dataUrl) > MAX_MANUAL_UPLOAD_DATA_BYTES) {
-      throw new Error("De afbeelding is te groot om veilig te uploaden.")
+  const objectUrl = URL.createObjectURL(file)
+  try {
+    const image = await loadImageElement(objectUrl)
+    const widthScale = MAX_MANUAL_UPLOAD_DIMENSION / Math.max(1, image.width)
+    const heightScale = MAX_MANUAL_UPLOAD_DIMENSION / Math.max(1, image.height)
+    let renderScale = Math.min(1, widthScale, heightScale)
+    let bestDataUrl = ""
+    let bestByteSize = Number.POSITIVE_INFINITY
+
+    while (renderScale > 0) {
+      const width = Math.max(1, Math.round(image.width * renderScale))
+      const height = Math.max(1, Math.round(image.height * renderScale))
+      const canvas = document.createElement("canvas")
+      canvas.width = width
+      canvas.height = height
+      const context = canvas.getContext("2d")
+      if (!context) {
+        break
+      }
+
+      context.fillStyle = "#ffffff"
+      context.fillRect(0, 0, width, height)
+      context.drawImage(image, 0, 0, width, height)
+
+      for (const quality of MANUAL_UPLOAD_QUALITY_STEPS) {
+        const candidateDataUrl = canvas.toDataURL("image/jpeg", quality)
+        const candidateByteSize = estimateDataUrlBytes(candidateDataUrl)
+        if (candidateByteSize < bestByteSize) {
+          bestDataUrl = candidateDataUrl
+          bestByteSize = candidateByteSize
+        }
+        if (candidateByteSize <= TARGET_MANUAL_UPLOAD_DATA_BYTES) {
+          return candidateDataUrl
+        }
+      }
+
+      if (width <= MIN_MANUAL_UPLOAD_DIMENSION && height <= MIN_MANUAL_UPLOAD_DIMENSION) {
+        break
+      }
+      renderScale *= 0.82
     }
-    return dataUrl
-  }
-  context.drawImage(image, 0, 0, width, height)
-  const optimizedDataUrl = canvas.toDataURL("image/jpeg", 0.86)
-  if (estimateDataUrlBytes(optimizedDataUrl) > MAX_MANUAL_UPLOAD_DATA_BYTES) {
+
+    if (bestDataUrl && bestByteSize <= MAX_MANUAL_UPLOAD_DATA_BYTES) {
+      return bestDataUrl
+    }
+
     throw new Error("De afbeelding blijft te groot na verkleinen. Kies een kleinere afbeelding.")
+  } finally {
+    URL.revokeObjectURL(objectUrl)
   }
-  return optimizedDataUrl
 }
 
 function App() {
@@ -389,6 +421,7 @@ function HostPage() {
   const [manualSlideImageUrlDraft, setManualSlideImageUrlDraft] = useState("")
   const [manualSlideImageAltDraft, setManualSlideImageAltDraft] = useState("")
   const [manualSlideUploadName, setManualSlideUploadName] = useState("")
+  const [slideImageBusy, setSlideImageBusy] = useState(false)
 
   const includePracticeTest = lessonPackage === "practice" || lessonPackage === "complete"
   const includePresentation = lessonPackage === "presentation" || lessonPackage === "complete"
@@ -527,6 +560,7 @@ function HostPage() {
       }
     }
     const onError = ({ message }) => {
+      setSlideImageBusy(false)
       setStatus(`Fout: ${message}`)
       if (/onjuiste docentgegevens|sessie verlopen|sessie niet meer geldig/i.test(String(message))) {
         setHostSession(DEFAULT_HOST_SESSION)
@@ -562,6 +596,7 @@ function HostPage() {
       setStatus(message || "Leercode bijgewerkt.")
     }
     const onPresentationImageSuccess = ({ manualImageUrl, imageAlt }) => {
+      setSlideImageBusy(false)
       setManualSlideImageUrlDraft(manualImageUrl || "")
       if (typeof imageAlt === "string") setManualSlideImageAltDraft(imageAlt)
       setManualSlideUploadName("")
@@ -981,6 +1016,7 @@ function HostPage() {
       setStatus("Er is nu geen actieve dia om een afbeelding aan te koppelen.")
       return
     }
+    setSlideImageBusy(true)
     setStatus("Dia-afbeelding wordt bijgewerkt...")
     socket.emit("host:presentation-image:update", {
       slideId: currentPresentationSlide.id,
@@ -994,6 +1030,7 @@ function HostPage() {
       setStatus("Er is nu geen actieve dia om automatisch een afbeelding voor te zoeken.")
       return
     }
+    setSlideImageBusy(true)
     setStatus("Site zoekt nu een passende internetafbeelding voor deze dia...")
     socket.emit("host:presentation-image:auto", {
       slideId: currentPresentationSlide.id,
@@ -1005,6 +1042,7 @@ function HostPage() {
       setStatus("Er is nu geen actieve dia om een afbeelding te wissen.")
       return
     }
+    setSlideImageBusy(true)
     setStatus("Handmatige dia-afbeelding wordt verwijderd...")
     socket.emit("host:presentation-image:clear", {
       slideId: currentPresentationSlide.id,
@@ -1014,6 +1052,7 @@ function HostPage() {
   const uploadManualSlideImage = async (file) => {
     if (!currentPresentationSlide?.id || !file) return
     setManualSlideUploadName(file.name || "upload")
+    setSlideImageBusy(true)
     setStatus("Afbeelding wordt geoptimaliseerd en geupload...")
 
     try {
@@ -1024,6 +1063,7 @@ function HostPage() {
         imageAlt: manualSlideImageAltDraft,
       })
     } catch (error) {
+      setSlideImageBusy(false)
       setManualSlideUploadName("")
       setStatus(error instanceof Error ? error.message : "Uploaden van de afbeelding is mislukt.")
     }
@@ -1546,6 +1586,7 @@ function HostPage() {
                 onImageUrlChange={setManualSlideImageUrlDraft}
                 onSaveUrl={saveManualSlideImageUrl}
                 onUpload={uploadManualSlideImage}
+                isBusy={slideImageBusy}
                 slide={currentPresentationSlide}
                 uploadName={manualSlideUploadName}
               />
@@ -3030,6 +3071,7 @@ function ManualSlideImageCard({
   altText,
   uploadName,
   hasManualImage,
+  isBusy = false,
   onAutoSearch,
   onImageUrlChange,
   onAltTextChange,
@@ -3067,16 +3109,17 @@ function ManualSlideImageCard({
         </label>
       </div>
       <div className="manual-image-actions">
-        <button className="button-primary" onClick={onAutoSearch} type="button">
-          Zoek automatisch online
+        <button className="button-primary" disabled={isBusy} onClick={onAutoSearch} type="button">
+          {isBusy ? "Bezig..." : "Zoek automatisch online"}
         </button>
-        <button className="button-secondary" disabled={!imageUrl.trim()} onClick={onSaveUrl} type="button">
+        <button className="button-secondary" disabled={isBusy || !imageUrl.trim()} onClick={onSaveUrl} type="button">
           Gebruik link
         </button>
-        <label className="button-ghost manual-upload-button">
-          Upload afbeelding
+        <label className={`button-ghost manual-upload-button ${isBusy ? "is-disabled" : ""}`}>
+          {isBusy ? "Bezig..." : "Upload afbeelding"}
           <input
             accept="image/*"
+            disabled={isBusy}
             onChange={(event) => {
               const file = event.target.files?.[0]
               if (file) onUpload(file)
@@ -3085,7 +3128,7 @@ function ManualSlideImageCard({
             type="file"
           />
         </label>
-        <button className="button-ghost subtle-danger" disabled={!hasManualImage} onClick={onClear} type="button">
+        <button className="button-ghost subtle-danger" disabled={isBusy || !hasManualImage} onClick={onClear} type="button">
           Wis handmatige afbeelding
         </button>
       </div>

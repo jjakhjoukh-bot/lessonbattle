@@ -93,6 +93,10 @@ const AI_PROVIDER_REPAIR_TIMEOUT_MS = 30000
 const AI_ROUND_GENERATION_TIMEOUT_MS = 120000
 const AI_RESPONSE_EVALUATION_TIMEOUT_MS = 12000
 const AI_IMAGE_TIMEOUT_MS = 20000
+const REMOTE_MANUAL_IMAGE_TIMEOUT_MS = 12000
+const PUBLIC_IMAGE_QUERY_TIMEOUT_MS = 6500
+const PUBLIC_IMAGE_DOWNLOAD_TIMEOUT_MS = 12000
+const PUBLIC_IMAGE_QUERY_AI_TIMEOUT_MS = 2500
 const LESSON_EVALUATION_CACHE_LIMIT = 500
 const SESSION_HISTORY_LIMIT = 120
 const MAX_MANUAL_IMAGE_BYTES = 4 * 1024 * 1024
@@ -1970,7 +1974,7 @@ async function saveManualImageFromRemoteUrl({ imageUrl = "", entityId = "slide" 
   const normalizedUrl = sanitizeManualImageUrl(imageUrl)
   if (!normalizedUrl || isLocalManualImageUrl(normalizedUrl)) return normalizedUrl
 
-  const response = await fetchWithTimeout(normalizedUrl, {}, AI_IMAGE_TIMEOUT_MS)
+  const response = await fetchWithTimeout(normalizedUrl, {}, REMOTE_MANUAL_IMAGE_TIMEOUT_MS)
   if (!response.ok) {
     throw new Error(`De afbeelding kon niet worden opgehaald (${response.status}).`)
   }
@@ -2175,14 +2179,19 @@ function scoreReusableImageCandidate(entry, anchorTokens = []) {
   return score
 }
 
-async function buildPublicImageSearchQueries({ prompt = "", category = "", kind = "slide" }) {
+function buildPublicImageSearchQueries({ prompt = "", category = "" }) {
   const fallback = normalizePublicImageSearchQuery([category, prompt].filter(Boolean).join(" "))
   const promptOnly = normalizePublicImageSearchQuery(prompt)
   const categoryOnly = normalizePublicImageSearchQuery(category)
-  const providers = [...(openAI ? ["openai"] : []), ...(genAI ? ["gemini"] : []), ...(groq ? ["groq"] : [])]
-  const queries = [fallback, promptOnly, categoryOnly].filter(Boolean)
+  const anchorTokens = buildReusableImageAnchorTokens({ prompt, category })
+  const compactAnchorQuery = normalizePublicImageSearchQuery(anchorTokens.slice(0, 5).join(" "))
+  const subjectLedQuery = normalizePublicImageSearchQuery([anchorTokens[0], anchorTokens[1], anchorTokens[2]].filter(Boolean).join(" "))
+  return [...new Set([fallback, promptOnly, categoryOnly, compactAnchorQuery, subjectLedQuery].filter(Boolean))].slice(0, 5)
+}
 
-  if (!providers.length) return [...new Set(queries)]
+async function buildAiPublicImageSearchQuery({ prompt = "", category = "", kind = "slide" }) {
+  const preferredProvider = openAI ? "openai" : genAI ? "gemini" : groq ? "groq" : ""
+  if (!preferredProvider) return ""
 
   const searchPrompt = `
 Maak 1 korte zoekopdracht van 3 tot 6 Engelse kernwoorden voor een bestaande rechtenvrije afbeelding.
@@ -2199,22 +2208,18 @@ Regels:
 - Focus op het onderwerp of object dat echt op de afbeelding moet staan.
 `
 
-  for (const provider of providers) {
-    try {
-      const result = await requestProviderText(
-        provider,
-        searchPrompt,
-        6000,
-        "Je maakt extreem korte zoekopdrachten voor rechtenvrije afbeeldingszoekmachines."
-      )
-      const normalized = normalizePublicImageSearchQuery(result)
-      if (normalized) queries.unshift(normalized)
-    } catch (error) {
-      console.warn("[images] public image search query fallback:", error instanceof Error ? error.message : error)
-    }
+  try {
+    const result = await requestProviderText(
+      preferredProvider,
+      searchPrompt,
+      PUBLIC_IMAGE_QUERY_AI_TIMEOUT_MS,
+      "Je maakt extreem korte zoekopdrachten voor rechtenvrije afbeeldingszoekmachines."
+    )
+    return normalizePublicImageSearchQuery(result)
+  } catch (error) {
+    console.warn("[images] public image search query fallback:", error instanceof Error ? error.message : error)
+    return ""
   }
-
-  return [...new Set(queries.filter(Boolean))]
 }
 
 function isReusablePublicImageLicense(value = "") {
@@ -2241,14 +2246,18 @@ async function searchReusableReferenceImageByQuery(searchQuery = "", anchorToken
     format: "json",
     generator: "search",
     gsrnamespace: "6",
-    gsrlimit: "12",
+    gsrlimit: "8",
     gsrsearch: searchQuery,
     prop: "imageinfo",
     iiprop: "url|extmetadata",
     iiurlwidth: "1400",
   }).toString()
 
-  const response = await fetchWithTimeout(url.toString(), { headers: { accept: "application/json" } }, 10000)
+  const response = await fetchWithTimeout(
+    url.toString(),
+    { headers: { accept: "application/json" } },
+    PUBLIC_IMAGE_QUERY_TIMEOUT_MS
+  )
   if (!response.ok) {
     throw new Error(`Wikimedia Commons zoekopdracht mislukte (${response.status}).`)
   }
@@ -2293,7 +2302,7 @@ async function searchReusableReferenceImageByQuery(searchQuery = "", anchorToken
   const selectedImage = matches[0]
   if (!selectedImage || selectedImage.score < 3) return null
 
-  const imageResponse = await fetchWithTimeout(selectedImage.imageUrl, {}, AI_IMAGE_TIMEOUT_MS)
+  const imageResponse = await fetchWithTimeout(selectedImage.imageUrl, {}, PUBLIC_IMAGE_DOWNLOAD_TIMEOUT_MS)
   if (!imageResponse.ok) {
     throw new Error(`Gevonden Wikimedia-afbeelding kon niet worden opgehaald (${imageResponse.status}).`)
   }
@@ -2315,7 +2324,7 @@ async function searchReusableReferenceImageByQuery(searchQuery = "", anchorToken
 async function searchReusableReferenceImage({ prompt = "", category = "", kind = "slide" }) {
   if (kind !== "slide") return null
 
-  const searchQueries = await buildPublicImageSearchQueries({ prompt, category, kind })
+  const searchQueries = buildPublicImageSearchQueries({ prompt, category })
   const anchorTokens = buildReusableImageAnchorTokens({ prompt, category })
   for (const searchQuery of searchQueries) {
     try {
@@ -2323,6 +2332,16 @@ async function searchReusableReferenceImage({ prompt = "", category = "", kind =
       if (match) return match
     } catch (error) {
       console.warn("[images] reusable image search query failed:", error instanceof Error ? error.message : error)
+    }
+  }
+
+  const aiQuery = await buildAiPublicImageSearchQuery({ prompt, category, kind })
+  if (aiQuery && !searchQueries.includes(aiQuery)) {
+    try {
+      const match = await searchReusableReferenceImageByQuery(aiQuery, anchorTokens)
+      if (match) return match
+    } catch (error) {
+      console.warn("[images] reusable image AI fallback query failed:", error instanceof Error ? error.message : error)
     }
   }
 
