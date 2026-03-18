@@ -13,6 +13,7 @@ import "./App.css"
 const socket = io(window.location.origin.startsWith("http://localhost:5173") ? "http://localhost:3001" : window.location.origin)
 const HOST_SESSION_KEY = "lessonbattle-host-session"
 const HOST_ROOM_BACKUP_KEY_PREFIX = "lessonbattle-host-room-backup"
+const HOST_LAST_ROOM_KEY_PREFIX = "lessonbattle-host-last-room"
 const PLAYER_SESSION_KEY = "lessonbattle-player-session"
 const IMAGE_RENDER_VERSION = "20260316b"
 const MAX_MANUAL_UPLOAD_FILE_BYTES = 10 * 1024 * 1024
@@ -152,6 +153,10 @@ function buildHostBackupStorageKey(username = "") {
   return `${HOST_ROOM_BACKUP_KEY_PREFIX}-${String(username || "default").trim().toLowerCase() || "default"}`
 }
 
+function buildHostLastRoomStorageKey(username = "") {
+  return `${HOST_LAST_ROOM_KEY_PREFIX}-${String(username || "default").trim().toLowerCase() || "default"}`
+}
+
 function readHostRoomBackup(username = "") {
   if (!username) return null
   try {
@@ -185,6 +190,18 @@ function writeHostRoomBackup(username = "", snapshot) {
 function clearHostRoomBackup(username = "") {
   if (!username) return
   window.localStorage.removeItem(buildHostBackupStorageKey(username))
+}
+
+function readHostLastRoomCode(username = "") {
+  if (!username) return ""
+  return String(window.localStorage.getItem(buildHostLastRoomStorageKey(username)) || "").trim().toUpperCase()
+}
+
+function writeHostLastRoomCode(username = "", roomCode = "") {
+  if (!username) return
+  const normalizedRoomCode = String(roomCode || "").trim().toUpperCase()
+  if (!normalizedRoomCode) return
+  window.localStorage.setItem(buildHostLastRoomStorageKey(username), normalizedRoomCode)
 }
 
 function readFileAsDataUrl(file) {
@@ -456,6 +473,7 @@ function HostPage() {
 
   useEffect(() => {
     const onLoginSuccess = ({ username, displayName, role, canManageAccounts, roomCode, sessionToken }) => {
+      writeHostLastRoomCode(username || loginForm.username, roomCode)
       setHostSession((current) => ({
         ...current,
         authenticated: true,
@@ -489,6 +507,8 @@ function HostPage() {
       )
     }
     const onRoomUpdate = ({ roomCode }) => {
+      const username = hostSession.username || loginForm.username
+      writeHostLastRoomCode(username, roomCode)
       setHostSession((current) => ({ ...current, roomCode }))
     }
     const onStarted = ({ message }) => setStatus(message)
@@ -553,6 +573,8 @@ function HostPage() {
       if (storedBackup) setLocalRoomBackup(storedBackup)
     }
     const onBackupRestoreSuccess = ({ roomCode, title }) => {
+      const username = hostSession.username || loginForm.username
+      writeHostLastRoomCode(username, roomCode)
       setStatus(`Lokale backup hersteld${title ? `: ${title}` : ""}. Roomcode ${roomCode}.`)
     }
 
@@ -796,14 +818,18 @@ function HostPage() {
 
   const login = () => {
     setStatus("Inloggegevens controleren...")
-    socket.emit("host:login", { ...loginForm, roomCode: "" })
+    const normalizedUsername = String(loginForm.username || "").trim()
+    const rememberedRoomCode =
+      readHostLastRoomCode(normalizedUsername) || readHostRoomBackup(normalizedUsername)?.roomCode || ""
+    socket.emit("host:login", { ...loginForm, roomCode: rememberedRoomCode })
   }
 
   const logout = () => {
+    const rememberedUsername = hostSession.username || loginForm.username
     socket.emit("host:logout")
     window.sessionStorage.removeItem(HOST_SESSION_KEY)
     setHostSession(DEFAULT_HOST_SESSION)
-    setLoginForm({ username: "", password: "" })
+    setLoginForm({ username: rememberedUsername || "", password: "" })
     setTeacherAccounts([])
     setStatus("Je bent uitgelogd.")
   }
@@ -2474,9 +2500,14 @@ function MathHostPanel({
   onRestoreLocalBackup,
 }) {
   const [showOverview, setShowOverview] = useState(true)
+  const [searchTerm, setSearchTerm] = useState("")
   if (!math) return null
 
   const playerRows = insights?.mode === "math" ? insights.players || [] : math.players || []
+  const normalizedSearchTerm = String(searchTerm || "").trim().toLowerCase()
+  const visiblePlayerRows = normalizedSearchTerm
+    ? playerRows.filter((player) => `${player.name || ""} ${player.learnerCode || ""}`.toLowerCase().includes(normalizedSearchTerm))
+    : playerRows
 
   return (
     <section className="math-host-panel">
@@ -2521,9 +2552,25 @@ function MathHostPanel({
         </div>
       ) : null}
 
+      <div className="math-host-card">
+        <div className="math-host-card-head">
+          <div>
+            <strong>Zoek leerling</strong>
+            <span>Zoek op naam of leerlingcode om direct te zien hoe iemand werkt.</span>
+          </div>
+          <span className="pill">{visiblePlayerRows.length} zichtbaar</span>
+        </div>
+        <input
+          className="math-code-input"
+          onChange={(event) => setSearchTerm(event.target.value)}
+          placeholder="Bijv. Amina of 4821"
+          value={searchTerm}
+        />
+      </div>
+
       {showOverview ? (
         <div className="math-monitor-grid">
-          {playerRows.map((player) => (
+          {visiblePlayerRows.map((player) => (
             <article className="math-monitor-card" key={`${player.playerId}-overview`}>
               <strong>{player.name}</strong>
               <span>{player.workLabel || "Nog niet gestart"}</span>
@@ -2568,7 +2615,7 @@ function MathHostPanel({
       </div>
 
       <div className="math-host-grid">
-        {playerRows.map((player) => (
+        {visiblePlayerRows.map((player) => (
           <article className="math-host-card" key={player.playerId}>
             <div className="math-host-card-head">
               <div>

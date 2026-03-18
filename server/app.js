@@ -2085,6 +2085,83 @@ function normalizePublicImageSearchQuery(value = "") {
   return [...new Set(tokens)].slice(0, 8).join(" ")
 }
 
+function tokenizePublicImageText(value = "") {
+  return normalizePublicImageSearchQuery(value)
+    .split(/\s+/)
+    .filter(Boolean)
+}
+
+function expandReusableImageTokens(tokens = []) {
+  const aliasMap = new Map([
+    ["marokko", ["morocco", "maroc"]],
+    ["morocco", ["marokko", "maroc"]],
+    ["maroc", ["morocco", "marokko"]],
+    ["woestijn", ["desert"]],
+    ["desert", ["woestijn"]],
+    ["bergen", ["mountains", "mountain"]],
+    ["berg", ["mountain", "mountains"]],
+    ["mountain", ["berg", "bergen", "mountains"]],
+    ["mountains", ["berg", "bergen", "mountain"]],
+    ["steden", ["cities", "city"]],
+    ["stad", ["city", "cities"]],
+    ["city", ["stad", "steden", "cities"]],
+    ["cities", ["stad", "steden", "city"]],
+    ["kaart", ["map"]],
+    ["map", ["kaart"]],
+    ["atlasgebergte", ["atlas"]],
+  ])
+
+  const expanded = new Set(tokens)
+  for (const token of tokens) {
+    const aliases = aliasMap.get(token) || []
+    for (const alias of aliases) expanded.add(alias)
+  }
+  return [...expanded]
+}
+
+function buildReusableImageAnchorTokens({ prompt = "", category = "" }) {
+  const baseTokens = tokenizePublicImageText([category, prompt].filter(Boolean).join(" "))
+  const meaningfulTokens = baseTokens.filter(
+    (token) =>
+      token.length >= 5 ||
+      ["map", "city", "atlas", "rabat", "sahara", "maroc"].includes(token)
+  )
+  return expandReusableImageTokens(meaningfulTokens).slice(0, 12)
+}
+
+function scoreReusableImageCandidate(entry, anchorTokens = []) {
+  const rawText = [entry?.title, entry?.description, entry?.sourceUrl]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase()
+  const candidateTokens = new Set(tokenizePublicImageText(rawText))
+
+  let score = 0
+  for (const token of anchorTokens) {
+    if (!candidateTokens.has(token)) continue
+    score += token.length >= 6 ? 3 : 2
+  }
+
+  if (/(comparative heights|principal mountains|north america|south america|world|continents?)/i.test(rawText)) {
+    score -= 8
+  }
+
+  if ((candidateTokens.has("atlas") || candidateTokens.has("mountains")) && !candidateTokens.has("morocco") && !candidateTokens.has("marokko") && !candidateTokens.has("maroc")) {
+    score -= 4
+  }
+
+  if ((anchorTokens.includes("morocco") || anchorTokens.includes("marokko") || anchorTokens.includes("maroc")) &&
+    (candidateTokens.has("morocco") || candidateTokens.has("marokko") || candidateTokens.has("maroc"))) {
+    score += 6
+  }
+
+  if (anchorTokens.includes("sahara") && candidateTokens.has("sahara")) score += 5
+  if (anchorTokens.includes("rabat") && candidateTokens.has("rabat")) score += 5
+  if (anchorTokens.includes("atlas") && candidateTokens.has("atlas")) score += 3
+
+  return score
+}
+
 async function buildPublicImageSearchQueries({ prompt = "", category = "", kind = "slide" }) {
   const fallback = normalizePublicImageSearchQuery([category, prompt].filter(Boolean).join(" "))
   const promptOnly = normalizePublicImageSearchQuery(prompt)
@@ -2142,7 +2219,7 @@ function extractCommonsMetadataValue(metadata = {}, key = "") {
   return stripHtmlTags(metadata?.[key]?.value || "")
 }
 
-async function searchReusableReferenceImageByQuery(searchQuery = "") {
+async function searchReusableReferenceImageByQuery(searchQuery = "", anchorTokens = []) {
   if (!searchQuery) return null
 
   const url = new URL("https://commons.wikimedia.org/w/api.php")
@@ -2175,18 +2252,33 @@ async function searchReusableReferenceImageByQuery(searchQuery = "") {
         extractCommonsMetadataValue(metadata, "UsageTerms")
       const author = extractCommonsMetadataValue(metadata, "Artist")
       const sourceUrl = stripHtmlTags(imageInfo?.descriptionurl || imageInfo?.descriptionshorturl || "")
+      const description =
+        extractCommonsMetadataValue(metadata, "ImageDescription") ||
+        extractCommonsMetadataValue(metadata, "ObjectName") ||
+        extractCommonsMetadataValue(metadata, "Categories")
 
       return {
+        title: stripHtmlTags(page?.title || ""),
+        description,
         imageUrl: String(imageInfo?.thumburl || imageInfo?.url || "").trim(),
         license,
         author,
         sourceUrl,
+        score: scoreReusableImageCandidate(
+          {
+            title: page?.title || "",
+            description,
+            sourceUrl,
+          },
+          anchorTokens
+        ),
       }
     })
     .filter((entry) => entry.imageUrl && isReusablePublicImageLicense(entry.license))
+    .sort((left, right) => right.score - left.score)
 
   const selectedImage = matches[0]
-  if (!selectedImage) return null
+  if (!selectedImage || selectedImage.score < 3) return null
 
   const imageResponse = await fetchWithTimeout(selectedImage.imageUrl, {}, AI_IMAGE_TIMEOUT_MS)
   if (!imageResponse.ok) {
@@ -2211,9 +2303,10 @@ async function searchReusableReferenceImage({ prompt = "", category = "", kind =
   if (kind !== "slide") return null
 
   const searchQueries = await buildPublicImageSearchQueries({ prompt, category, kind })
+  const anchorTokens = buildReusableImageAnchorTokens({ prompt, category })
   for (const searchQuery of searchQueries) {
     try {
-      const match = await searchReusableReferenceImageByQuery(searchQuery)
+      const match = await searchReusableReferenceImageByQuery(searchQuery, anchorTokens)
       if (match) return match
     } catch (error) {
       console.warn("[images] reusable image search query failed:", error instanceof Error ? error.message : error)
