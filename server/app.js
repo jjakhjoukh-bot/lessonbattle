@@ -52,6 +52,11 @@ const groqModel = process.env.GROQ_MODEL || "llama-3.3-70b-versatile"
 const openAIApiKey = process.env.OPENAI_API_KEY
 const openAIModel = process.env.OPENAI_MODEL || "gpt-4.1-mini"
 const openAIImageModel = process.env.OPENAI_IMAGE_MODEL || "gpt-image-1"
+const firebaseProjectId = process.env.FIREBASE_PROJECT_ID || ""
+const firebaseClientEmail = process.env.FIREBASE_CLIENT_EMAIL || ""
+const firebasePrivateKey = process.env.FIREBASE_PRIVATE_KEY || ""
+const firebaseServiceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON || ""
+const firestoreDatabaseId = process.env.FIREBASE_FIRESTORE_DATABASE || "(default)"
 const port = Number(process.env.PORT || 3001)
 const teacherUsername = process.env.TEACHER_USERNAME || "docent"
 const teacherPassword = process.env.TEACHER_PASSWORD || "les1234"
@@ -99,6 +104,11 @@ const MATH_LEVELS = ["0f", "1f", "2f", "3f", "4f"]
 const MATH_ROOM_GRACE_MS = 7 * 24 * 60 * 60 * 1000
 const MATH_INTAKE_QUESTION_COUNT = 16
 const MAX_MATH_ANSWER_HISTORY = 24
+const MATH_CLOUD_COLLECTION = "lessonBattleMathRooms"
+const MATH_CLOUD_RESUME_COLLECTION = "lessonBattleMathResume"
+const MATH_CLOUD_SCOPE = "https://www.googleapis.com/auth/datastore"
+const MATH_CLOUD_TOKEN_URL = "https://oauth2.googleapis.com/token"
+const MATH_CLOUD_PERSIST_DEBOUNCE_MS = 800
 const MATH_ACTIVE_WINDOW_MS = 5 * 60 * 1000
 const MATH_STALE_WINDOW_MS = 20 * 60 * 1000
 const BASE_CORRECT_POINTS = 100
@@ -113,6 +123,8 @@ const socketToRoom = new Map()
 const rooms = new Map()
 const lessonEvaluationCache = new Map()
 const invalidImageSignatureAttempts = new Map()
+const mathCloudPersistTimers = new Map()
+let mathCloudTokenCache = null
 let roomPersistenceTimer = null
 
 function generateEntityId(prefix = "item") {
@@ -162,6 +174,141 @@ function normalizeParticipantName(value = "") {
     .trim()
     .toLowerCase()
     .replace(/\s+/g, " ")
+}
+
+function normalizeMultilineSecret(value = "") {
+  return String(value || "").replace(/\\n/g, "\n").trim()
+}
+
+function parseFirebaseServiceAccount() {
+  if (firebaseServiceAccountJson.trim()) {
+    try {
+      const parsed = JSON.parse(firebaseServiceAccountJson)
+      return {
+        projectId: String(parsed.project_id || parsed.projectId || "").trim(),
+        clientEmail: String(parsed.client_email || parsed.clientEmail || "").trim(),
+        privateKey: normalizeMultilineSecret(parsed.private_key || parsed.privateKey || ""),
+      }
+    } catch (error) {
+      console.error("FIREBASE_SERVICE_ACCOUNT_JSON kon niet worden gelezen:", error instanceof Error ? error.message : error)
+    }
+  }
+
+  if (firebaseProjectId.trim() && firebaseClientEmail.trim() && firebasePrivateKey.trim()) {
+    return {
+      projectId: firebaseProjectId.trim(),
+      clientEmail: firebaseClientEmail.trim(),
+      privateKey: normalizeMultilineSecret(firebasePrivateKey),
+    }
+  }
+
+  return null
+}
+
+const firebaseServiceAccount = parseFirebaseServiceAccount()
+const mathCloudEnabled = Boolean(
+  firebaseServiceAccount?.projectId && firebaseServiceAccount?.clientEmail && firebaseServiceAccount?.privateKey
+)
+
+function base64UrlEncode(value) {
+  const buffer = Buffer.isBuffer(value) ? value : Buffer.from(String(value || ""))
+  return buffer
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "")
+}
+
+function buildMathCloudResumeDocId(name = "", learnerCode = "") {
+  return crypto.createHash("sha256").update(`${normalizeParticipantName(name)}|${normalizeLearnerCode(learnerCode)}`).digest("hex")
+}
+
+function firestoreDocUrl(collectionName, documentId) {
+  return `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(firebaseServiceAccount?.projectId || "")}/databases/${encodeURIComponent(firestoreDatabaseId)}/documents/${encodeURIComponent(collectionName)}/${encodeURIComponent(documentId)}`
+}
+
+function firestoreStringField(value = "") {
+  return { stringValue: String(value ?? "") }
+}
+
+function firestoreBooleanField(value) {
+  return { booleanValue: Boolean(value) }
+}
+
+function readFirestoreString(document, fieldName, fallback = "") {
+  const value = document?.fields?.[fieldName]
+  if (!value) return fallback
+  if (typeof value.stringValue === "string") return value.stringValue
+  if (typeof value.integerValue === "string") return value.integerValue
+  if (typeof value.booleanValue === "boolean") return value.booleanValue ? "true" : "false"
+  return fallback
+}
+
+async function getMathCloudAccessToken() {
+  if (!mathCloudEnabled) return ""
+  if (mathCloudTokenCache?.token && Date.now() < mathCloudTokenCache.expiresAt) {
+    return mathCloudTokenCache.token
+  }
+
+  const issuedAt = Math.floor(Date.now() / 1000)
+  const jwtHeader = base64UrlEncode(JSON.stringify({ alg: "RS256", typ: "JWT" }))
+  const jwtPayload = base64UrlEncode(
+    JSON.stringify({
+      iss: firebaseServiceAccount.clientEmail,
+      sub: firebaseServiceAccount.clientEmail,
+      aud: MATH_CLOUD_TOKEN_URL,
+      scope: MATH_CLOUD_SCOPE,
+      iat: issuedAt,
+      exp: issuedAt + 3600,
+    })
+  )
+  const unsignedToken = `${jwtHeader}.${jwtPayload}`
+  const signer = crypto.createSign("RSA-SHA256")
+  signer.update(unsignedToken)
+  signer.end()
+  const signature = base64UrlEncode(signer.sign(firebaseServiceAccount.privateKey))
+  const assertion = `${unsignedToken}.${signature}`
+
+  const response = await fetch(MATH_CLOUD_TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+      assertion,
+    }),
+  })
+  const payload = await response.json().catch(() => ({}))
+  if (!response.ok || !payload?.access_token) {
+    throw new Error(payload?.error_description || payload?.error?.message || "Kon geen Firestore toegangstoken ophalen.")
+  }
+
+  mathCloudTokenCache = {
+    token: payload.access_token,
+    expiresAt: Date.now() + Math.max(60, (Number(payload.expires_in) || 3600) - 60) * 1000,
+  }
+  return mathCloudTokenCache.token
+}
+
+async function firestoreRequest(documentUrl, { method = "GET", body = null } = {}) {
+  const token = await getMathCloudAccessToken()
+  const response = await fetch(documentUrl, {
+    method,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...(body ? { "Content-Type": "application/json" } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  })
+
+  if (response.status === 404) return null
+
+  const text = await response.text()
+  const payload = text ? JSON.parse(text) : null
+  if (!response.ok) {
+    throw new Error(payload?.error?.message || `Firestore verzoek mislukte (${response.status}).`)
+  }
+
+  return payload
 }
 
 function hashTeacherPassword(password, salt = crypto.randomBytes(16).toString("hex")) {
@@ -3721,6 +3868,171 @@ function deserializeRoomSnapshot(snapshot) {
   return room
 }
 
+function canPersistMathRoomToCloud(room) {
+  return Boolean(mathCloudEnabled && room?.game?.mode === "math" && room?.math?.selectedBand)
+}
+
+function buildMathCloudRoomDocument(room) {
+  return {
+    fields: {
+      roomCode: firestoreStringField(room.code),
+      title: firestoreStringField(room.math?.title || ""),
+      selectedBand: firestoreStringField(normalizeMathLevel(room.math?.selectedBand || "")),
+      updatedAt: firestoreStringField(room.updatedAt || new Date().toISOString()),
+      createdAt: firestoreStringField(room.createdAt || new Date().toISOString()),
+      snapshotJson: firestoreStringField(JSON.stringify(serializeRoomSnapshot(room))),
+      source: firestoreStringField("lesson-battle"),
+      active: firestoreBooleanField(true),
+    },
+  }
+}
+
+function buildMathCloudResumeDocument(room, player) {
+  return {
+    fields: {
+      roomCode: firestoreStringField(room.code),
+      playerId: firestoreStringField(player.id),
+      learnerCode: firestoreStringField(player.learnerCode || ""),
+      name: firestoreStringField(player.name || ""),
+      nameKey: firestoreStringField(normalizeParticipantName(player.name || "")),
+      updatedAt: firestoreStringField(room.updatedAt || new Date().toISOString()),
+      active: firestoreBooleanField(true),
+    },
+  }
+}
+
+async function writeMathRoomToCloud(room) {
+  if (!canPersistMathRoomToCloud(room)) return
+  await firestoreRequest(firestoreDocUrl(MATH_CLOUD_COLLECTION, room.code), {
+    method: "PATCH",
+    body: buildMathCloudRoomDocument(room),
+  })
+}
+
+function schedulePersistMathRoomToCloud(room) {
+  if (!canPersistMathRoomToCloud(room)) return
+  const roomCode = room.code
+  if (mathCloudPersistTimers.has(roomCode)) return
+  const timer = setTimeout(async () => {
+    mathCloudPersistTimers.delete(roomCode)
+    const latestRoom = rooms.get(roomCode) || room
+    if (!canPersistMathRoomToCloud(latestRoom)) return
+    try {
+      await writeMathRoomToCloud(latestRoom)
+    } catch (error) {
+      console.error("Kon rekenroom niet naar Firestore schrijven:", error instanceof Error ? error.message : error)
+    }
+  }, MATH_CLOUD_PERSIST_DEBOUNCE_MS)
+  mathCloudPersistTimers.set(roomCode, timer)
+}
+
+async function syncMathResumeIndexForPlayer(room, player) {
+  if (!canPersistMathRoomToCloud(room)) return
+  if (!player?.id || !player?.name || !isValidLearnerCode(player?.learnerCode)) return
+  try {
+    await firestoreRequest(firestoreDocUrl(MATH_CLOUD_RESUME_COLLECTION, buildMathCloudResumeDocId(player.name, player.learnerCode)), {
+      method: "PATCH",
+      body: buildMathCloudResumeDocument(room, player),
+    })
+  } catch (error) {
+    console.error("Kon resume-index niet opslaan:", error instanceof Error ? error.message : error)
+  }
+}
+
+async function syncMathResumeIndexForRoom(room) {
+  if (!canPersistMathRoomToCloud(room)) return
+  await Promise.all(room.players.map((player) => syncMathResumeIndexForPlayer(room, player)))
+}
+
+async function removeMathResumeIndex(name, learnerCode) {
+  if (!mathCloudEnabled || !name || !isValidLearnerCode(learnerCode)) return
+  try {
+    await firestoreRequest(firestoreDocUrl(MATH_CLOUD_RESUME_COLLECTION, buildMathCloudResumeDocId(name, learnerCode)), {
+      method: "DELETE",
+    })
+  } catch (error) {
+    if (!String(error instanceof Error ? error.message : error).includes("404")) {
+      console.error("Kon oude resume-index niet verwijderen:", error instanceof Error ? error.message : error)
+    }
+  }
+}
+
+async function loadMathRoomFromCloud(roomCode) {
+  if (!mathCloudEnabled) return null
+  const normalizedCode = String(roomCode ?? "").trim().toUpperCase()
+  if (!normalizedCode) return null
+  try {
+    const document = await firestoreRequest(firestoreDocUrl(MATH_CLOUD_COLLECTION, normalizedCode))
+    const snapshotJson = readFirestoreString(document, "snapshotJson", "")
+    if (!snapshotJson) return null
+    const snapshot = JSON.parse(snapshotJson)
+    const restoredRoom = deserializeRoomSnapshot(snapshot)
+    if (!restoredRoom || restoredRoom.game?.mode !== "math" || !restoredRoom.math?.selectedBand) return null
+    return restoredRoom
+  } catch (error) {
+    console.error("Kon rekenroom niet uit Firestore laden:", error instanceof Error ? error.message : error)
+    return null
+  }
+}
+
+async function restoreMathRoomFromCloud(roomCode, { allowAlternateCode = false } = {}) {
+  const normalizedCode = String(roomCode ?? "").trim().toUpperCase()
+  if (!normalizedCode) return null
+  if (rooms.has(normalizedCode)) return rooms.get(normalizedCode) || null
+
+  const restoredRoom = await loadMathRoomFromCloud(normalizedCode)
+  if (!restoredRoom) return null
+  if (rooms.has(restoredRoom.code)) {
+    if (!allowAlternateCode) return null
+    restoredRoom.code = generateRoomCode()
+  }
+
+  for (const player of restoredRoom.players) {
+    player.socketId = null
+    player.connected = false
+  }
+  restoredRoom.hostSocketId = null
+  restoredRoom.hostOnline = false
+  rooms.set(restoredRoom.code, restoredRoom)
+  scheduleRoomClosure(restoredRoom)
+  emitStateToRoom(restoredRoom)
+  return restoredRoom
+}
+
+async function findMathRoomForHomeResumeFromCloud(name, learnerCode) {
+  if (!mathCloudEnabled) return { room: null, player: null }
+  if (!name || !isValidLearnerCode(learnerCode)) return { room: null, player: null }
+
+  try {
+    const document = await firestoreRequest(
+      firestoreDocUrl(MATH_CLOUD_RESUME_COLLECTION, buildMathCloudResumeDocId(name, learnerCode))
+    )
+    if (!document) return { room: null, player: null }
+
+    const roomCode = readFirestoreString(document, "roomCode", "")
+    const playerId = readFirestoreString(document, "playerId", "")
+    let room = roomCode ? rooms.get(roomCode) || null : null
+    if (!room && roomCode) {
+      room = await restoreMathRoomFromCloud(roomCode, { allowAlternateCode: true })
+    }
+    if (!room || room.game?.mode !== "math") return { room: null, player: null }
+
+    const normalizedName = normalizeParticipantName(name)
+    const player =
+      room.players.find((entry) => entry.id === playerId) ||
+      room.players.find(
+        (entry) =>
+          entry.learnerCode === normalizeLearnerCode(learnerCode) && normalizeParticipantName(entry.name || "") === normalizedName
+      ) ||
+      null
+
+    return { room, player }
+  } catch (error) {
+    console.error("Kon thuisroute niet uit Firestore laden:", error instanceof Error ? error.message : error)
+    return { room: null, player: null }
+  }
+}
+
 function loadPersistedRooms() {
   try {
     ensureSharedDataDir()
@@ -3967,6 +4279,7 @@ function emitStateToRoom(room) {
   }
   emitHostInsights(room)
   schedulePersistActiveRooms()
+  schedulePersistMathRoomToCloud(room)
 }
 
 function emitStateToSocket(socket, room) {
@@ -5664,7 +5977,7 @@ if (fs.existsSync(clientDistPath)) {
 io.on("connection", (socket) => {
   emitStateToSocket(socket, getRoomBySocketId(socket.id))
 
-  socket.on("host:login", ({ username, password, roomCode }) => {
+  socket.on("host:login", async ({ username, password, roomCode }) => {
     const account = authenticateTeacherAccount(username, password)
     if (!account) {
       socket.emit("host:error", { message: "Onjuiste docentgegevens." })
@@ -5672,7 +5985,10 @@ io.on("connection", (socket) => {
     }
 
     const requestedCode = String(roomCode ?? "").trim().toUpperCase()
-    const reclaimableRoom = requestedCode ? rooms.get(requestedCode) : null
+    let reclaimableRoom = requestedCode ? rooms.get(requestedCode) : null
+    if (!reclaimableRoom && requestedCode) {
+      reclaimableRoom = await restoreMathRoomFromCloud(requestedCode)
+    }
     const room = reclaimableRoom ?? getRoomBySocketId(socket.id) ?? createRoom(socket.id)
     claimRoomForHost(room, socket.id)
     clearHostSession(socket.id, { invalidateToken: true })
@@ -5704,7 +6020,7 @@ io.on("connection", (socket) => {
     emitStateToSocket(socket, room)
   })
 
-  socket.on("host:restore-session", ({ sessionToken, roomCode }) => {
+  socket.on("host:restore-session", async ({ sessionToken, roomCode }) => {
     const session = getHostSessionByToken(sessionToken)
     if (!session) {
       socket.emit("host:error", { message: "Je docentsessie is verlopen. Log opnieuw in." })
@@ -5712,8 +6028,14 @@ io.on("connection", (socket) => {
     }
 
     const requestedCode = String(roomCode ?? session.roomCode ?? "").trim().toUpperCase()
-    const reclaimableRoom = requestedCode ? rooms.get(requestedCode) : null
-    const rememberedRoom = session.roomCode ? rooms.get(session.roomCode) : null
+    let reclaimableRoom = requestedCode ? rooms.get(requestedCode) : null
+    if (!reclaimableRoom && requestedCode) {
+      reclaimableRoom = await restoreMathRoomFromCloud(requestedCode)
+    }
+    let rememberedRoom = session.roomCode ? rooms.get(session.roomCode) : null
+    if (!rememberedRoom && session.roomCode) {
+      rememberedRoom = await restoreMathRoomFromCloud(session.roomCode)
+    }
     const room = reclaimableRoom ?? rememberedRoom ?? getRoomBySocketId(socket.id) ?? createRoom(socket.id)
 
     clearHostSession(socket.id, { invalidateToken: true })
@@ -5954,8 +6276,12 @@ io.on("connection", (socket) => {
     emitStateToSocket(socket, null)
   })
 
-  socket.on("player:lookup-room", ({ roomCode }) => {
-    const room = rooms.get(String(roomCode ?? "").trim().toUpperCase())
+  socket.on("player:lookup-room", async ({ roomCode }) => {
+    const normalizedCode = String(roomCode ?? "").trim().toUpperCase()
+    let room = rooms.get(normalizedCode)
+    if (!room && normalizedCode) {
+      room = await restoreMathRoomFromCloud(normalizedCode)
+    }
     if (!room) {
       socket.emit("player:room:preview", { valid: false })
       return
@@ -6095,9 +6421,10 @@ io.on("connection", (socket) => {
     })
   })
 
-  socket.on("host:start-math", ({ band }) => {
+  socket.on("host:start-math", async ({ band }) => {
     const room = requireHostRoom(socket)
     if (!room) return
+    const previousMathPlayers = room.game.mode === "math" ? room.players.map((player) => ({ name: player.name, learnerCode: player.learnerCode })) : []
 
     const selectedBand = normalizeMathLevel(band)
     room.questions = []
@@ -6143,6 +6470,8 @@ io.on("connection", (socket) => {
     }
 
     emitStateToRoom(room)
+    await Promise.all(previousMathPlayers.map((player) => removeMathResumeIndex(player.name, player.learnerCode)))
+    await syncMathResumeIndexForRoom(room)
     socket.emit("host:generate:success", {
       count: room.math.intakeQuestions.length,
       provider: "math",
@@ -6806,7 +7135,7 @@ io.on("connection", (socket) => {
     emitStateToRoom(room)
   })
 
-  socket.on("host:remove-player", ({ playerId }) => {
+  socket.on("host:remove-player", async ({ playerId }) => {
     const room = requireHostRoom(socket)
     if (!room) return
 
@@ -6826,10 +7155,11 @@ io.on("connection", (socket) => {
       })
     }
 
+    await removeMathResumeIndex(playerToRemove.name, playerToRemove.learnerCode)
     emitStateToRoom(room)
   })
 
-  socket.on("host:math:learner:create", ({ name, learnerCode }) => {
+  socket.on("host:math:learner:create", async ({ name, learnerCode }) => {
     const room = requireHostRoom(socket)
     if (!room || room.game.mode !== "math") return
 
@@ -6858,12 +7188,13 @@ io.on("connection", (socket) => {
     room.players.push(nextPlayer)
     ensureMathProgress(room, nextPlayer.id)
     emitStateToRoom(room)
+    await syncMathResumeIndexForPlayer(room, nextPlayer)
     socket.emit("host:learner-code:success", {
       message: `Leerling ${trimmedName} toegevoegd met code ${normalizedCode}.`,
     })
   })
 
-  socket.on("host:learner-code:update", ({ playerId, learnerCode }) => {
+  socket.on("host:learner-code:update", async ({ playerId, learnerCode }) => {
     const room = requireHostRoom(socket)
     if (!room) return
 
@@ -6883,6 +7214,8 @@ io.on("connection", (socket) => {
       return
     }
 
+    const previousName = player.name
+    const previousLearnerCode = player.learnerCode
     player.learnerCode = normalizedCode
     if (player.socketId) {
       io.to(player.socketId).emit("player:profile:update", {
@@ -6892,16 +7225,22 @@ io.on("connection", (socket) => {
     }
 
     emitStateToRoom(room)
+    await removeMathResumeIndex(previousName, previousLearnerCode)
+    await syncMathResumeIndexForPlayer(room, player)
     socket.emit("host:learner-code:success", {
       message: `Leercode van ${player.name} is bijgewerkt.`,
     })
   })
 
-  socket.on("player:join", ({ name, teamId, roomCode, playerSessionId, learnerCode }) => {
+  socket.on("player:join", async ({ name, teamId, roomCode, playerSessionId, learnerCode }) => {
     const requestedPlayerSessionId = String(playerSessionId ?? "").trim()
     const requestedLearnerCode = normalizeLearnerCode(learnerCode)
     const requestedTeamId = String(teamId ?? "").trim()
-    const room = rooms.get(String(roomCode ?? "").trim().toUpperCase())
+    const normalizedRoomCode = String(roomCode ?? "").trim().toUpperCase()
+    let room = rooms.get(normalizedRoomCode)
+    if (!room && normalizedRoomCode) {
+      room = await restoreMathRoomFromCloud(normalizedRoomCode)
+    }
     if (!room) {
       socket.emit("player:error", { message: "De spelcode klopt niet." })
       return
@@ -6981,6 +7320,9 @@ io.on("connection", (socket) => {
     })
     emitStateToSocket(socket, room)
     emitStateToRoom(room)
+    if (isMathRoom && joinedPlayer) {
+      await syncMathResumeIndexForPlayer(room, joinedPlayer)
+    }
 
     const storedAnswer = room.playerAnswers.get(joinedPlayer?.id ?? "")
     if (storedAnswer) {
@@ -7015,7 +7357,7 @@ io.on("connection", (socket) => {
     }
   })
 
-  socket.on("player:resume-math", ({ name, learnerCode, playerSessionId }) => {
+  socket.on("player:resume-math", async ({ name, learnerCode, playerSessionId }) => {
     const trimmedName = String(name ?? "").trim()
     const requestedLearnerCode = normalizeLearnerCode(learnerCode)
     const requestedPlayerSessionId = String(playerSessionId ?? "").trim()
@@ -7030,7 +7372,7 @@ io.on("connection", (socket) => {
       return
     }
 
-    const match = findMathRoomForHomeResume(trimmedName, requestedLearnerCode)
+    let match = findMathRoomForHomeResume(trimmedName, requestedLearnerCode)
     if (match.ambiguous) {
       socket.emit("player:error", {
         message: "Deze naam en leerlingcode horen bij meer dan een rekenroute. Vraag dan toch even de spelcode aan je docent.",
@@ -7039,10 +7381,13 @@ io.on("connection", (socket) => {
     }
 
     if (!match.room || !match.player) {
-      socket.emit("player:error", {
-        message: "We vonden geen actieve rekenroute bij deze naam en leerlingcode. Controleer je gegevens of vraag je docent om hulp.",
-      })
-      return
+      match = await findMathRoomForHomeResumeFromCloud(trimmedName, requestedLearnerCode)
+      if (!match.room || !match.player) {
+        socket.emit("player:error", {
+          message: "We vonden geen actieve rekenroute bij deze naam en leerlingcode. Controleer je gegevens of vraag je docent om hulp.",
+        })
+        return
+      }
     }
 
     const room = match.room
@@ -7069,6 +7414,7 @@ io.on("connection", (socket) => {
     })
     emitStateToSocket(socket, room)
     emitStateToRoom(room)
+    await syncMathResumeIndexForPlayer(room, player)
   })
 
   socket.on("player:answer", ({ answer }) => {
@@ -7361,4 +7707,9 @@ io.on("connection", (socket) => {
 
 server.listen(port, () => {
   console.log(`server draait op http://localhost:${port}`)
+  if (mathCloudEnabled) {
+    console.log(`math cloud persistence actief via Firestore project ${firebaseServiceAccount.projectId}`)
+  } else {
+    console.log("math cloud persistence staat uit; rekenvoortgang blijft dan afhankelijk van lokale opslag.")
+  }
 })
