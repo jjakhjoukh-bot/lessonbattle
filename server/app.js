@@ -2312,7 +2312,11 @@ function extractCommonsMetadataValue(metadata = {}, key = "") {
   return stripHtmlTags(metadata?.[key]?.value || "")
 }
 
-async function searchReusableReferenceImageByQuery(searchQuery = "", anchorTokens = [], excludedSources = new Set()) {
+function normalizeExcludedImageValue(value = "") {
+  return String(value || "").trim().toLowerCase()
+}
+
+async function searchReusableReferenceImageByQuery(searchQuery = "", anchorTokens = [], excludedSources = new Set(), attemptIndex = 0) {
   if (!searchQuery) return null
 
   const url = new URL("https://commons.wikimedia.org/w/api.php")
@@ -2353,12 +2357,20 @@ async function searchReusableReferenceImageByQuery(searchQuery = "", anchorToken
         extractCommonsMetadataValue(metadata, "ImageDescription") ||
         extractCommonsMetadataValue(metadata, "ObjectName") ||
         extractCommonsMetadataValue(metadata, "Categories")
+      const normalizedTitle = normalizeExcludedImageValue(page?.title || "")
+      const normalizedSourceUrl = normalizeExcludedImageValue(sourceUrl)
+      const normalizedImageUrl = normalizeExcludedImageValue(imageInfo?.thumburl || imageInfo?.url || "")
+      const normalizedOriginalImageUrl = normalizeExcludedImageValue(imageInfo?.url || "")
 
       return {
         title: stripHtmlTags(page?.title || ""),
         description,
         imageUrl: String(imageInfo?.thumburl || imageInfo?.url || "").trim(),
         originalImageUrl: String(imageInfo?.url || "").trim(),
+        normalizedTitle,
+        normalizedSourceUrl,
+        normalizedImageUrl,
+        normalizedOriginalImageUrl,
         license,
         author,
         sourceUrl,
@@ -2376,10 +2388,10 @@ async function searchReusableReferenceImageByQuery(searchQuery = "", anchorToken
       (entry) =>
         entry.imageUrl &&
         isReusablePublicImageLicense(entry.license) &&
-        !excludedSources.has(entry.sourceUrl) &&
-        !excludedSources.has(entry.imageUrl) &&
-        !excludedSources.has(entry.originalImageUrl) &&
-        !excludedSources.has(String(entry.title || "").trim().toLowerCase())
+        !excludedSources.has(entry.normalizedSourceUrl) &&
+        !excludedSources.has(entry.normalizedImageUrl) &&
+        !excludedSources.has(entry.normalizedOriginalImageUrl) &&
+        !excludedSources.has(entry.normalizedTitle)
     )
     .sort((left, right) => right.score - left.score)
 
@@ -2387,8 +2399,13 @@ async function searchReusableReferenceImageByQuery(searchQuery = "", anchorToken
     anchorTokens.includes(token)
   )
   const minimumScore = requiresStrongerMatch ? 4 : 2
-  const candidates = matches.filter((entry) => entry.score >= minimumScore).slice(0, 5)
-  for (const selectedImage of candidates) {
+  const candidates = matches.filter((entry) => entry.score >= minimumScore).slice(0, 8)
+  const safeAttemptIndex = Math.max(0, Number(attemptIndex) || 0)
+  const rotation = candidates.length ? safeAttemptIndex % candidates.length : 0
+  const rotatedCandidates = candidates.length
+    ? [...candidates.slice(rotation), ...candidates.slice(0, rotation)]
+    : []
+  for (const selectedImage of rotatedCandidates) {
     const downloadUrls = [selectedImage.imageUrl, selectedImage.originalImageUrl].filter(Boolean)
     for (const downloadUrl of downloadUrls) {
       try {
@@ -2426,13 +2443,12 @@ async function searchReusableReferenceImage({ prompt = "", category = "", kind =
   const anchorTokens = buildReusableImageAnchorTokens({ prompt, category })
   const excludedSources = new Set(
     (Array.isArray(exclude) ? exclude : [])
-      .map((value) => String(value || "").trim())
+      .map((value) => normalizeExcludedImageValue(value))
       .filter(Boolean)
-      .map((value) => value.toLowerCase())
   )
   for (const searchQuery of searchQueries) {
     try {
-      const match = await searchReusableReferenceImageByQuery(searchQuery, anchorTokens, excludedSources)
+      const match = await searchReusableReferenceImageByQuery(searchQuery, anchorTokens, excludedSources, attemptIndex)
       if (match) return match
     } catch (error) {
       console.warn("[images] reusable image search query failed:", error instanceof Error ? error.message : error)
@@ -2442,7 +2458,7 @@ async function searchReusableReferenceImage({ prompt = "", category = "", kind =
   const aiQuery = await buildAiPublicImageSearchQuery({ prompt, category, kind })
   if (aiQuery && !searchQueries.includes(aiQuery)) {
     try {
-      const match = await searchReusableReferenceImageByQuery(aiQuery, anchorTokens, excludedSources)
+      const match = await searchReusableReferenceImageByQuery(aiQuery, anchorTokens, excludedSources, attemptIndex)
       if (match) return match
     } catch (error) {
       console.warn("[images] reusable image AI fallback query failed:", error instanceof Error ? error.message : error)
@@ -7289,6 +7305,7 @@ io.on("connection", (socket) => {
     const genericSlideTitles = new Set(["conclusie", "summary", "samenvatting", "slot", "afsluiting", "intro", "introduction", "inleiding"])
     const normalizedSlideTitle = String(targetSlide.title || "").trim().toLowerCase()
     const searchPrompt = [
+      room.lesson?.title,
       targetSlide.imageAlt,
       targetSlide.imagePrompt,
       targetSlide.focus,
@@ -7301,6 +7318,7 @@ io.on("connection", (socket) => {
       .trim()
     const searchCategory = [
       room.game.topic || "",
+      room.lesson?.title || "",
       genericSlideTitles.has(normalizedSlideTitle) ? "" : targetSlide.title,
       targetSlide.imageAlt || "",
     ]
@@ -7314,6 +7332,21 @@ io.on("connection", (socket) => {
       targetSlide.manualImageSourceTitle,
     ].filter(Boolean)
     const searchAttempt = Math.max(1, (Number(targetSlide.manualImageSearchAttempt) || 0) + 1)
+
+    room.lesson = {
+      ...room.lesson,
+      presentation: {
+        ...room.lesson.presentation,
+        slides: room.lesson.presentation.slides.map((slide) =>
+          slide.id === normalizedSlideId
+            ? {
+                ...slide,
+                manualImageSearchAttempt: searchAttempt,
+              }
+            : slide
+        ),
+      },
+    }
 
     let referenceImage = null
     try {
