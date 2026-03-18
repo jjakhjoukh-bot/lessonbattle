@@ -1057,11 +1057,27 @@ function HostPage() {
 
     try {
       const optimizedDataUrl = await optimizeImageFile(file)
-      socket.emit("host:presentation-image:update", {
-        slideId: currentPresentationSlide.id,
-        uploadDataUrl: optimizedDataUrl,
-        imageAlt: manualSlideImageAltDraft,
+      const response = await fetch("/api/host/presentation-image-upload", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          sessionToken: hostSession.sessionToken,
+          slideId: currentPresentationSlide.id,
+          uploadDataUrl: optimizedDataUrl,
+          imageAlt: manualSlideImageAltDraft,
+        }),
       })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(payload?.message || "Uploaden van de afbeelding is mislukt.")
+      }
+      setManualSlideImageUrlDraft(payload?.manualImageUrl || "")
+      if (typeof payload?.imageAlt === "string") setManualSlideImageAltDraft(payload.imageAlt)
+      setManualSlideUploadName("")
+      setSlideImageBusy(false)
+      setStatus("Dia-afbeelding bijgewerkt.")
     } catch (error) {
       setSlideImageBusy(false)
       setManualSlideUploadName("")

@@ -39,6 +39,7 @@ if (fs.existsSync(envPath)) {
 const app = express()
 const server = http.createServer(app)
 app.set("trust proxy", true)
+app.use(express.json({ limit: "8mb" }))
 const io = new Server(server, {
   cors: { origin: "*" },
   maxHttpBufferSize: MAX_SOCKET_PAYLOAD_BYTES,
@@ -4525,6 +4526,68 @@ function emitStateToSocket(socket, room) {
   }
 }
 
+async function updatePresentationSlideManualImage({ room, slideId, imageUrl, imageAlt, uploadDataUrl }) {
+  if (!room || room.game.mode !== "lesson" || !room.lesson?.presentation?.slides?.length) {
+    throw new Error("Er staat nu geen actieve presentatie klaar.")
+  }
+
+  const normalizedSlideId = String(slideId ?? "").trim()
+  if (!normalizedSlideId) {
+    throw new Error("Kies eerst een dia voordat je een afbeelding instelt.")
+  }
+
+  const previousSlide = room.lesson.presentation.slides.find((slide) => slide.id === normalizedSlideId) || null
+  if (!previousSlide) {
+    throw new Error("Deze dia bestaat niet meer in de huidige presentatie.")
+  }
+
+  const previousManualImageUrl = sanitizeManualImageUrl(previousSlide.manualImageUrl || "")
+  let nextManualImageUrl = sanitizeManualImageUrl(imageUrl)
+  if (String(uploadDataUrl || "").trim()) {
+    nextManualImageUrl = saveManualImageFromDataUrl({
+      dataUrl: uploadDataUrl,
+      entityId: normalizedSlideId,
+    })
+  } else if (nextManualImageUrl && !isLocalManualImageUrl(nextManualImageUrl)) {
+    nextManualImageUrl = await saveManualImageFromRemoteUrl({
+      imageUrl: nextManualImageUrl,
+      entityId: normalizedSlideId,
+    })
+  }
+
+  if (!nextManualImageUrl) {
+    throw new Error("Plak een geldige afbeeldingslink of upload een bestand.")
+  }
+
+  const nextImageAlt = String(imageAlt ?? "").trim() || previousSlide.imageAlt || previousSlide.title || "Presentatiedia"
+  room.lesson = {
+    ...room.lesson,
+    presentation: {
+      ...room.lesson.presentation,
+      slides: room.lesson.presentation.slides.map((slide) =>
+        slide.id === normalizedSlideId
+          ? {
+              ...slide,
+              manualImageUrl: nextManualImageUrl,
+              imageAlt: nextImageAlt,
+            }
+          : slide
+      ),
+    },
+  }
+
+  if (previousManualImageUrl && previousManualImageUrl !== nextManualImageUrl) {
+    removeManualImageFileIfUnused(previousManualImageUrl)
+  }
+
+  emitStateToRoom(room)
+  return {
+    slideId: normalizedSlideId,
+    manualImageUrl: nextManualImageUrl,
+    imageAlt: nextImageAlt,
+  }
+}
+
 function stampQuestionStart(room) {
   applyQuestionScoringProfile(room, room.currentQuestionIndex)
   room.game = {
@@ -6160,6 +6223,41 @@ app.get("/api/question-image", async (req, res) => {
   res.status(200).send(buildQuestionSvg({ prompt, category }))
 })
 
+app.post("/api/host/presentation-image-upload", async (req, res) => {
+  const sessionToken = String(req.body?.sessionToken || "").trim()
+  const session = getHostSessionByToken(sessionToken)
+  if (!session) {
+    res.status(401).json({ message: "Je docentsessie is verlopen. Log opnieuw in." })
+    return
+  }
+
+  const roomCode = String(session.roomCode || "").trim().toUpperCase()
+  const room = roomCode ? rooms.get(roomCode) || null : null
+  if (!room || room.game.mode !== "lesson" || !room.lesson?.presentation?.slides?.length) {
+    res.status(409).json({ message: "Er staat nu geen actieve presentatie klaar voor upload." })
+    return
+  }
+
+  try {
+    const payload = await updatePresentationSlideManualImage({
+      room,
+      slideId: req.body?.slideId,
+      imageAlt: req.body?.imageAlt,
+      uploadDataUrl: req.body?.uploadDataUrl,
+      imageUrl: "",
+    })
+    rememberHostRoomForSession(session, room.code)
+    if (room.hostSocketId) {
+      io.to(room.hostSocketId).emit("host:presentation-image:success", payload)
+    }
+    res.json(payload)
+  } catch (error) {
+    res.status(400).json({
+      message: error instanceof Error ? error.message : "De afbeelding kon niet worden opgeslagen.",
+    })
+  }
+})
+
 ensureManualImagesDir()
 app.use("/manual-images", express.static(manualImagesPath))
 
@@ -6967,72 +7065,20 @@ io.on("connection", (socket) => {
   socket.on("host:presentation-image:update", async ({ slideId, imageUrl, imageAlt, uploadDataUrl }) => {
     const room = requireHostRoom(socket)
     if (!room || room.game.mode !== "lesson" || !room.lesson?.presentation?.slides?.length) return
-
-    const normalizedSlideId = String(slideId ?? "").trim()
-    if (!normalizedSlideId) {
-      socket.emit("host:error", { message: "Kies eerst een dia voordat je een afbeelding instelt." })
-      return
-    }
-
-    const slideExists = room.lesson.presentation.slides.some((slide) => slide.id === normalizedSlideId)
-    if (!slideExists) {
-      socket.emit("host:error", { message: "Deze dia bestaat niet meer in de huidige presentatie." })
-      return
-    }
-
-    const previousSlide = room.lesson.presentation.slides.find((slide) => slide.id === normalizedSlideId) || null
-    const previousManualImageUrl = sanitizeManualImageUrl(previousSlide?.manualImageUrl || "")
-    let nextManualImageUrl = sanitizeManualImageUrl(imageUrl)
     try {
-      if (String(uploadDataUrl || "").trim()) {
-        nextManualImageUrl = saveManualImageFromDataUrl({
-          dataUrl: uploadDataUrl,
-          entityId: normalizedSlideId,
-        })
-      } else if (nextManualImageUrl && !isLocalManualImageUrl(nextManualImageUrl)) {
-        nextManualImageUrl = await saveManualImageFromRemoteUrl({
-          imageUrl: nextManualImageUrl,
-          entityId: normalizedSlideId,
-        })
-      }
+      const payload = await updatePresentationSlideManualImage({
+        room,
+        slideId,
+        imageUrl,
+        imageAlt,
+        uploadDataUrl,
+      })
+      socket.emit("host:presentation-image:success", payload)
     } catch (error) {
       socket.emit("host:error", {
         message: error instanceof Error ? error.message : "De afbeelding kon niet worden opgeslagen.",
       })
-      return
     }
-
-    if (!nextManualImageUrl) {
-      socket.emit("host:error", { message: "Plak een geldige afbeeldingslink of upload een bestand." })
-      return
-    }
-
-    room.lesson = {
-      ...room.lesson,
-      presentation: {
-        ...room.lesson.presentation,
-        slides: room.lesson.presentation.slides.map((slide) =>
-          slide.id === normalizedSlideId
-            ? {
-                ...slide,
-                manualImageUrl: nextManualImageUrl,
-                imageAlt: String(imageAlt ?? "").trim() || slide.imageAlt || slide.title || "Presentatiedia",
-              }
-            : slide
-        ),
-      },
-    }
-
-    if (previousManualImageUrl && previousManualImageUrl !== nextManualImageUrl) {
-      removeManualImageFileIfUnused(previousManualImageUrl)
-    }
-
-    emitStateToRoom(room)
-    socket.emit("host:presentation-image:success", {
-      slideId: normalizedSlideId,
-      manualImageUrl: nextManualImageUrl,
-      imageAlt: String(imageAlt ?? "").trim() || previousSlide?.imageAlt || previousSlide?.title || "Presentatiedia",
-    })
   })
 
   socket.on("host:presentation-image:auto", async ({ slideId }) => {
