@@ -420,6 +420,10 @@ function HostPage() {
           : "Les opbouwen"
   const currentPresentationSlide = game.lesson?.presentation?.currentSlide || null
   const liveGroupModeEnabled = Boolean(game.groupModeEnabled)
+  const canGoToPreviousLessonStep =
+    game.mode === "lesson" &&
+    ((Number.isInteger(game.currentPhaseIndex) && game.currentPhaseIndex > 0) ||
+      (game.status === "finished" && Number(game.totalPhases) > 0))
 
   useEffect(() => {
     if (teams.length > 0 && !isEditingTeams) {
@@ -880,6 +884,11 @@ function HostPage() {
       return
     }
     socket.emit("host:next")
+  }
+
+  const goToPreviousStep = () => {
+    if (game.mode !== "lesson") return
+    socket.emit("host:lesson-prev")
   }
 
   const saveCurrentLesson = () => {
@@ -1410,6 +1419,16 @@ function HostPage() {
                 Toon antwoord
               </button>
             ) : null}
+            {game.mode === "lesson" ? (
+              <button
+                className="button-ghost"
+                disabled={!hostSession.authenticated || !canGoToPreviousLessonStep}
+                onClick={goToPreviousStep}
+                type="button"
+              >
+                Vorige lesstap
+              </button>
+            ) : null}
             {game.mode !== "math" ? (
               <button
                 className="button-secondary"
@@ -1621,6 +1640,7 @@ function HostPage() {
           insights={hostInsights}
           lesson={game.lesson}
           onClose={closePresenterMode}
+          onPrevious={goToPreviousStep}
           onNext={goToNextStep}
         />
       ) : null}
@@ -3162,13 +3182,14 @@ function LessonPresentationPanel({ presentation, compact = false, interactive = 
   )
 }
 
-function LessonPresenterOverlay({ lesson, insights, onNext, onClose }) {
+function LessonPresenterOverlay({ lesson, insights, onPrevious, onNext, onClose }) {
   if (!lesson?.presentation?.currentSlide || !lesson?.currentPhase) return null
 
   const slide = lesson.presentation.currentSlide
   const videoScene = lesson.presentation.video?.currentScene || null
   const answeredCount = insights?.answeredCount ?? 0
   const totalPlayers = insights?.totalPlayers ?? 0
+  const canGoBack = lesson.currentPhaseIndex > 0
 
   return (
     <div className="presenter-overlay">
@@ -3222,6 +3243,9 @@ function LessonPresenterOverlay({ lesson, insights, onNext, onClose }) {
           <div className="presenter-actions">
             <button className="button-ghost" onClick={onClose} type="button">
               Sluit presentatieweergave
+            </button>
+            <button className="button-ghost" disabled={!canGoBack} onClick={onPrevious} type="button">
+              Vorige lesstap
             </button>
             <button className="button-secondary" onClick={onNext} type="button">
               Volgende lesstap

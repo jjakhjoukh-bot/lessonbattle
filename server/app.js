@@ -106,6 +106,7 @@ const MATH_INTAKE_QUESTION_COUNT = 16
 const MAX_MATH_ANSWER_HISTORY = 24
 const MATH_CLOUD_COLLECTION = "lessonBattleMathRooms"
 const MATH_CLOUD_RESUME_COLLECTION = "lessonBattleMathResume"
+const MATH_CLOUD_HOST_COLLECTION = "lessonBattleMathHosts"
 const MATH_CLOUD_SCOPE = "https://www.googleapis.com/auth/datastore"
 const MATH_CLOUD_TOKEN_URL = "https://oauth2.googleapis.com/token"
 const MATH_CLOUD_PERSIST_DEBOUNCE_MS = 800
@@ -169,6 +170,10 @@ function normalizeTeacherUsername(value) {
   return String(value ?? "").trim().toLowerCase()
 }
 
+function getRoomOwnerUsername(room) {
+  return normalizeTeacherUsername(room?.ownerUsername || "")
+}
+
 function normalizeParticipantName(value = "") {
   return String(value ?? "")
     .trim()
@@ -223,8 +228,16 @@ function buildMathCloudResumeDocId(name = "", learnerCode = "") {
   return crypto.createHash("sha256").update(`${normalizeParticipantName(name)}|${normalizeLearnerCode(learnerCode)}`).digest("hex")
 }
 
+function buildMathCloudHostDocId(username = "") {
+  return crypto.createHash("sha256").update(normalizeTeacherUsername(username)).digest("hex")
+}
+
 function firestoreDocUrl(collectionName, documentId) {
   return `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(firebaseServiceAccount?.projectId || "")}/databases/${encodeURIComponent(firestoreDatabaseId)}/documents/${encodeURIComponent(collectionName)}/${encodeURIComponent(documentId)}`
+}
+
+function firestoreCollectionUrl(collectionName) {
+  return `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(firebaseServiceAccount?.projectId || "")}/databases/${encodeURIComponent(firestoreDatabaseId)}/documents/${encodeURIComponent(collectionName)}`
 }
 
 function firestoreStringField(value = "") {
@@ -2764,6 +2777,7 @@ function createRoom(hostSocketId) {
   const room = {
     code: roomCode,
     hostSocketId,
+    ownerUsername: "",
     hostOnline: true,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -7366,6 +7380,25 @@ io.on("connection", (socket) => {
     }
 
     room.lesson = withLessonPhaseContext(room.lesson, room.lesson.currentPhaseIndex + 1)
+    room.lessonResponses = new Map()
+    room.game = { ...room.game, status: "live", questionStartedAt: null }
+    emitStateToRoom(room)
+  })
+
+  socket.on("host:lesson-prev", () => {
+    const room = requireHostRoom(socket)
+    if (!room) return
+
+    if (!room.lesson?.phases?.length) return
+
+    const lastPhaseIndex = Math.max(0, room.lesson.phases.length - 1)
+    const currentPhaseIndex = Number.isInteger(room.lesson.currentPhaseIndex) ? room.lesson.currentPhaseIndex : -1
+    const targetPhaseIndex =
+      currentPhaseIndex < 0
+        ? lastPhaseIndex
+        : Math.max(0, currentPhaseIndex - 1)
+
+    room.lesson = withLessonPhaseContext(room.lesson, targetPhaseIndex)
     room.lessonResponses = new Map()
     room.game = { ...room.game, status: "live", questionStartedAt: null }
     emitStateToRoom(room)
