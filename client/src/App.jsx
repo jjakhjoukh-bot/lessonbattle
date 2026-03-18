@@ -390,16 +390,6 @@ function HostPage() {
   const [manualSlideImageAltDraft, setManualSlideImageAltDraft] = useState("")
   const [manualSlideUploadName, setManualSlideUploadName] = useState("")
 
-  const activeMode =
-    game.mode === "math"
-      ? "math"
-      : game.mode === "lesson"
-        ? "lesson"
-        : sessionMode === "math"
-          ? "math"
-          : sessionMode === "battle"
-            ? "battle"
-            : "lesson"
   const includePracticeTest = lessonPackage === "practice" || lessonPackage === "complete"
   const includePresentation = lessonPackage === "presentation" || lessonPackage === "complete"
   const selectedSuiteMode =
@@ -410,8 +400,14 @@ function HostPage() {
         : includePresentation
           ? "presentation"
           : includePracticeTest
-            ? "practice"
-            : "lesson"
+          ? "practice"
+          : "lesson"
+  const controlMode =
+    sessionMode === "math"
+      ? "math"
+      : sessionMode === "battle"
+        ? "battle"
+        : "lesson"
   const buildActionLabel =
     selectedSuiteMode === "math"
       ? "Rekenroute starten"
@@ -441,13 +437,13 @@ function HostPage() {
   }, [game.lessonDurationMinutes, game.lessonModel])
 
   useEffect(() => {
-    if (game.mode === "math") {
+    if (game.mode === "math" && sessionMode === "battle") {
       setSessionMode("math")
     }
     if (game.math?.selectedBand) {
       setMathBand(String(game.math.selectedBand).toLowerCase())
     }
-  }, [game.math?.selectedBand, game.mode])
+  }, [game.math?.selectedBand, game.mode, sessionMode])
 
   useEffect(() => {
     if (game.mode !== "lesson") return
@@ -1174,7 +1170,7 @@ function HostPage() {
             </div>
           </div>
 
-          {activeMode === "math" ? (
+          {controlMode === "math" ? (
             <MathBandSelector selectedBand={mathBand} onChange={setMathBand} />
           ) : (
             <label className="field">
@@ -1184,7 +1180,7 @@ function HostPage() {
                 value={topic}
                 onChange={(event) => setTopic(event.target.value)}
                 placeholder={
-                  activeMode === "lesson"
+                  controlMode === "lesson"
                     ? "Bijv. procenten rekenen met korting voor vmbo basis, 45 minuten, veel interactie"
                     : "Bijv. economie vmbo leerjaar 3 over verzekeringen en sparen"
                 }
@@ -1193,7 +1189,7 @@ function HostPage() {
           )}
 
           <div className="field-row">
-            {activeMode === "math" ? (
+            {controlMode === "math" ? (
               <div className="field math-config-card">
                 <span>Rekenroute</span>
                 <p>
@@ -1215,7 +1211,7 @@ function HostPage() {
               </label>
             )}
 
-            {activeMode === "lesson" ? (
+            {controlMode === "lesson" ? (
               selectedSuiteMode === "lesson" ? (
                 <>
                   <label className="field">
@@ -1281,7 +1277,7 @@ function HostPage() {
                   </label>
                 </>
               )
-            ) : activeMode === "math" ? (
+            ) : controlMode === "math" ? (
               <div className="field math-config-card">
                 <span>Doel</span>
                 <p>
@@ -1315,7 +1311,7 @@ function HostPage() {
             )}
           </div>
 
-          {activeMode !== "math" ? (
+          {controlMode !== "math" ? (
             <>
               <div className="toggle-grid">
                 <button
@@ -1360,7 +1356,7 @@ function HostPage() {
             </>
           ) : null}
 
-          {activeMode === "lesson" ? (
+          {controlMode === "lesson" ? (
             <LessonSummaryCard
               lesson={game.lesson}
               onSave={game.lesson?.phases?.length ? saveCurrentLesson : null}
@@ -1368,8 +1364,15 @@ function HostPage() {
             />
           ) : null}
 
+          {game.mode === "math" && controlMode !== "math" ? (
+            <div className="field math-config-card">
+              <span>Live route blijft actief</span>
+              <p>Leerlingen werken nu nog in rekenen. Je kunt hier alvast een les, presentatie of oefentoets voorbereiden. Pas als je op opbouwen/starten klikt, vervang je de live route.</p>
+            </div>
+          ) : null}
+
           <div className="action-row">
-            {activeMode !== "math" ? (
+            {controlMode !== "math" ? (
               <button
                 className="button-secondary"
                 disabled={!hostSession.authenticated}
@@ -1382,10 +1385,10 @@ function HostPage() {
             <button
               className="button-primary"
               disabled={!hostSession.authenticated}
-              onClick={activeMode === "math" ? generateMathSession : activeMode === "lesson" ? generateLesson : generate}
+              onClick={controlMode === "math" ? generateMathSession : controlMode === "lesson" ? generateLesson : generate}
               type="button"
             >
-              {activeMode === "lesson" || activeMode === "math" ? buildActionLabel : "Ronde starten"}
+              {controlMode === "lesson" || controlMode === "math" ? buildActionLabel : "Ronde starten"}
             </button>
             {game.mode === "battle" && game.source !== "practice" && game.question && game.status === "preview" ? (
               <button
