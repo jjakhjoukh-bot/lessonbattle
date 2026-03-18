@@ -16,12 +16,12 @@ const HOST_ROOM_BACKUP_KEY_PREFIX = "lessonbattle-host-room-backup"
 const HOST_LAST_ROOM_KEY_PREFIX = "lessonbattle-host-last-room"
 const PLAYER_SESSION_KEY = "lessonbattle-player-session"
 const IMAGE_RENDER_VERSION = "20260318a"
-const MAX_MANUAL_UPLOAD_FILE_BYTES = 10 * 1024 * 1024
+const MAX_MANUAL_UPLOAD_FILE_BYTES = 20 * 1024 * 1024
 const MAX_MANUAL_UPLOAD_DATA_BYTES = 4 * 1024 * 1024
 const TARGET_MANUAL_UPLOAD_DATA_BYTES = 1400 * 1024
 const MAX_MANUAL_UPLOAD_DIMENSION = 1280
-const MIN_MANUAL_UPLOAD_DIMENSION = 640
-const MANUAL_UPLOAD_QUALITY_STEPS = [0.82, 0.72, 0.62, 0.52]
+const MIN_MANUAL_UPLOAD_DIMENSION = 480
+const MANUAL_UPLOAD_QUALITY_STEPS = [0.82, 0.72, 0.62, 0.52, 0.44]
 const MATH_LEVEL_OPTIONS = ["0f", "1f", "2f", "3f", "4f"]
 const PLAYER_JOIN_MODE_CLASSROOM = "classroom"
 const PLAYER_JOIN_MODE_HOME_MATH = "home-math"
@@ -231,13 +231,59 @@ function loadImageElement(source) {
   })
 }
 
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result || ""))
+    reader.onerror = () => reject(new Error("De geoptimaliseerde afbeelding kon niet worden gelezen."))
+    reader.readAsDataURL(blob)
+  })
+}
+
+function canvasToDataUrl(canvas, mimeType = "image/jpeg", quality = 0.82) {
+  return new Promise((resolve, reject) => {
+    if (typeof canvas.toBlob === "function") {
+      canvas.toBlob(async (blob) => {
+        if (!blob) {
+          reject(new Error("De afbeelding kon niet worden omgezet."))
+          return
+        }
+        try {
+          resolve(await blobToDataUrl(blob))
+        } catch (error) {
+          reject(error instanceof Error ? error : new Error("De afbeelding kon niet worden gelezen."))
+        }
+      }, mimeType, quality)
+      return
+    }
+
+    try {
+      resolve(canvas.toDataURL(mimeType, quality))
+    } catch {
+      reject(new Error("De afbeelding kon niet worden omgezet."))
+    }
+  })
+}
+
+async function loadRenderableImage(file, objectUrl) {
+  if (window.createImageBitmap) {
+    try {
+      return await window.createImageBitmap(file)
+    } catch {
+      // Fallback to Image below.
+    }
+  }
+  return loadImageElement(objectUrl)
+}
+
 async function optimizeImageFile(file) {
   if (Number(file?.size) > MAX_MANUAL_UPLOAD_FILE_BYTES) {
-    throw new Error("De afbeelding is te groot. Gebruik maximaal 10 MB.")
+    throw new Error("De afbeelding is te groot. Gebruik maximaal 20 MB.")
   }
 
-  const dataUrl = await readFileAsDataUrl(file)
-  if (String(file?.type || "").toLowerCase() === "image/svg+xml") {
+  const normalizedType = String(file?.type || "").toLowerCase()
+  if (normalizedType === "image/svg+xml") {
+    const dataUrl = await readFileAsDataUrl(file)
     if (estimateDataUrlBytes(dataUrl) > MAX_MANUAL_UPLOAD_DATA_BYTES) {
       throw new Error("De SVG is te groot. Gebruik maximaal 4 MB.")
     }
@@ -245,8 +291,9 @@ async function optimizeImageFile(file) {
   }
 
   const objectUrl = URL.createObjectURL(file)
+  let image = null
   try {
-    const image = await loadImageElement(objectUrl)
+    image = await loadRenderableImage(file, objectUrl)
     const widthScale = MAX_MANUAL_UPLOAD_DIMENSION / Math.max(1, image.width)
     const heightScale = MAX_MANUAL_UPLOAD_DIMENSION / Math.max(1, image.height)
     let renderScale = Math.min(1, widthScale, heightScale)
@@ -269,7 +316,7 @@ async function optimizeImageFile(file) {
       context.drawImage(image, 0, 0, width, height)
 
       for (const quality of MANUAL_UPLOAD_QUALITY_STEPS) {
-        const candidateDataUrl = canvas.toDataURL("image/jpeg", quality)
+        const candidateDataUrl = await canvasToDataUrl(canvas, "image/jpeg", quality)
         const candidateByteSize = estimateDataUrlBytes(candidateDataUrl)
         if (candidateByteSize < bestByteSize) {
           bestDataUrl = candidateDataUrl
@@ -291,7 +338,18 @@ async function optimizeImageFile(file) {
     }
 
     throw new Error("De afbeelding blijft te groot na verkleinen. Kies een kleinere afbeelding.")
+  } catch (error) {
+    if (/(heic|heif)/i.test(normalizedType)) {
+      throw new Error("Deze HEIC-foto wordt op dit apparaat niet goed ondersteund. Zet hem om naar JPG/PNG of maak eerst een screenshot van de foto.")
+    }
+    if (error instanceof Error) {
+      throw error
+    }
+    throw new Error("De afbeelding kon niet worden verwerkt.")
   } finally {
+    if (image && typeof image.close === "function") {
+      image.close()
+    }
     URL.revokeObjectURL(objectUrl)
   }
 }
@@ -669,6 +727,19 @@ function HostPage() {
     setManualSlideImageAltDraft(currentPresentationSlide?.imageAlt || currentPresentationSlide?.title || "")
     setManualSlideUploadName("")
   }, [currentPresentationSlide?.id, currentPresentationSlide?.manualImageUrl, currentPresentationSlide?.imageAlt, currentPresentationSlide?.title])
+
+  useEffect(() => {
+    if (!slideImageBusy) return undefined
+    const timer = window.setTimeout(() => {
+      setSlideImageBusy(false)
+      setStatus((current) =>
+        String(current || "").includes("Fout:")
+          ? current
+          : "Zoeken of uploaden duurde te lang. Probeer opnieuw of kies een andere dia-afbeelding."
+      )
+    }, 18000)
+    return () => window.clearTimeout(timer)
+  }, [slideImageBusy])
 
   useEffect(() => {
     if (!game.math?.players?.length) return

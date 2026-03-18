@@ -40,6 +40,22 @@ const app = express()
 const server = http.createServer(app)
 app.set("trust proxy", true)
 app.use(express.json({ limit: "8mb" }))
+app.use((error, req, res, next) => {
+  if (!error) {
+    next()
+    return
+  }
+  if (error.type === "entity.too.large") {
+    const payload = { message: "De afbeelding is nog te groot om te uploaden. Kies een kleinere afbeelding." }
+    if (req.path.startsWith("/api/")) {
+      res.status(413).json(payload)
+      return
+    }
+    res.status(413).send(payload.message)
+    return
+  }
+  next(error)
+})
 const io = new Server(server, {
   cors: { origin: "*" },
   maxHttpBufferSize: MAX_SOCKET_PAYLOAD_BYTES,
@@ -1842,6 +1858,7 @@ function mimeTypeToExtension(mimeType = "") {
   if (normalized === "image/png") return "png"
   if (normalized === "image/jpeg" || normalized === "image/jpg") return "jpg"
   if (normalized === "image/webp") return "webp"
+  if (normalized === "image/avif") return "avif"
   if (normalized === "image/gif") return "gif"
   if (normalized === "image/svg+xml") return "svg"
   return ""
@@ -2091,6 +2108,19 @@ function normalizePublicImageSearchQuery(value = "") {
     "kaartje",
     "afbeelding",
     "plaatje",
+    "conclusie",
+    "summary",
+    "summarize",
+    "samenvatting",
+    "slot",
+    "afsluiting",
+    "intro",
+    "introduction",
+    "inleiding",
+    "overzicht",
+    "basis",
+    "presentatie",
+    "ontdekken",
   ])
 
   const tokens = String(value || "")
@@ -2114,6 +2144,12 @@ function expandReusableImageTokens(tokens = []) {
     ["marokko", ["morocco", "maroc"]],
     ["morocco", ["marokko", "maroc"]],
     ["maroc", ["morocco", "marokko"]],
+    ["rabat", ["capital", "hoofdstad"]],
+    ["casablanca", ["city", "stad"]],
+    ["marrakesh", ["marrakech", "city", "stad"]],
+    ["marrakech", ["marrakesh", "city", "stad"]],
+    ["fez", ["fes", "city", "stad"]],
+    ["fes", ["fez", "city", "stad"]],
     ["woestijn", ["desert"]],
     ["desert", ["woestijn"]],
     ["bergen", ["mountains", "mountain"]],
@@ -2142,7 +2178,7 @@ function buildReusableImageAnchorTokens({ prompt = "", category = "" }) {
   const meaningfulTokens = baseTokens.filter(
     (token) =>
       token.length >= 5 ||
-      ["map", "city", "atlas", "rabat", "sahara", "maroc"].includes(token)
+      ["map", "city", "atlas", "rabat", "sahara", "maroc", "fez", "fes"].includes(token)
   )
   return expandReusableImageTokens(meaningfulTokens).slice(0, 12)
 }
@@ -2168,6 +2204,20 @@ function scoreReusableImageCandidate(entry, anchorTokens = []) {
     score -= 4
   }
 
+  const strongGeoTokens = ["morocco", "marokko", "maroc", "rabat", "casablanca", "marrakesh", "marrakech", "fez", "fes", "sahara", "atlas"]
+  const hasStrongGeoAnchor = strongGeoTokens.some((token) => anchorTokens.includes(token))
+  const hasStrongGeoCandidate = strongGeoTokens.some((token) => candidateTokens.has(token))
+  if (hasStrongGeoAnchor && !hasStrongGeoCandidate) {
+    score -= 12
+  }
+
+  if (
+    hasStrongGeoAnchor &&
+    /(treaty|troyes|henry|england|france|roi|king|queen|marriage|princess|prince)/i.test(rawText)
+  ) {
+    score -= 12
+  }
+
   if ((anchorTokens.includes("morocco") || anchorTokens.includes("marokko") || anchorTokens.includes("maroc")) &&
     (candidateTokens.has("morocco") || candidateTokens.has("marokko") || candidateTokens.has("maroc"))) {
     score += 6
@@ -2175,6 +2225,10 @@ function scoreReusableImageCandidate(entry, anchorTokens = []) {
 
   if (anchorTokens.includes("sahara") && candidateTokens.has("sahara")) score += 5
   if (anchorTokens.includes("rabat") && candidateTokens.has("rabat")) score += 5
+  if ((anchorTokens.includes("casablanca") || anchorTokens.includes("city") || anchorTokens.includes("stad")) &&
+    (candidateTokens.has("casablanca") || candidateTokens.has("city") || candidateTokens.has("stad"))) score += 4
+  if ((anchorTokens.includes("marrakesh") || anchorTokens.includes("marrakech")) &&
+    (candidateTokens.has("marrakesh") || candidateTokens.has("marrakech"))) score += 5
   if (anchorTokens.includes("atlas") && candidateTokens.has("atlas")) score += 3
 
   return score
@@ -2225,12 +2279,28 @@ Regels:
 
 function isReusablePublicImageLicense(value = "") {
   const normalized = stripHtmlTags(value).toLowerCase()
+  const isCreativeCommonsAttribution =
+    (normalized.includes("cc by") || normalized.includes("cc-by") || normalized.includes("attribution")) &&
+    !normalized.includes("nc") &&
+    !normalized.includes("noncommercial") &&
+    !normalized.includes("nd") &&
+    !normalized.includes("no derivatives")
+
+  const isCreativeCommonsShareAlike =
+    (normalized.includes("cc by-sa") || normalized.includes("cc-by-sa") || normalized.includes("sharealike")) &&
+    !normalized.includes("nc") &&
+    !normalized.includes("noncommercial")
+
   return (
     normalized.includes("public domain") ||
     normalized.includes("cc0") ||
     normalized.includes("creative commons zero") ||
     normalized.includes("pdm") ||
-    normalized.includes("no known copyright restrictions")
+    normalized.includes("no known copyright restrictions") ||
+    normalized.includes("gnu free documentation") ||
+    normalized.includes("gfdl") ||
+    isCreativeCommonsAttribution ||
+    isCreativeCommonsShareAlike
   )
 }
 
@@ -2238,7 +2308,7 @@ function extractCommonsMetadataValue(metadata = {}, key = "") {
   return stripHtmlTags(metadata?.[key]?.value || "")
 }
 
-async function searchReusableReferenceImageByQuery(searchQuery = "", anchorTokens = []) {
+async function searchReusableReferenceImageByQuery(searchQuery = "", anchorTokens = [], excludedSources = new Set()) {
   if (!searchQuery) return null
 
   const url = new URL("https://commons.wikimedia.org/w/api.php")
@@ -2284,6 +2354,7 @@ async function searchReusableReferenceImageByQuery(searchQuery = "", anchorToken
         title: stripHtmlTags(page?.title || ""),
         description,
         imageUrl: String(imageInfo?.thumburl || imageInfo?.url || "").trim(),
+        originalImageUrl: String(imageInfo?.url || "").trim(),
         license,
         author,
         sourceUrl,
@@ -2297,39 +2368,60 @@ async function searchReusableReferenceImageByQuery(searchQuery = "", anchorToken
         ),
       }
     })
-    .filter((entry) => entry.imageUrl && isReusablePublicImageLicense(entry.license))
+    .filter(
+      (entry) =>
+        entry.imageUrl &&
+        isReusablePublicImageLicense(entry.license) &&
+        !excludedSources.has(entry.sourceUrl) &&
+        !excludedSources.has(entry.imageUrl) &&
+        !excludedSources.has(entry.originalImageUrl)
+    )
     .sort((left, right) => right.score - left.score)
 
-  const selectedImage = matches[0]
-  if (!selectedImage || selectedImage.score < 3) return null
+  const requiresStrongerMatch = ["morocco", "marokko", "maroc", "rabat", "casablanca", "marrakesh", "marrakech", "fez", "fes", "sahara", "atlas"].some((token) =>
+    anchorTokens.includes(token)
+  )
+  const minimumScore = requiresStrongerMatch ? 4 : 2
+  const candidates = matches.filter((entry) => entry.score >= minimumScore).slice(0, 5)
+  for (const selectedImage of candidates) {
+    const downloadUrls = [selectedImage.imageUrl, selectedImage.originalImageUrl].filter(Boolean)
+    for (const downloadUrl of downloadUrls) {
+      try {
+        const imageResponse = await fetchWithTimeout(downloadUrl, {}, PUBLIC_IMAGE_DOWNLOAD_TIMEOUT_MS)
+        if (!imageResponse.ok) continue
 
-  const imageResponse = await fetchWithTimeout(selectedImage.imageUrl, {}, PUBLIC_IMAGE_DOWNLOAD_TIMEOUT_MS)
-  if (!imageResponse.ok) {
-    throw new Error(`Gevonden Wikimedia-afbeelding kon niet worden opgehaald (${imageResponse.status}).`)
+        const imageBuffer = Buffer.from(await imageResponse.arrayBuffer())
+        if (!imageBuffer.length) continue
+
+        return {
+          buffer: imageBuffer,
+          contentType: String(imageResponse.headers.get("content-type") || "image/jpeg").split(";")[0].trim() || "image/jpeg",
+          source: "wikimedia-commons",
+          license: selectedImage.license,
+          author: selectedImage.author,
+          sourceUrl: selectedImage.sourceUrl,
+          imageUrl: selectedImage.imageUrl,
+          originalImageUrl: selectedImage.originalImageUrl,
+          searchQuery,
+        }
+      } catch (error) {
+        console.warn("[images] candidate download failed:", error instanceof Error ? error.message : error)
+      }
+    }
   }
 
-  const imageBuffer = Buffer.from(await imageResponse.arrayBuffer())
-  if (!imageBuffer.length) return null
-
-  return {
-    buffer: imageBuffer,
-    contentType: String(imageResponse.headers.get("content-type") || "image/jpeg").split(";")[0].trim() || "image/jpeg",
-    source: "wikimedia-commons",
-    license: selectedImage.license,
-    author: selectedImage.author,
-    sourceUrl: selectedImage.sourceUrl,
-    searchQuery,
-  }
+  return null
 }
 
-async function searchReusableReferenceImage({ prompt = "", category = "", kind = "slide" }) {
+async function searchReusableReferenceImage({ prompt = "", category = "", kind = "slide", exclude = [] }) {
   if (kind !== "slide") return null
 
   const searchQueries = buildPublicImageSearchQueries({ prompt, category })
   const anchorTokens = buildReusableImageAnchorTokens({ prompt, category })
+  const excludedSources = new Set((Array.isArray(exclude) ? exclude : []).map((value) => String(value || "").trim()).filter(Boolean))
   for (const searchQuery of searchQueries) {
     try {
-      const match = await searchReusableReferenceImageByQuery(searchQuery, anchorTokens)
+      const match = await searchReusableReferenceImageByQuery(searchQuery, anchorTokens, excludedSources)
       if (match) return match
     } catch (error) {
       console.warn("[images] reusable image search query failed:", error instanceof Error ? error.message : error)
@@ -2339,7 +2431,7 @@ async function searchReusableReferenceImage({ prompt = "", category = "", kind =
   const aiQuery = await buildAiPublicImageSearchQuery({ prompt, category, kind })
   if (aiQuery && !searchQueries.includes(aiQuery)) {
     try {
-      const match = await searchReusableReferenceImageByQuery(aiQuery, anchorTokens)
+      const match = await searchReusableReferenceImageByQuery(aiQuery, anchorTokens, excludedSources)
       if (match) return match
     } catch (error) {
       console.warn("[images] reusable image AI fallback query failed:", error instanceof Error ? error.message : error)
@@ -4570,6 +4662,9 @@ async function updatePresentationSlideManualImage({ room, slideId, imageUrl, ima
               ...slide,
               manualImageUrl: nextManualImageUrl,
               imageAlt: nextImageAlt,
+              manualImageSourceUrl: "",
+              manualImageSourceImageUrl: "",
+              manualImageSearchQuery: "",
             }
           : slide
       ),
@@ -7098,8 +7193,32 @@ io.on("connection", (socket) => {
     }
 
     const previousManualImageUrl = sanitizeManualImageUrl(targetSlide.manualImageUrl || "")
-    const searchPrompt = targetSlide.imagePrompt || `${targetSlide.title || ""} ${targetSlide.focus || targetSlide.studentViewText || ""}`.trim()
-    const searchCategory = `${room.game.topic || ""} ${targetSlide.title || ""}`.trim()
+    const genericSlideTitles = new Set(["conclusie", "summary", "samenvatting", "slot", "afsluiting", "intro", "introduction", "inleiding"])
+    const normalizedSlideTitle = String(targetSlide.title || "").trim().toLowerCase()
+    const searchPrompt = [
+      targetSlide.imageAlt,
+      targetSlide.imagePrompt,
+      targetSlide.focus,
+      targetSlide.studentViewText,
+      ...(targetSlide.bullets || []),
+      genericSlideTitles.has(normalizedSlideTitle) ? "" : targetSlide.title,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .trim()
+    const searchCategory = [
+      room.game.topic || "",
+      genericSlideTitles.has(normalizedSlideTitle) ? "" : targetSlide.title,
+      targetSlide.imageAlt || "",
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .trim()
+    const excludedSources = [
+      targetSlide.manualImageSourceUrl,
+      targetSlide.manualImageUrl,
+      targetSlide.manualImageSourceImageUrl,
+    ].filter(Boolean)
 
     let referenceImage = null
     try {
@@ -7107,6 +7226,7 @@ io.on("connection", (socket) => {
         prompt: searchPrompt,
         category: searchCategory,
         kind: "slide",
+        exclude: excludedSources,
       })
     } catch (error) {
       socket.emit("host:error", {
@@ -7146,6 +7266,9 @@ io.on("connection", (socket) => {
                 ...slide,
                 manualImageUrl: nextManualImageUrl,
                 imageAlt: slide.imageAlt || slide.title || "Presentatiedia",
+                manualImageSourceUrl: referenceImage.sourceUrl || "",
+                manualImageSourceImageUrl: referenceImage.originalImageUrl || referenceImage.imageUrl || "",
+                manualImageSearchQuery: referenceImage.searchQuery || "",
               }
             : slide
         ),
@@ -7186,6 +7309,9 @@ io.on("connection", (socket) => {
             ? {
                 ...slide,
                 manualImageUrl: "",
+                manualImageSourceUrl: "",
+                manualImageSourceImageUrl: "",
+                manualImageSearchQuery: "",
               }
             : slide
         ),
