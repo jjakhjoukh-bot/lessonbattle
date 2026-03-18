@@ -653,12 +653,18 @@ function HostPage() {
       setNewMathLearner({ name: "", learnerCode: "" })
       setStatus(message || "Leercode bijgewerkt.")
     }
-    const onPresentationImageSuccess = ({ manualImageUrl, imageAlt }) => {
+    const onPresentationImageSuccess = ({ manualImageUrl, imageAlt, sourceTitle, searchAttempt }) => {
       setSlideImageBusy(false)
       setManualSlideImageUrlDraft(manualImageUrl || "")
       if (typeof imageAlt === "string") setManualSlideImageAltDraft(imageAlt)
       setManualSlideUploadName("")
-      setStatus(manualImageUrl ? "Dia-afbeelding bijgewerkt." : "Handmatige dia-afbeelding verwijderd.")
+      setStatus(
+        manualImageUrl
+          ? sourceTitle
+            ? `Dia-afbeelding bijgewerkt${searchAttempt ? ` (poging ${searchAttempt})` : ""}: ${sourceTitle}.`
+            : "Dia-afbeelding bijgewerkt."
+          : "Handmatige dia-afbeelding verwijderd."
+      )
     }
     const onRoomBackup = ({ snapshot }) => {
       const username = hostSession.username || loginForm.username
@@ -3223,6 +3229,17 @@ function ManualSlideImageCard({
         <span>{hasManualImage ? "Handmatige afbeelding actief" : "Automatisch beeld actief"}</span>
         {uploadName ? <strong>{uploadName}</strong> : null}
       </div>
+      {slide.manualImageSearchQuery || slide.manualImageSourceTitle || slide.manualImageSourceUrl ? (
+        <div className="manual-image-source">
+          {slide.manualImageSearchQuery ? <span>Zoekterm: {slide.manualImageSearchQuery}</span> : null}
+          {slide.manualImageSourceTitle ? <strong>Bron: {slide.manualImageSourceTitle}</strong> : null}
+          {slide.manualImageSourceUrl ? (
+            <a href={slide.manualImageSourceUrl} rel="noreferrer" target="_blank">
+              Open bron
+            </a>
+          ) : null}
+        </div>
+      ) : null}
     </section>
   )
 }

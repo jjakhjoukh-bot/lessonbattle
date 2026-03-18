@@ -334,7 +334,7 @@ body::after {
 }
 
 .action-row {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   margin-top: 16px;
 }
 
@@ -365,7 +365,7 @@ body::after {
 }
 
 .main-mode-switch {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   width: 100%;
   margin: 0;
 }
@@ -377,13 +377,21 @@ body::after {
 }
 
 .mode-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: 0;
   border-radius: 999px;
-  padding: 12px 16px;
+  min-height: 82px;
+  padding: 14px 18px;
   background: rgba(255, 255, 255, 0.06);
   color: #d9ebff;
   font: inherit;
   font-weight: 700;
+  font-size: clamp(1rem, 1.55vw, 1.25rem);
+  line-height: 1.15;
+  text-align: center;
+  text-wrap: balance;
   cursor: pointer;
 }
 
@@ -490,6 +498,16 @@ body::after {
   padding: 14px 16px;
   font-weight: 700;
   border: 2px solid transparent;
+}
+
+.control-card .action-row > .button-primary,
+.control-card .action-row > .button-secondary,
+.control-card .action-row > .button-ghost {
+  min-height: 84px;
+  font-size: clamp(0.98rem, 1.35vw, 1.2rem);
+  line-height: 1.15;
+  text-align: center;
+  text-wrap: balance;
 }
 
 .button-primary:disabled,
@@ -1905,6 +1923,28 @@ body::after {
 
 .manual-image-meta strong {
   color: #f8fbff;
+}
+
+.manual-image-source {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.manual-image-source strong {
+  color: #f8fbff;
+}
+
+.manual-image-source a {
+  color: #9fe7ff;
+  text-decoration: none;
+}
+
+.manual-image-source a:hover,
+.manual-image-source a:focus-visible {
+  text-decoration: underline;
 }
 
 .lesson-library-section {

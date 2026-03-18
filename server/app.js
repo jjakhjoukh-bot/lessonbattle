@@ -2234,14 +2234,18 @@ function scoreReusableImageCandidate(entry, anchorTokens = []) {
   return score
 }
 
-function buildPublicImageSearchQueries({ prompt = "", category = "" }) {
+function buildPublicImageSearchQueries({ prompt = "", category = "", attemptIndex = 0 }) {
   const fallback = normalizePublicImageSearchQuery([category, prompt].filter(Boolean).join(" "))
   const promptOnly = normalizePublicImageSearchQuery(prompt)
   const categoryOnly = normalizePublicImageSearchQuery(category)
   const anchorTokens = buildReusableImageAnchorTokens({ prompt, category })
   const compactAnchorQuery = normalizePublicImageSearchQuery(anchorTokens.slice(0, 5).join(" "))
   const subjectLedQuery = normalizePublicImageSearchQuery([anchorTokens[0], anchorTokens[1], anchorTokens[2]].filter(Boolean).join(" "))
-  return [...new Set([fallback, promptOnly, categoryOnly, compactAnchorQuery, subjectLedQuery].filter(Boolean))].slice(0, 5)
+  const ordered = [...new Set([fallback, promptOnly, categoryOnly, compactAnchorQuery, subjectLedQuery].filter(Boolean))].slice(0, 5)
+  if (!ordered.length) return []
+  const safeAttemptIndex = Math.max(0, Number(attemptIndex) || 0)
+  const rotation = safeAttemptIndex % ordered.length
+  return [...ordered.slice(rotation), ...ordered.slice(0, rotation)]
 }
 
 async function buildAiPublicImageSearchQuery({ prompt = "", category = "", kind = "slide" }) {
@@ -2374,7 +2378,8 @@ async function searchReusableReferenceImageByQuery(searchQuery = "", anchorToken
         isReusablePublicImageLicense(entry.license) &&
         !excludedSources.has(entry.sourceUrl) &&
         !excludedSources.has(entry.imageUrl) &&
-        !excludedSources.has(entry.originalImageUrl)
+        !excludedSources.has(entry.originalImageUrl) &&
+        !excludedSources.has(String(entry.title || "").trim().toLowerCase())
     )
     .sort((left, right) => right.score - left.score)
 
@@ -2402,6 +2407,7 @@ async function searchReusableReferenceImageByQuery(searchQuery = "", anchorToken
           sourceUrl: selectedImage.sourceUrl,
           imageUrl: selectedImage.imageUrl,
           originalImageUrl: selectedImage.originalImageUrl,
+          title: selectedImage.title,
           searchQuery,
         }
       } catch (error) {
@@ -2413,12 +2419,17 @@ async function searchReusableReferenceImageByQuery(searchQuery = "", anchorToken
   return null
 }
 
-async function searchReusableReferenceImage({ prompt = "", category = "", kind = "slide", exclude = [] }) {
+async function searchReusableReferenceImage({ prompt = "", category = "", kind = "slide", exclude = [], attemptIndex = 0 }) {
   if (kind !== "slide") return null
 
-  const searchQueries = buildPublicImageSearchQueries({ prompt, category })
+  const searchQueries = buildPublicImageSearchQueries({ prompt, category, attemptIndex })
   const anchorTokens = buildReusableImageAnchorTokens({ prompt, category })
-  const excludedSources = new Set((Array.isArray(exclude) ? exclude : []).map((value) => String(value || "").trim()).filter(Boolean))
+  const excludedSources = new Set(
+    (Array.isArray(exclude) ? exclude : [])
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)
+      .map((value) => value.toLowerCase())
+  )
   for (const searchQuery of searchQueries) {
     try {
       const match = await searchReusableReferenceImageByQuery(searchQuery, anchorTokens, excludedSources)
@@ -3151,6 +3162,11 @@ function sanitizePresentationSlide(slide, viewer = "host") {
   return {
     ...safeSlide,
     speakerNotes: slide.speakerNotes || "",
+    manualImageSourceUrl: String(slide.manualImageSourceUrl || "").trim(),
+    manualImageSourceImageUrl: String(slide.manualImageSourceImageUrl || "").trim(),
+    manualImageSearchQuery: String(slide.manualImageSearchQuery || "").trim(),
+    manualImageSourceTitle: String(slide.manualImageSourceTitle || "").trim(),
+    manualImageSearchAttempt: Math.max(0, Number(slide.manualImageSearchAttempt) || 0),
   }
 }
 
@@ -4665,6 +4681,7 @@ async function updatePresentationSlideManualImage({ room, slideId, imageUrl, ima
               manualImageSourceUrl: "",
               manualImageSourceImageUrl: "",
               manualImageSearchQuery: "",
+              manualImageSourceTitle: "",
             }
           : slide
       ),
@@ -5549,6 +5566,11 @@ function normalizePresentationPackage(rawPresentation, lesson, { includeVideoPla
       }),
       imageAlt: String(slide?.imageAlt ?? "").trim() || `${String(slide?.title ?? "").trim()} dia`,
       manualImageUrl: sanitizeManualImageUrl(slide?.manualImageUrl || ""),
+      manualImageSourceUrl: String(slide?.manualImageSourceUrl ?? "").trim(),
+      manualImageSourceImageUrl: String(slide?.manualImageSourceImageUrl ?? "").trim(),
+      manualImageSearchQuery: String(slide?.manualImageSearchQuery ?? "").trim(),
+      manualImageSourceTitle: String(slide?.manualImageSourceTitle ?? "").trim(),
+      manualImageSearchAttempt: Math.max(0, Number(slide?.manualImageSearchAttempt) || 0),
     }))
     .filter((slide) => slide.title && (slide.bullets.length || slide.studentViewText || slide.focus))
     .slice(0, safeSlideCount)
@@ -5570,6 +5592,11 @@ function normalizePresentationPackage(rawPresentation, lesson, { includeVideoPla
           }),
           imageAlt: `${phase.title} dia`,
           manualImageUrl: "",
+          manualImageSourceUrl: "",
+          manualImageSourceImageUrl: "",
+          manualImageSearchQuery: "",
+          manualImageSourceTitle: "",
+          manualImageSearchAttempt: 0,
         })).slice(0, safeSlideCount)
 
   const rawVideo = safePresentation.video
@@ -7282,7 +7309,9 @@ io.on("connection", (socket) => {
       targetSlide.manualImageSourceUrl,
       targetSlide.manualImageUrl,
       targetSlide.manualImageSourceImageUrl,
+      targetSlide.manualImageSourceTitle,
     ].filter(Boolean)
+    const searchAttempt = Math.max(1, (Number(targetSlide.manualImageSearchAttempt) || 0) + 1)
 
     let referenceImage = null
     try {
@@ -7291,6 +7320,7 @@ io.on("connection", (socket) => {
         category: searchCategory,
         kind: "slide",
         exclude: excludedSources,
+        attemptIndex: searchAttempt - 1,
       })
     } catch (error) {
       socket.emit("host:error", {
@@ -7301,7 +7331,9 @@ io.on("connection", (socket) => {
 
     if (!referenceImage?.buffer) {
       socket.emit("host:error", {
-        message: "Er is geen passende rechtenvrije internetafbeelding gevonden voor deze dia. Probeer een andere dia of upload handmatig.",
+        message: previousManualImageUrl
+          ? "Er is geen beter passend alternatief gevonden dan de huidige dia-afbeelding. Pas de dia-tekst aan of upload handmatig."
+          : "Er is geen passende rechtenvrije internetafbeelding gevonden voor deze dia. Probeer een andere dia of upload handmatig.",
       })
       return
     }
@@ -7333,6 +7365,8 @@ io.on("connection", (socket) => {
                 manualImageSourceUrl: referenceImage.sourceUrl || "",
                 manualImageSourceImageUrl: referenceImage.originalImageUrl || referenceImage.imageUrl || "",
                 manualImageSearchQuery: referenceImage.searchQuery || "",
+                manualImageSourceTitle: referenceImage.title || "",
+                manualImageSearchAttempt: searchAttempt,
               }
             : slide
         ),
@@ -7348,6 +7382,10 @@ io.on("connection", (socket) => {
       slideId: normalizedSlideId,
       manualImageUrl: nextManualImageUrl,
       imageAlt: targetSlide.imageAlt || targetSlide.title || "Presentatiedia",
+      sourceTitle: referenceImage.title || "",
+      sourceUrl: referenceImage.sourceUrl || "",
+      searchQuery: referenceImage.searchQuery || "",
+      searchAttempt,
     })
   })
 
@@ -7373,12 +7411,14 @@ io.on("connection", (socket) => {
             ? {
                 ...slide,
                 manualImageUrl: "",
-                manualImageSourceUrl: "",
-                manualImageSourceImageUrl: "",
-                manualImageSearchQuery: "",
-              }
-            : slide
-        ),
+              manualImageSourceUrl: "",
+              manualImageSourceImageUrl: "",
+              manualImageSearchQuery: "",
+              manualImageSourceTitle: "",
+              manualImageSearchAttempt: 0,
+            }
+          : slide
+      ),
       },
     }
 
