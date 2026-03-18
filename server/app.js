@@ -1179,6 +1179,7 @@ function createMathProgress(mathState, playerId) {
     phase: firstTask ? "intake" : "practice",
     intakeIndex: 0,
     intakeAnswers: [],
+    intakeRetryTaskId: "",
     answerHistory: [],
     placementLevel: "",
     targetLevel: "",
@@ -1601,6 +1602,7 @@ function deserializeMathState(rawMathState) {
                     correct: Boolean(entry?.correct),
                   }))
                 : [],
+              intakeRetryTaskId: String(progress?.intakeRetryTaskId ?? ""),
               answerHistory: Array.isArray(progress?.answerHistory)
                 ? progress.answerHistory.map((entry) => ({
                     ...entry,
@@ -1802,6 +1804,186 @@ async function saveManualImageFromRemoteUrl({ imageUrl = "", entityId = "slide" 
   const filePath = path.join(manualImagesPath, fileName)
   fs.writeFileSync(filePath, imageBuffer)
   return `/manual-images/${fileName}`
+}
+
+function stripHtmlTags(value = "") {
+  return String(value || "")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/\s+/g, " ")
+    .trim()
+}
+
+function normalizePublicImageSearchQuery(value = "") {
+  const stopWords = new Set([
+    "a",
+    "an",
+    "and",
+    "the",
+    "about",
+    "with",
+    "without",
+    "create",
+    "classroom",
+    "slide",
+    "illustration",
+    "image",
+    "photo",
+    "realistic",
+    "polished",
+    "modern",
+    "cinematic",
+    "lighting",
+    "visual",
+    "subject",
+    "scene",
+    "show",
+    "clear",
+    "natural",
+    "depth",
+    "style",
+    "one",
+    "for",
+    "of",
+    "in",
+    "on",
+    "to",
+    "or",
+  ])
+
+  const tokens = String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\u00c0-\u024f\s-]/gi, " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .filter((token) => token.length > 2 && !stopWords.has(token))
+
+  return [...new Set(tokens)].slice(0, 8).join(" ")
+}
+
+async function buildPublicImageSearchQuery({ prompt = "", category = "", kind = "slide" }) {
+  const fallback = normalizePublicImageSearchQuery([category, prompt].filter(Boolean).join(" "))
+  const providers = [...(openAI ? ["openai"] : []), ...(genAI ? ["gemini"] : []), ...(groq ? ["groq"] : [])]
+
+  if (!providers.length) return fallback
+
+  const searchPrompt = `
+Maak 1 korte zoekopdracht van 3 tot 6 Engelse kernwoorden voor een bestaande rechtenvrije afbeelding.
+Context:
+- type: ${kind}
+- categorie: ${category || "algemeen"}
+- beschrijving: ${prompt || "algemeen onderwerp"}
+
+Regels:
+- Alleen kernwoorden.
+- Geen volledige zin.
+- Geen leestekens.
+- Geen stijlwoorden zoals cinematic, polished, realistic of illustration.
+- Focus op het onderwerp of object dat echt op de afbeelding moet staan.
+`
+
+  for (const provider of providers) {
+    try {
+      const result = await requestProviderText(
+        provider,
+        searchPrompt,
+        6000,
+        "Je maakt extreem korte zoekopdrachten voor rechtenvrije afbeeldingszoekmachines."
+      )
+      const normalized = normalizePublicImageSearchQuery(result)
+      if (normalized) return normalized
+    } catch (error) {
+      console.warn("[images] public image search query fallback:", error instanceof Error ? error.message : error)
+    }
+  }
+
+  return fallback
+}
+
+function isReusablePublicImageLicense(value = "") {
+  const normalized = stripHtmlTags(value).toLowerCase()
+  return (
+    normalized.includes("public domain") ||
+    normalized.includes("cc0") ||
+    normalized.includes("creative commons zero") ||
+    normalized.includes("pdm") ||
+    normalized.includes("no known copyright restrictions")
+  )
+}
+
+function extractCommonsMetadataValue(metadata = {}, key = "") {
+  return stripHtmlTags(metadata?.[key]?.value || "")
+}
+
+async function searchReusableReferenceImage({ prompt = "", category = "", kind = "slide" }) {
+  if (kind !== "slide") return null
+
+  const searchQuery = await buildPublicImageSearchQuery({ prompt, category, kind })
+  if (!searchQuery) return null
+
+  const url = new URL("https://commons.wikimedia.org/w/api.php")
+  url.search = new URLSearchParams({
+    action: "query",
+    format: "json",
+    generator: "search",
+    gsrnamespace: "6",
+    gsrlimit: "12",
+    gsrsearch: searchQuery,
+    prop: "imageinfo",
+    iiprop: "url|extmetadata",
+    iiurlwidth: "1400",
+  }).toString()
+
+  const response = await fetchWithTimeout(url.toString(), { headers: { accept: "application/json" } }, 10000)
+  if (!response.ok) {
+    throw new Error(`Wikimedia Commons zoekopdracht mislukte (${response.status}).`)
+  }
+
+  const payload = await response.json()
+  const pages = Object.values(payload?.query?.pages || {})
+  const matches = pages
+    .map((page) => {
+      const imageInfo = Array.isArray(page?.imageinfo) ? page.imageinfo[0] || {} : {}
+      const metadata = imageInfo?.extmetadata || {}
+      const license =
+        extractCommonsMetadataValue(metadata, "LicenseShortName") ||
+        extractCommonsMetadataValue(metadata, "License") ||
+        extractCommonsMetadataValue(metadata, "UsageTerms")
+      const author = extractCommonsMetadataValue(metadata, "Artist")
+      const sourceUrl = stripHtmlTags(imageInfo?.descriptionurl || imageInfo?.descriptionshorturl || "")
+
+      return {
+        imageUrl: String(imageInfo?.thumburl || imageInfo?.url || "").trim(),
+        license,
+        author,
+        sourceUrl,
+      }
+    })
+    .filter((entry) => entry.imageUrl && isReusablePublicImageLicense(entry.license))
+
+  const selectedImage = matches[0]
+  if (!selectedImage) return null
+
+  const imageResponse = await fetchWithTimeout(selectedImage.imageUrl, {}, AI_IMAGE_TIMEOUT_MS)
+  if (!imageResponse.ok) {
+    throw new Error(`Gevonden Wikimedia-afbeelding kon niet worden opgehaald (${imageResponse.status}).`)
+  }
+
+  const imageBuffer = Buffer.from(await imageResponse.arrayBuffer())
+  if (!imageBuffer.length) return null
+
+  return {
+    buffer: imageBuffer,
+    contentType: String(imageResponse.headers.get("content-type") || "image/jpeg").split(";")[0].trim() || "image/jpeg",
+    source: "wikimedia-commons",
+    license: selectedImage.license,
+    author: selectedImage.author,
+    sourceUrl: selectedImage.sourceUrl,
+    searchQuery,
+  }
 }
 
 function wrapSvgText(value, maxChars = 26, maxLines = 3) {
@@ -5398,12 +5580,33 @@ app.get("/api/question-image", async (req, res) => {
   }
 
   const cachePath = imageCacheFilePath({ prompt, category, kind })
-  const cachedBuffer = readCachedImageBuffer(cachePath)
+  const cachedBuffer = kind === "slide" ? null : readCachedImageBuffer(cachePath)
   if (cachedBuffer) {
     res.setHeader("Content-Type", "image/png")
     res.setHeader("Cache-Control", "public, max-age=86400")
     res.setHeader("X-Image-Source", "cache")
     res.status(200).send(cachedBuffer)
+    return
+  }
+
+  try {
+    const referenceImage = await searchReusableReferenceImage({ prompt, category, kind })
+    if (referenceImage?.buffer) {
+      res.setHeader("Content-Type", referenceImage.contentType || "image/jpeg")
+      res.setHeader("Cache-Control", "public, max-age=86400")
+      res.setHeader("X-Image-Source", referenceImage.source || "wikimedia-commons")
+      res.status(200).send(referenceImage.buffer)
+      return
+    }
+  } catch (error) {
+    console.warn("[images] reusable image search failed:", error instanceof Error ? error.message : error)
+  }
+
+  if (kind === "slide") {
+    res.setHeader("Content-Type", "image/svg+xml; charset=utf-8")
+    res.setHeader("Cache-Control", "public, max-age=3600")
+    res.setHeader("X-Image-Source", "fallback")
+    res.status(200).send(buildQuestionSvg({ prompt, category }))
     return
   }
 
@@ -6944,6 +7147,25 @@ io.on("connection", (socket) => {
     room.math.updatedAt = submittedAt
 
     if (progress.phase === "intake") {
+      const canRetryThisTask = !evaluation.correct && progress.intakeRetryTaskId !== task.id
+
+      if (canRetryThisTask) {
+        progress.intakeRetryTaskId = task.id
+        progress.lastResult = {
+          phase: "intake-review",
+          correct: false,
+          expectedAnswer: "",
+          answeredValue,
+          explanation: task?.hint ? `Tip: ${String(task.hint).trim()}` : "Kijk nog eens rustig naar de som en reken hem opnieuw uit.",
+          feedback: "Denk je dat je een tikfout maakte? Klik op 'Pas antwoord aan' en probeer deze vraag nog 1 keer.",
+          canRetry: true,
+          pointsAwarded: 0,
+        }
+        emitStateToRoom(room)
+        return
+      }
+
+      progress.intakeRetryTaskId = ""
       progress.intakeAnswers.push({
         questionId: task.id,
         level: task.level,
@@ -7041,6 +7263,22 @@ io.on("connection", (socket) => {
 
     progress.awaitingNext = false
     progress.lastResult = null
+    progress.updatedAt = new Date().toISOString()
+    room.math.updatedAt = progress.updatedAt
+    emitStateToRoom(room)
+  })
+
+  socket.on("player:math:retry-intake", () => {
+    const room = getRoomBySocketId(socket.id)
+    if (!room || room.game.mode !== "math") return
+
+    const player = getPlayerBySocketId(room, socket.id)
+    if (!player) return
+    const progress = ensureMathProgress(room, player.id)
+    if (!progress?.currentTask || progress.phase !== "intake" || !progress.lastResult?.canRetry) return
+
+    progress.lastResult = null
+    progress.awaitingNext = false
     progress.updatedAt = new Date().toISOString()
     room.math.updatedAt = progress.updatedAt
     emitStateToRoom(room)

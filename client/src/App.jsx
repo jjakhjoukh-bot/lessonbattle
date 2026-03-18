@@ -1842,6 +1842,12 @@ function PlayerPage() {
     socket.emit("player:math:answer", { answer: mathAnswer })
   }
 
+  const retryMathIntakeAnswer = () => {
+    setMathAnswer("")
+    setStatus("Pas je antwoord aan en check opnieuw.")
+    socket.emit("player:math:retry-intake")
+  }
+
   const goToNextMathTask = () => {
     socket.emit("player:math:next")
   }
@@ -1896,6 +1902,11 @@ function PlayerPage() {
     Boolean(game.math?.currentTask) &&
     !game.math?.awaitingNext &&
     Boolean(mathAnswer.trim())
+  const showMathRetryButton =
+    joined &&
+    isMathLive &&
+    Boolean(game.math?.currentTask) &&
+    Boolean(game.math?.lastResult?.canRetry)
   const showMathNextButton =
     joined &&
     isMathLive &&
@@ -2058,8 +2069,10 @@ function PlayerPage() {
               answer={mathAnswer}
               onAnswerChange={setMathAnswer}
               onNext={goToNextMathTask}
+              onRetry={retryMathIntakeAnswer}
               onSubmit={submitMathAnswer}
               canSubmit={canSubmitMathAnswer}
+              showRetryButton={showMathRetryButton}
               showNextButton={showMathNextButton}
             />
           ) : game.mode === "lesson" && game.lesson?.currentPhase ? (
@@ -2429,7 +2442,7 @@ function MathHostPanel({
   )
 }
 
-function MathStudentPanel({ math, answer, onAnswerChange, onSubmit, onNext, canSubmit, showNextButton }) {
+function MathStudentPanel({ math, answer, onAnswerChange, onSubmit, onNext, onRetry, canSubmit, showNextButton, showRetryButton }) {
   if (!math) return null
 
   return (
@@ -2485,6 +2498,11 @@ function MathStudentPanel({ math, answer, onAnswerChange, onSubmit, onNext, canS
             </div>
           ) : null}
           {math.lastResult.expectedAnswer ? <span className="score-chip">Juiste antwoord: {math.lastResult.expectedAnswer}</span> : null}
+          {showRetryButton ? (
+            <button className="button-ghost" onClick={onRetry} type="button">
+              Pas antwoord aan
+            </button>
+          ) : null}
         </div>
       ) : null}
 
@@ -2807,7 +2825,7 @@ function ManualSlideImageCard({
         </button>
       </div>
       <div className="manual-image-meta">
-        <span>{hasManualImage ? "Handmatige afbeelding actief" : "AI-afbeelding actief"}</span>
+        <span>{hasManualImage ? "Handmatige afbeelding actief" : "Automatisch beeld actief"}</span>
         {uploadName ? <strong>{uploadName}</strong> : null}
       </div>
     </section>
