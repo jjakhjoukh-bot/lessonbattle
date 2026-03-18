@@ -1,5 +1,13 @@
 import { useEffect, useMemo, useState } from "react"
 import { io } from "socket.io-client"
+import {
+  activateHomeMathSnapshot,
+  nextHomeMathTask,
+  readHomeMathSnapshot,
+  retryHomeMathIntake,
+  submitHomeMathAnswer,
+  writeHomeMathSnapshotFromServer,
+} from "./mathHome"
 import "./App.css"
 
 const socket = io(window.location.origin.startsWith("http://localhost:5173") ? "http://localhost:3001" : window.location.origin)
@@ -1617,6 +1625,7 @@ function PlayerPage() {
   const [joinMode, setJoinMode] = useState(playerSession.joinMode || PLAYER_JOIN_MODE_CLASSROOM)
   const [roomPreview, setRoomPreview] = useState({ valid: false, teams: [], intakeTotal: 0, mode: "battle", groupModeEnabled: false })
   const [joined, setJoined] = useState(Boolean(playerSession.joined))
+  const [homeMathSession, setHomeMathSession] = useState(null)
   const [result, setResult] = useState(null)
   const [chosenAnswer, setChosenAnswer] = useState(null)
   const [answerLocked, setAnswerLocked] = useState(false)
@@ -1626,6 +1635,7 @@ function PlayerPage() {
   const [status, setStatus] = useState("Vul je gegevens in en sluit aan.")
   const timeLeft = useQuestionCountdown(game)
   const liveResult = game.mode === "math" ? game.math?.lastResult || null : result
+  const isLocalHomeMath = Boolean(homeMathSession)
 
   useSoundEffects(liveResult, game.status)
 
@@ -1652,6 +1662,7 @@ function PlayerPage() {
 
   useEffect(() => {
     const onJoined = (nextMode = roomPreview.mode) => {
+      setHomeMathSession(null)
       setJoined(true)
       setStatus(nextMode === "math" ? "Je bent verbonden. Je rekensom of instaptoets staat voor je klaar." : "Je bent verbonden. Wacht op de volgende vraag.")
     }
@@ -1662,7 +1673,21 @@ function PlayerPage() {
       if (nextRoomCode) setRoomCode(nextRoomCode)
       onJoined(nextMode || roomPreview.mode)
     }
-    const onPlayerError = ({ message }) => setStatus(message)
+    const onPlayerError = ({ message }) => {
+      const text = String(message || "")
+      if (joinMode === PLAYER_JOIN_MODE_HOME_MATH && /geen actieve rekenroute/i.test(text)) {
+        const localSnapshot = readHomeMathSnapshot(name.trim(), learnerCode)
+        const localMath = activateHomeMathSnapshot(localSnapshot)
+        if (localMath) {
+          setHomeMathSession(localMath)
+          if (localSnapshot?.roomCode) setRoomCode(localSnapshot.roomCode)
+          setJoined(true)
+          setStatus("Je gaat verder met je opgeslagen thuisroute op dit apparaat.")
+          return
+        }
+      }
+      setStatus(text)
+    }
     const onRoomPreview = (payload) => {
       setRoomPreview(payload)
       if (joinMode !== PLAYER_JOIN_MODE_CLASSROOM) return
@@ -1677,6 +1702,7 @@ function PlayerPage() {
       }
     }
     const onRemoved = ({ message }) => {
+      setHomeMathSession(null)
       setJoined(false)
       setResult(null)
       setChosenAnswer(null)
@@ -1724,7 +1750,7 @@ function PlayerPage() {
       socket.off("player:lesson-response:result", onLessonResponseResult)
       socket.off("player:profile:update", onProfileUpdate)
     }
-  }, [joinMode, roomCode.length])
+  }, [joinMode, learnerCode, name, roomCode.length])
 
   useEffect(() => {
     const nextSession = { name, teamId, roomCode, joined, playerId, playerSessionId, learnerCode, joinMode }
@@ -1774,7 +1800,27 @@ function PlayerPage() {
 
   useEffect(() => {
     setMathAnswer("")
-  }, [game.math?.currentTask?.id])
+  }, [game.math?.currentTask?.id, homeMathSession?.currentTask?.id])
+
+  useEffect(() => {
+    if (!joined || game.mode !== "math" || !game.math || !name.trim() || !/^\d{4}$/.test(learnerCode)) return
+    writeHomeMathSnapshotFromServer({
+      name: name.trim(),
+      learnerCode,
+      roomCode,
+      math: game.math,
+    })
+  }, [game.math, game.mode, joined, learnerCode, name, roomCode])
+
+  useEffect(() => {
+    if (!joined || joinMode !== PLAYER_JOIN_MODE_HOME_MATH || homeMathSession || !name.trim() || !/^\d{4}$/.test(learnerCode)) return
+    const localSnapshot = readHomeMathSnapshot(name.trim(), learnerCode)
+    const localMath = activateHomeMathSnapshot(localSnapshot)
+    if (!localMath) return
+    setHomeMathSession(localMath)
+    if (localSnapshot?.roomCode) setRoomCode(localSnapshot.roomCode)
+    setStatus("Je opgeslagen thuisroute is direct geladen.")
+  }, [homeMathSession, joinMode, joined, learnerCode, name])
 
   useEffect(() => {
     if (joined) return
@@ -1821,6 +1867,14 @@ function PlayerPage() {
 
   const join = () => {
     if (joinMode === PLAYER_JOIN_MODE_HOME_MATH) {
+      const localSnapshot = readHomeMathSnapshot(name.trim(), learnerCode)
+      const localMath = activateHomeMathSnapshot(localSnapshot)
+      if (localMath) {
+        setHomeMathSession(localMath)
+        setJoined(true)
+        if (localSnapshot?.roomCode) setRoomCode(localSnapshot.roomCode)
+        setStatus("Je thuisroute staat klaar. Je kunt direct verder.")
+      }
       socket.emit("player:resume-math", {
         name: name.trim(),
         learnerCode,
@@ -1839,16 +1893,37 @@ function PlayerPage() {
   }
 
   const submitMathAnswer = () => {
+    if (homeMathSession) {
+      const nextMath = submitHomeMathAnswer(homeMathSession, mathAnswer)
+      setHomeMathSession(nextMath)
+      setMathAnswer("")
+      setStatus(nextMath?.lastResult?.feedback || "Je antwoord is nagekeken.")
+      return
+    }
     socket.emit("player:math:answer", { answer: mathAnswer })
   }
 
   const retryMathIntakeAnswer = () => {
+    if (homeMathSession) {
+      const nextMath = retryHomeMathIntake(homeMathSession)
+      setHomeMathSession(nextMath)
+      setMathAnswer("")
+      setStatus("Pas je antwoord aan en check opnieuw.")
+      return
+    }
     setMathAnswer("")
     setStatus("Pas je antwoord aan en check opnieuw.")
     socket.emit("player:math:retry-intake")
   }
 
   const goToNextMathTask = () => {
+    if (homeMathSession) {
+      const nextMath = nextHomeMathTask(homeMathSession)
+      setHomeMathSession(nextMath)
+      setMathAnswer("")
+      setStatus(nextMath?.phase === "practice" ? "Nieuwe som klaar. Succes." : "Volgende vraag staat voor je klaar.")
+      return
+    }
     socket.emit("player:math:next")
   }
 
@@ -1917,6 +1992,98 @@ function PlayerPage() {
       ? Boolean(name.trim()) && /^\d{4}$/.test(learnerCode)
       : roomPreview.valid && (isMathPreview ? /^\d{4}$/.test(learnerCode) : Boolean(name.trim()))
   const showPlayerSidebar = game.mode !== "math"
+
+  if (isLocalHomeMath) {
+    return (
+      <main className="page-shell player-shell">
+        <section className="player-layout">
+          <div className="glass join-card">
+            <span className="eyebrow">Deelnemen</span>
+            <h1>Ga thuis verder</h1>
+            <p className="muted">{status}</p>
+
+            <div className="mode-switch join-mode-switch">
+              <button
+                className={`mode-chip ${joinMode === PLAYER_JOIN_MODE_CLASSROOM ? "is-active" : ""}`}
+                onClick={() => {
+                  setJoinMode(PLAYER_JOIN_MODE_CLASSROOM)
+                  setHomeMathSession(null)
+                  setJoined(false)
+                  setStatus("Vul je gegevens in en sluit aan.")
+                }}
+                type="button"
+              >
+                In de klas
+              </button>
+              <button
+                className={`mode-chip ${isHomeMathJoin ? "is-active" : ""}`}
+                onClick={() => setJoinMode(PLAYER_JOIN_MODE_HOME_MATH)}
+                type="button"
+              >
+                Thuis rekenen
+              </button>
+            </div>
+
+            <label className="field">
+              <span>Jouw naam</span>
+              <input value={name} onChange={(event) => setName(event.target.value)} placeholder="Bijv. Amina" />
+            </label>
+
+            <label className="field">
+              <span>Leerlingcode</span>
+              <input
+                inputMode="numeric"
+                maxLength={4}
+                value={learnerCode}
+                onChange={(event) => setLearnerCode(event.target.value.replace(/\D/g, "").slice(0, 4))}
+                placeholder="Bijv. 4821"
+              />
+            </label>
+
+            <button className="button-primary" disabled={!canJoinRoom} onClick={join} type="button">
+              Verder met rekenen
+            </button>
+
+            <p className="muted learner-code-note">
+              Je opgeslagen thuisroute staat op dit apparaat klaar. Vul alleen je naam en leerlingcode in om door te gaan.
+            </p>
+          </div>
+
+          <div className="glass battle-card">
+            <div className="section-head">
+              <h2>Jouw rekenroute</h2>
+              <div className="pill-row">
+                <span className="pill timer-pill">
+                  {homeMathSession.placementLevel ? `Route ${homeMathSession.targetLevel || homeMathSession.placementLevel}` : `Instap ${homeMathSession.selectedBand}`}
+                </span>
+                <span className="pill">
+                  {homeMathSession.phase === "practice"
+                    ? `${homeMathSession.practiceQuestionCount || 0} sommen gemaakt`
+                    : `Instap ${Math.min((homeMathSession.intakeIndex || 0) + (homeMathSession.currentTask ? 1 : 0), homeMathSession.intakeTotal || 0)} / ${homeMathSession.intakeTotal || 0}`}
+                </span>
+              </div>
+            </div>
+
+            <MathStudentPanel
+              math={homeMathSession}
+              answer={mathAnswer}
+              onAnswerChange={setMathAnswer}
+              onNext={goToNextMathTask}
+              onRetry={retryMathIntakeAnswer}
+              onSubmit={submitMathAnswer}
+              canSubmit={Boolean(homeMathSession.currentTask) && !homeMathSession.awaitingNext && Boolean(mathAnswer.trim())}
+              showRetryButton={Boolean(homeMathSession.currentTask) && Boolean(homeMathSession.lastResult?.canRetry)}
+              showNextButton={!homeMathSession.currentTask && Boolean(homeMathSession.awaitingNext)}
+            />
+          </div>
+
+          <div className="glass side-column">
+            <LearnerCodeCard learnerCode={learnerCode} roomCode={roomCode} />
+          </div>
+        </section>
+      </main>
+    )
+  }
 
   return (
     <main className="page-shell player-shell">

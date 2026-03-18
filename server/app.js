@@ -1477,6 +1477,13 @@ function sanitizeMathState(room, viewer = "host", playerId = "") {
       phase: progress?.phase || "intake",
       intakeIndex: Number(progress?.intakeIndex) || 0,
       intakeTotal: room.math.intakeQuestions.length,
+      intakeAnswers: Array.isArray(progress?.intakeAnswers)
+        ? progress.intakeAnswers.map((entry) => ({
+            level: normalizeMathLevel(entry?.level),
+            domain: MATH_DOMAIN_KEYS.includes(entry?.domain) ? entry.domain : "",
+            correct: Boolean(entry?.correct),
+          }))
+        : [],
       placementLevel: progress?.placementLevel ? formatMathLevel(progress.placementLevel) : "",
       targetLevel: progress?.targetLevel ? formatMathLevel(progress.targetLevel) : "",
       practiceDifficulty: clampMathDifficulty(progress?.practiceDifficulty || 2),
@@ -1488,6 +1495,15 @@ function sanitizeMathState(room, viewer = "host", playerId = "") {
       focusDomains: getMathFocusDomains(progress),
       practiceQuestionCount: Number(progress?.practiceQuestionCount) || 0,
       practiceCorrectCount: Number(progress?.practiceCorrectCount) || 0,
+      practiceHistory: Array.isArray(progress?.answerHistory)
+        ? progress.answerHistory
+            .filter((entry) => entry?.phase === "practice")
+            .map((entry) => ({
+              domain: MATH_DOMAIN_KEYS.includes(entry?.domain) ? entry.domain : "",
+              correct: Boolean(entry?.correct),
+              difficulty: clampMathDifficulty(entry?.difficulty),
+            }))
+        : [],
       currentTask: sanitizeMathTask(progress?.currentTask, "player"),
       awaitingNext: Boolean(progress?.awaitingNext),
       lastResult: progress?.lastResult
