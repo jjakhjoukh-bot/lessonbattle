@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { io } from "socket.io-client"
 import {
   activateHomeMathSnapshot,
@@ -480,6 +480,10 @@ function HostPage() {
   const [manualSlideImageAltDraft, setManualSlideImageAltDraft] = useState("")
   const [manualSlideUploadName, setManualSlideUploadName] = useState("")
   const [slideImageBusy, setSlideImageBusy] = useState(false)
+  const hostSessionRef = useRef(hostSession)
+  const loginUsernameRef = useRef(loginForm.username)
+  const hostRestoreRetryRef = useRef(false)
+  const suppressImmediateHostRestoreRef = useRef(false)
 
   const includePracticeTest = lessonPackage === "practice" || lessonPackage === "complete"
   const includePresentation = lessonPackage === "presentation" || lessonPackage === "complete"
@@ -563,8 +567,18 @@ function HostPage() {
   }, [hostSession.username, loginForm.username])
 
   useEffect(() => {
+    hostSessionRef.current = hostSession
+  }, [hostSession])
+
+  useEffect(() => {
+    loginUsernameRef.current = loginForm.username
+  }, [loginForm.username])
+
+  useEffect(() => {
     const onLoginSuccess = ({ username, displayName, role, canManageAccounts, roomCode, sessionToken }) => {
-      writeHostLastRoomCode(username || loginForm.username, roomCode)
+      hostRestoreRetryRef.current = false
+      suppressImmediateHostRestoreRef.current = true
+      writeHostLastRoomCode(username || loginUsernameRef.current, roomCode)
       setHostSession((current) => ({
         ...current,
         authenticated: true,
@@ -598,7 +612,7 @@ function HostPage() {
       )
     }
     const onRoomUpdate = ({ roomCode }) => {
-      const username = hostSession.username || loginForm.username
+      const username = hostSessionRef.current.username || loginUsernameRef.current
       writeHostLastRoomCode(username, roomCode)
       setHostSession((current) => ({ ...current, roomCode }))
     }
@@ -618,9 +632,33 @@ function HostPage() {
       }
     }
     const onError = ({ message }) => {
+      const normalizedMessage = String(message || "")
       setSlideImageBusy(false)
-      setStatus(`Fout: ${message}`)
-      if (/onjuiste docentgegevens|sessie verlopen|sessie niet meer geldig/i.test(String(message))) {
+      setStatus(`Fout: ${normalizedMessage}`)
+
+      if (/onjuiste docentgegevens/i.test(normalizedMessage)) {
+        hostRestoreRetryRef.current = false
+        setHostSession(DEFAULT_HOST_SESSION)
+        return
+      }
+
+      if (/sessie verlopen|sessie niet meer geldig/i.test(normalizedMessage)) {
+        const currentSession = hostSessionRef.current
+        if (
+          currentSession.authenticated &&
+          currentSession.sessionToken &&
+          !hostRestoreRetryRef.current
+        ) {
+          hostRestoreRetryRef.current = true
+          socket.emit("host:restore-session", {
+            sessionToken: currentSession.sessionToken,
+            roomCode: currentSession.roomCode,
+          })
+          setStatus("Verbinding met het beheeraccount wordt opnieuw gekoppeld...")
+          return
+        }
+
+        hostRestoreRetryRef.current = false
         setHostSession(DEFAULT_HOST_SESSION)
       }
     }
@@ -654,6 +692,7 @@ function HostPage() {
       setStatus(message || "Leercode bijgewerkt.")
     }
     const onPresentationImageSuccess = ({ manualImageUrl, imageAlt, sourceTitle, searchAttempt }) => {
+      hostRestoreRetryRef.current = false
       setSlideImageBusy(false)
       setManualSlideImageUrlDraft(manualImageUrl || "")
       if (typeof imageAlt === "string") setManualSlideImageAltDraft(imageAlt)
@@ -667,12 +706,12 @@ function HostPage() {
       )
     }
     const onRoomBackup = ({ snapshot }) => {
-      const username = hostSession.username || loginForm.username
+      const username = hostSessionRef.current.username || loginUsernameRef.current
       const storedBackup = writeHostRoomBackup(username, snapshot)
       if (storedBackup) setLocalRoomBackup(storedBackup)
     }
     const onBackupRestoreSuccess = ({ roomCode, title }) => {
-      const username = hostSession.username || loginForm.username
+      const username = hostSessionRef.current.username || loginUsernameRef.current
       writeHostLastRoomCode(username, roomCode)
       setStatus(`Lokale backup hersteld${title ? `: ${title}` : ""}. Roomcode ${roomCode}.`)
     }
@@ -726,7 +765,7 @@ function HostPage() {
       socket.off("host:room:backup", onRoomBackup)
       socket.off("host:backup:restore:success", onBackupRestoreSuccess)
     }
-  }, [hostSession.username, loginForm.username])
+  }, [])
 
   useEffect(() => {
     setManualSlideImageUrlDraft(currentPresentationSlide?.manualImageUrl || "")
@@ -787,18 +826,25 @@ function HostPage() {
 
   useEffect(() => {
     const reconnectHost = () => {
-      if (!hostSession.authenticated || !hostSession.username || !hostSession.sessionToken) return
+      const currentSession = hostSessionRef.current
+      if (!currentSession.authenticated || !currentSession.username || !currentSession.sessionToken) return
       socket.emit("host:restore-session", {
-        sessionToken: hostSession.sessionToken,
-        roomCode: hostSession.roomCode,
+        sessionToken: currentSession.sessionToken,
+        roomCode: currentSession.roomCode,
       })
     }
 
-    if (socket.connected) reconnectHost()
+    if (hostSession.authenticated && hostSession.sessionToken && socket.connected) {
+      if (suppressImmediateHostRestoreRef.current) {
+        suppressImmediateHostRestoreRef.current = false
+      } else {
+        reconnectHost()
+      }
+    }
 
     socket.on("connect", reconnectHost)
     return () => socket.off("connect", reconnectHost)
-  }, [hostSession.authenticated, hostSession.roomCode, hostSession.sessionToken, hostSession.username])
+  }, [hostSession.authenticated, hostSession.sessionToken])
 
   useEffect(() => {
     if (!game.question) {
@@ -938,6 +984,8 @@ function HostPage() {
 
   const logout = () => {
     const rememberedUsername = hostSession.username || loginForm.username
+    hostRestoreRetryRef.current = false
+    suppressImmediateHostRestoreRef.current = false
     socket.emit("host:logout")
     window.sessionStorage.removeItem(HOST_SESSION_KEY)
     setHostSession(DEFAULT_HOST_SESSION)

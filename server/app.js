@@ -6521,8 +6521,10 @@ io.on("connection", (socket) => {
       rememberedRoom = await restoreMathRoomFromCloud(session.roomCode)
     }
     const room = reclaimableRoom ?? rememberedRoom ?? getRoomBySocketId(socket.id) ?? createRoom(socket.id)
-
-    clearHostSession(socket.id, { invalidateToken: true })
+    const existingSocketSession = hostSessions.get(socket.id) ?? null
+    clearHostSession(socket.id, {
+      invalidateToken: Boolean(existingSocketSession?.token && existingSocketSession.token !== session.token),
+    })
     detachHostSessionTokenFromOtherSockets(session.token, socket.id)
     claimRoomForHost(room, socket.id)
     rememberHostRoomForSession(session, room.code)
