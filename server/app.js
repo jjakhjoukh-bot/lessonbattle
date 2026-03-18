@@ -5383,6 +5383,69 @@ function normalizeLessonPhaseMinutes(phases, durationMinutes) {
   })
 }
 
+function buildPresentationSlideText(slide) {
+  return [slide?.title, slide?.focus, slide?.studentViewText, ...(Array.isArray(slide?.bullets) ? slide.bullets : [])]
+    .filter(Boolean)
+    .join(" ")
+}
+
+function phaseAnswerLeaksIntoSlide(phase, slide) {
+  const slideText = normalizeComparableText(buildPresentationSlideText(slide))
+  if (!slideText) return false
+
+  const slideTokens = new Set(tokenizeText(slideText))
+  const candidates = [
+    normalizeComparableText(phase?.expectedAnswer),
+    ...extractAnswerCandidates(phase?.expectedAnswer),
+  ].filter(Boolean)
+
+  for (const candidate of candidates) {
+    if (!candidate) continue
+    if (slideText.includes(candidate)) return true
+
+    const candidateTokens = tokenizeText(candidate).filter((token) => token.length >= 4)
+    if (!candidateTokens.length) continue
+    const overlap = candidateTokens.filter((token) => slideTokens.has(token)).length
+    if (candidateTokens.length === 1 && overlap >= 1) return true
+    if (candidateTokens.length > 1 && overlap >= Math.max(1, Math.ceil(candidateTokens.length * 0.5))) return true
+  }
+
+  return false
+}
+
+function buildInferenceFriendlyPrompt(phase, slide) {
+  const rawTopic = String(slide?.title || phase?.title || "").trim()
+  const genericTitle = /^(conclusie|summary|samenvatting|slot|afsluiting|intro|introduction|inleiding)$/i.test(rawTopic)
+  const topicPart = rawTopic && !genericTitle ? ` over ${rawTopic}` : ""
+  return `Leg in je eigen woorden uit wat deze dia laat zien${topicPart}.`
+}
+
+function guardLessonAgainstSlideAnswerLeakage(lesson, slides = []) {
+  if (!lesson?.phases?.length || !Array.isArray(slides) || !slides.length) return lesson
+
+  const nextPhases = lesson.phases.map((phase, index) => {
+    const slide = slides[index]
+    if (!slide || !phaseAnswerLeaksIntoSlide(phase, slide)) return phase
+
+    const saferExpectedAnswer =
+      String(slide.focus || slide.studentViewText || phase.goal || phase.expectedAnswer || lesson.lessonGoal || "").trim() ||
+      phase.expectedAnswer
+
+    return {
+      ...phase,
+      interactivePrompt: buildInferenceFriendlyPrompt(phase, slide),
+      checkForUnderstanding: "Laat leerlingen uitleggen wat deze dia betekent in hun eigen woorden.",
+      expectedAnswer: saferExpectedAnswer,
+      keywords: uniqueTokens([...(phase.keywords || []), saferExpectedAnswer, slide.focus, slide.studentViewText]).slice(0, 8),
+    }
+  })
+
+  return {
+    ...lesson,
+    phases: nextPhases,
+  }
+}
+
 function normalizeLessonPlan(rawPlan, { topic, audience, lessonModel, durationMinutes }) {
   if (!rawPlan || typeof rawPlan !== "object" || Array.isArray(rawPlan)) {
     throw new Error("AI gaf geen bruikbaar lesplan terug.")
@@ -5497,8 +5560,8 @@ function normalizePresentationPackage(rawPresentation, lesson, { includeVideoPla
           id: `slide-${index + 1}`,
           title: phase.title,
           focus: phase.goal,
-          bullets: [phase.goal, phase.studentActivity, phase.checkForUnderstanding].filter(Boolean).slice(0, 3),
-          studentViewText: phase.interactivePrompt || phase.goal,
+          bullets: [phase.goal, phase.studentActivity].filter(Boolean).slice(0, 3),
+          studentViewText: phase.goal || phase.studentActivity,
           speakerNotes: phase.teacherScript,
           imagePrompt: ensureSlideImagePrompt({
             lessonTitle: lesson.title,
@@ -5578,7 +5641,7 @@ function normalizeLessonPackage(
       ? rawPlan.lesson
       : rawPlan
 
-  const lesson = normalizeLessonPlan(lessonSource, { topic, audience, lessonModel, durationMinutes })
+  let lesson = normalizeLessonPlan(lessonSource, { topic, audience, lessonModel, durationMinutes })
   let practiceTest = null
   let presentation = null
 
@@ -5595,6 +5658,7 @@ function normalizeLessonPackage(
   if (includePresentation) {
     try {
       presentation = normalizePresentationPackage(rawPlan.presentation, lesson, { includeVideoPlan, slideCount })
+      lesson = guardLessonAgainstSlideAnswerLeakage(lesson, presentation?.slides || [])
     } catch (error) {
       console.warn(
         `[AI] presentatieset is overgeslagen: ${error instanceof Error ? error.message : "onbekende normalisatiefout"}`
