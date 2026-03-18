@@ -35,6 +35,62 @@ const DEFAULT_HOST_SESSION = {
   sessionToken: "",
 }
 
+const HOST_WORKSPACE_OPTIONS = [
+  {
+    id: "lesson",
+    label: "Lesmodus",
+    description: "Bouw een lesstap met uitleg, opdracht en live vraag.",
+  },
+  {
+    id: "presentation",
+    label: "Presentatieweergave",
+    description: "Maak een diareeks voor het digibord met passende beelden.",
+  },
+  {
+    id: "practice",
+    label: "Oefentoets",
+    description: "Zet een oefentoets klaar die leerlingen rustig kunnen maken.",
+  },
+  {
+    id: "battle",
+    label: "Battle",
+    description: "Start een snelle quiz met timer, snelheid en live scores.",
+  },
+  {
+    id: "math",
+    label: "Rekenen",
+    description: "Beheer de instaptoets en adaptieve rekenroute.",
+  },
+  {
+    id: "management",
+    label: "Beheer",
+    description: "Bekijk leerlingen, geschiedenis, bibliotheek en docentaccounts.",
+  },
+]
+
+const MANAGEMENT_PANEL_OPTIONS = [
+  {
+    id: "learners",
+    label: "Leerlingen",
+    description: "Zoek leerlingen, zie voortgang en beheer codes.",
+  },
+  {
+    id: "library",
+    label: "Bibliotheek",
+    description: "Open of verwijder opgeslagen lessen.",
+  },
+  {
+    id: "history",
+    label: "Geschiedenis",
+    description: "Bekijk en laad eerdere sessies opnieuw.",
+  },
+  {
+    id: "accounts",
+    label: "Docentenaccounts",
+    description: "Maak extra docentaccounts aan en beheer ze.",
+  },
+]
+
 function readStoredHostSession() {
   try {
     const stored = window.sessionStorage.getItem(HOST_SESSION_KEY)
@@ -441,6 +497,8 @@ function HostPage() {
   const { players, teams, leaderboard, game } = useQuizState()
   const storedHostSession = readStoredHostSession()
   const [sessionMode, setSessionMode] = useState("battle")
+  const [hostWorkspace, setHostWorkspace] = useState("lesson")
+  const [managementPanel, setManagementPanel] = useState("learners")
   const [topic, setTopic] = useState("")
   const [audience, setAudience] = useState("vmbo")
   const [questionCount, setQuestionCount] = useState(12)
@@ -503,6 +561,17 @@ function HostPage() {
       : sessionMode === "battle"
         ? "battle"
         : "lesson"
+  const activeWorkspaceMeta =
+    HOST_WORKSPACE_OPTIONS.find((option) => option.id === hostWorkspace) || HOST_WORKSPACE_OPTIONS[0]
+  const visibleManagementOptions = useMemo(
+    () =>
+      hostSession.canManageAccounts
+        ? MANAGEMENT_PANEL_OPTIONS
+        : MANAGEMENT_PANEL_OPTIONS.filter((option) => option.id !== "accounts"),
+    [hostSession.canManageAccounts]
+  )
+  const activeManagementMeta =
+    visibleManagementOptions.find((option) => option.id === managementPanel) || visibleManagementOptions[0]
   const buildActionLabel =
     selectedSuiteMode === "math"
       ? "Rekenroute starten"
@@ -529,6 +598,12 @@ function HostPage() {
   useEffect(() => {
     setGroupModeEnabledDraft(Boolean(game.groupModeEnabled))
   }, [game.groupModeEnabled])
+
+  useEffect(() => {
+    if (hostWorkspace !== "management") return
+    if (visibleManagementOptions.some((option) => option.id === managementPanel)) return
+    setManagementPanel(visibleManagementOptions[0]?.id || "learners")
+  }, [hostWorkspace, managementPanel, visibleManagementOptions])
 
   useEffect(() => {
     if (game.lessonModel) setLessonModel(game.lessonModel)
@@ -974,6 +1049,12 @@ function HostPage() {
     }
   }
 
+  const openHostWorkspace = (nextWorkspace) => {
+    setHostWorkspace(nextWorkspace)
+    if (nextWorkspace === "management") return
+    selectSessionMode(nextWorkspace)
+  }
+
   const login = () => {
     setStatus("Inloggegevens controleren...")
     const normalizedUsername = String(loginForm.username || "").trim()
@@ -1210,6 +1291,8 @@ function HostPage() {
     }
   }
 
+  const isManagementWorkspace = hostWorkspace === "management"
+
   return (
     <main className="page-shell host-shell">
       <section className="hero-card">
@@ -1281,10 +1364,52 @@ function HostPage() {
         </section>
       ) : null}
 
+      {hostSession.authenticated ? (
+        <section className="glass board-card workspace-selector-card">
+          <div className="section-head">
+            <h2>Kies je werkruimte</h2>
+            <span className="pill">{activeWorkspaceMeta.label}</span>
+          </div>
+          <p className="muted">
+            Kies eerst wat je nu wilt doen. Daarna tonen we alleen de informatie en knoppen die bij die werkruimte horen.
+          </p>
+          <div className="workspace-selector-grid">
+            {HOST_WORKSPACE_OPTIONS.map((option) => (
+              <button
+                key={option.id}
+                className={`workspace-tile ${hostWorkspace === option.id ? "is-active" : ""}`}
+                onClick={() => openHostWorkspace(option.id)}
+                type="button"
+              >
+                <strong>{option.label}</strong>
+                <span>{option.description}</span>
+              </button>
+            ))}
+          </div>
+          {isManagementWorkspace ? (
+            <div className="management-switch-row">
+              {visibleManagementOptions.map((option) => (
+                <button
+                  key={option.id}
+                  className={`management-chip ${managementPanel === option.id ? "is-active" : ""}`}
+                  onClick={() => setManagementPanel(option.id)}
+                  type="button"
+                >
+                  <strong>{option.label}</strong>
+                  <span>{option.description}</span>
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
+      {hostSession.authenticated && !isManagementWorkspace ? (
+        <>
       <section className="host-grid">
         <div className="glass control-card">
           <div className="section-head">
-            <h2>Sessie-instellingen</h2>
+            <h2>{activeWorkspaceMeta.label}</h2>
             <span className="pill">{status}</span>
           </div>
 
@@ -1313,51 +1438,9 @@ function HostPage() {
             <strong>{hostSession.roomCode || "-----"}</strong>
           </div>
 
-          <div className="suite-switch-panel">
-            <div className="suite-switch-head">
-              <h3>Lesmodus</h3>
-              <span className="pill">Kies de vorm</span>
-            </div>
-            <div className="mode-switch main-mode-switch">
-              <button
-                className={`mode-chip ${selectedSuiteMode === "lesson" ? "is-active" : ""}`}
-                onClick={() => selectSessionMode("lesson")}
-                type="button"
-              >
-                Lesmodus
-              </button>
-              <button
-                className={`mode-chip ${selectedSuiteMode === "presentation" ? "is-active" : ""}`}
-                onClick={() => selectSessionMode("presentation")}
-                type="button"
-              >
-                Presentatieweergave
-              </button>
-              <button
-                className={`mode-chip ${selectedSuiteMode === "practice" ? "is-active" : ""}`}
-                onClick={() => selectSessionMode("practice")}
-                type="button"
-              >
-                Oefentoets
-              </button>
-              <button
-                className={`mode-chip ${selectedSuiteMode === "math" ? "is-active" : ""}`}
-                onClick={() => selectSessionMode("math")}
-                type="button"
-              >
-                Rekenen
-              </button>
-            </div>
-            <div className="battle-shortcut-row">
-              <button
-                className={`mode-chip mode-chip-secondary ${sessionMode === "battle" ? "is-active" : ""}`}
-                onClick={() => selectSessionMode("battle")}
-                type="button"
-              >
-                Battle
-              </button>
-              <span className="muted">Snelle quizronde zonder lesopbouw.</span>
-            </div>
+          <div className="workspace-callout">
+            <strong>{activeWorkspaceMeta.label}</strong>
+            <p>{activeWorkspaceMeta.description}</p>
           </div>
 
           {controlMode === "math" ? (
@@ -1783,38 +1866,84 @@ function HostPage() {
           teams={teams}
         />
       </section>
+        </>
+      ) : hostSession.authenticated && isManagementWorkspace ? (
+        <section className="management-workspace">
+          <section className="glass board-card management-header-card">
+            <div className="section-head">
+              <h2>Beheer</h2>
+              <span className="pill">{activeManagementMeta?.label || "Beheer"}</span>
+            </div>
+            <p className="muted">
+              Hier beheer je leerlingen, opgeslagen lessen, geschiedenis en docentaccounts zonder dat de rest van je scherm volloopt.
+            </p>
+          </section>
 
-      {hostSession.authenticated ? (
-        <LessonLibrarySection
-          activeLessonId={game.lesson?.libraryId || null}
-          lessons={lessonLibrary}
-          onDelete={deleteLessonFromLibrary}
-          onLoad={loadLessonFromLibrary}
-        />
-      ) : null}
+          {managementPanel === "learners" ? (
+            <>
+              {game.mode === "math" && game.math ? (
+                <MathHostPanel
+                  learnerCodeDrafts={learnerCodeDrafts}
+                  localBackup={localRoomBackup}
+                  math={game.math}
+                  newMathLearner={newMathLearner}
+                  onClearLocalBackup={clearLocalRoomBackupFromDevice}
+                  onCreateLearner={createMathLearner}
+                  onLearnerCodeChange={(playerId, value) =>
+                    setLearnerCodeDrafts((current) => ({ ...current, [playerId]: value }))
+                  }
+                  onNewLearnerChange={setNewMathLearner}
+                  onLearnerCodeSave={updateLearnerCode}
+                  onRestoreLocalBackup={restoreLocalRoomBackup}
+                  insights={hostInsights}
+                />
+              ) : null}
+              <section className="dashboard-grid management-dashboard-grid">
+                <ScoreBoard teams={teams} leaderboard={leaderboard} showGroups={liveGroupModeEnabled} />
+                <RosterBoard
+                  groupModeEnabled={liveGroupModeEnabled}
+                  onlineCount={onlinePlayerCount}
+                  onRemovePlayer={(playerId) => socket.emit("host:remove-player", { playerId })}
+                  players={players}
+                  teams={teams}
+                />
+              </section>
+            </>
+          ) : null}
 
-      {hostSession.authenticated ? (
-        <SessionHistorySection
-          entries={sessionHistory}
-          onDelete={deleteSessionFromHistory}
-          onLoad={loadSessionFromHistory}
-        />
-      ) : null}
+          {managementPanel === "library" ? (
+            <LessonLibrarySection
+              activeLessonId={game.lesson?.libraryId || null}
+              lessons={lessonLibrary}
+              onDelete={deleteLessonFromLibrary}
+              onLoad={loadLessonFromLibrary}
+            />
+          ) : null}
 
-      {hostSession.authenticated && hostSession.canManageAccounts ? (
-        <TeacherAccountsSection
-          accounts={teacherAccounts}
-          canAssignManagerRole={hostSession.role === "owner"}
-          form={teacherAccountForm}
-          onCreate={createTeacherAccount}
-          onDelete={deleteTeacherAccount}
-          onDraftPasswordChange={(accountId, value) =>
-            setTeacherPasswordDrafts((current) => ({ ...current, [accountId]: value }))
-          }
-          onFormChange={setTeacherAccountForm}
-          onUpdate={updateTeacherAccount}
-          passwordDrafts={teacherPasswordDrafts}
-        />
+          {managementPanel === "history" ? (
+            <SessionHistorySection
+              entries={sessionHistory}
+              onDelete={deleteSessionFromHistory}
+              onLoad={loadSessionFromHistory}
+            />
+          ) : null}
+
+          {managementPanel === "accounts" && hostSession.canManageAccounts ? (
+            <TeacherAccountsSection
+              accounts={teacherAccounts}
+              canAssignManagerRole={hostSession.role === "owner"}
+              form={teacherAccountForm}
+              onCreate={createTeacherAccount}
+              onDelete={deleteTeacherAccount}
+              onDraftPasswordChange={(accountId, value) =>
+                setTeacherPasswordDrafts((current) => ({ ...current, [accountId]: value }))
+              }
+              onFormChange={setTeacherAccountForm}
+              onUpdate={updateTeacherAccount}
+              passwordDrafts={teacherPasswordDrafts}
+            />
+          ) : null}
+        </section>
       ) : null}
 
       {presenterMode && game.mode === "lesson" && game.lesson?.presentation?.currentSlide ? (

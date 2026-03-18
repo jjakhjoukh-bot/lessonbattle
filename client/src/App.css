@@ -351,6 +351,97 @@ body::after {
   margin: 18px 0 8px;
 }
 
+.workspace-selector-card,
+.management-header-card {
+  margin-bottom: 22px;
+}
+
+.workspace-selector-grid,
+.management-switch-row {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.workspace-selector-grid {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.management-switch-row {
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+
+.workspace-tile,
+.management-chip {
+  display: grid;
+  gap: 8px;
+  text-align: left;
+  border: 0;
+  border-radius: 24px;
+  padding: 18px 20px;
+  background:
+    linear-gradient(150deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.04)),
+    rgba(255, 255, 255, 0.04);
+  color: #eef6ff;
+  cursor: pointer;
+  transition: transform 180ms ease, box-shadow 180ms ease, background 180ms ease;
+}
+
+.workspace-tile strong,
+.management-chip strong {
+  font-size: 1.12rem;
+}
+
+.workspace-tile span,
+.management-chip span {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.workspace-tile:hover,
+.management-chip:hover {
+  transform: translateY(-2px);
+}
+
+.workspace-tile.is-active,
+.management-chip.is-active {
+  background:
+    linear-gradient(135deg, rgba(255, 157, 67, 0.2), rgba(84, 235, 223, 0.18), rgba(119, 168, 255, 0.2)),
+    rgba(255, 255, 255, 0.05);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.12),
+    0 18px 30px rgba(28, 18, 75, 0.22);
+}
+
+.workspace-callout {
+  display: grid;
+  gap: 8px;
+  margin: 18px 0 6px;
+  padding: 18px;
+  border-radius: 22px;
+  background:
+    linear-gradient(140deg, rgba(84, 235, 223, 0.14), rgba(255, 157, 67, 0.12)),
+    rgba(255, 255, 255, 0.05);
+}
+
+.workspace-callout strong {
+  font-size: 1.12rem;
+}
+
+.workspace-callout p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.management-workspace {
+  display: grid;
+  gap: 22px;
+}
+
+.management-dashboard-grid {
+  margin-top: 0;
+}
+
 .suite-switch-head {
   display: flex;
   justify-content: space-between;

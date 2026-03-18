@@ -2163,6 +2163,15 @@ function expandReusableImageTokens(tokens = []) {
     ["kaart", ["map"]],
     ["map", ["kaart"]],
     ["atlasgebergte", ["atlas"]],
+    ["julius", ["caesar", "rome", "roman"]],
+    ["caesar", ["julius", "rome", "roman", "romeins"]],
+    ["rome", ["roman", "romeins"]],
+    ["roman", ["rome", "romeins"]],
+    ["romeins", ["roman", "rome"]],
+    ["senaat", ["senate", "rome", "roman"]],
+    ["senate", ["senaat", "rome", "roman"]],
+    ["keizer", ["emperor", "rome", "roman"]],
+    ["emperor", ["keizer", "rome", "roman"]],
   ])
 
   const expanded = new Set(tokens)
@@ -2211,11 +2220,25 @@ function scoreReusableImageCandidate(entry, anchorTokens = []) {
     score -= 12
   }
 
+  const strongHistoricTokens = ["julius", "caesar", "rome", "roman", "romeins", "senate", "senaat", "emperor", "keizer"]
+  const hasStrongHistoricAnchor = strongHistoricTokens.some((token) => anchorTokens.includes(token))
+  const hasStrongHistoricCandidate = strongHistoricTokens.some((token) => candidateTokens.has(token))
+  if (hasStrongHistoricAnchor && !hasStrongHistoricCandidate) {
+    score -= 10
+  }
+
   if (
     hasStrongGeoAnchor &&
     /(treaty|troyes|henry|england|france|roi|king|queen|marriage|princess|prince)/i.test(rawText)
   ) {
     score -= 12
+  }
+
+  if (
+    hasStrongHistoricAnchor &&
+    /(morocco|marokko|maroc|casablanca|sahara|mountain resort|travel brochure|real estate|modern skyline)/i.test(rawText)
+  ) {
+    score -= 8
   }
 
   if ((anchorTokens.includes("morocco") || anchorTokens.includes("marokko") || anchorTokens.includes("maroc")) &&
@@ -2230,6 +2253,12 @@ function scoreReusableImageCandidate(entry, anchorTokens = []) {
   if ((anchorTokens.includes("marrakesh") || anchorTokens.includes("marrakech")) &&
     (candidateTokens.has("marrakesh") || candidateTokens.has("marrakech"))) score += 5
   if (anchorTokens.includes("atlas") && candidateTokens.has("atlas")) score += 3
+  if ((anchorTokens.includes("julius") || anchorTokens.includes("caesar")) &&
+    (candidateTokens.has("julius") || candidateTokens.has("caesar"))) score += 7
+  if ((anchorTokens.includes("rome") || anchorTokens.includes("roman") || anchorTokens.includes("romeins")) &&
+    (candidateTokens.has("rome") || candidateTokens.has("roman") || candidateTokens.has("romeins"))) score += 5
+  if ((anchorTokens.includes("senate") || anchorTokens.includes("senaat")) &&
+    (candidateTokens.has("senate") || candidateTokens.has("senaat"))) score += 4
 
   return score
 }
@@ -2283,15 +2312,28 @@ Regels:
 
 function isReusablePublicImageLicense(value = "") {
   const normalized = stripHtmlTags(value).toLowerCase()
+  const compact = normalized.replace(/\s+/g, " ").trim()
   const isCreativeCommonsAttribution =
-    (normalized.includes("cc by") || normalized.includes("cc-by") || normalized.includes("attribution")) &&
+    (
+      normalized.includes("cc by") ||
+      normalized.includes("cc-by") ||
+      normalized.includes("attribution") ||
+      compact === "by" ||
+      compact.startsWith("by ")
+    ) &&
     !normalized.includes("nc") &&
     !normalized.includes("noncommercial") &&
     !normalized.includes("nd") &&
     !normalized.includes("no derivatives")
 
   const isCreativeCommonsShareAlike =
-    (normalized.includes("cc by-sa") || normalized.includes("cc-by-sa") || normalized.includes("sharealike")) &&
+    (
+      normalized.includes("cc by-sa") ||
+      normalized.includes("cc-by-sa") ||
+      normalized.includes("sharealike") ||
+      compact === "by-sa" ||
+      compact.startsWith("by-sa ")
+    ) &&
     !normalized.includes("nc") &&
     !normalized.includes("noncommercial")
 
@@ -2300,6 +2342,8 @@ function isReusablePublicImageLicense(value = "") {
     normalized.includes("cc0") ||
     normalized.includes("creative commons zero") ||
     normalized.includes("pdm") ||
+    compact === "pdm" ||
+    compact === "cc0" ||
     normalized.includes("no known copyright restrictions") ||
     normalized.includes("gnu free documentation") ||
     normalized.includes("gfdl") ||
@@ -2314,6 +2358,134 @@ function extractCommonsMetadataValue(metadata = {}, key = "") {
 
 function normalizeExcludedImageValue(value = "") {
   return String(value || "").trim().toLowerCase()
+}
+
+function sanitizeImageSourceHistory(values = []) {
+  const normalized = Array.isArray(values) ? values : [values]
+  return [...new Set(normalized.map((value) => String(value || "").trim()).filter(Boolean))].slice(-24)
+}
+
+function buildOpenverseLicenseLabel(entry = {}) {
+  const license = String(entry?.license || "").trim()
+  const version = String(entry?.license_version || "").trim()
+  return [license, version].filter(Boolean).join(" ").trim()
+}
+
+async function searchOpenverseReferenceImageByQuery(searchQuery = "", anchorTokens = [], excludedSources = new Set(), attemptIndex = 0) {
+  if (!searchQuery) return null
+
+  const pageSize = 12
+  const safeAttemptIndex = Math.max(0, Number(attemptIndex) || 0)
+  const page = Math.max(1, Math.floor(safeAttemptIndex / pageSize) + 1)
+  const url = new URL("https://api.openverse.org/v1/images/")
+  url.search = new URLSearchParams({
+    q: searchQuery,
+    page_size: String(pageSize),
+    page: String(page),
+    license: "by,by-sa,cc0,pdm",
+    extension: "jpg,jpeg,png",
+    mature: "false",
+  }).toString()
+
+  const response = await fetchWithTimeout(
+    url.toString(),
+    { headers: { accept: "application/json" } },
+    PUBLIC_IMAGE_QUERY_TIMEOUT_MS
+  )
+  if (!response.ok) {
+    throw new Error(`Openverse zoekopdracht mislukte (${response.status}).`)
+  }
+
+  const payload = await response.json()
+  const results = Array.isArray(payload?.results) ? payload.results : []
+  const matches = results
+    .map((item) => {
+      const title = stripHtmlTags(item?.title || item?.foreign_landing_url || "")
+      const description = [
+        stripHtmlTags(item?.creator || ""),
+        stripHtmlTags(item?.source || ""),
+        Array.isArray(item?.tags) ? item.tags.map((tag) => stripHtmlTags(tag?.name || tag)).join(" ") : "",
+      ]
+        .filter(Boolean)
+        .join(" ")
+      const sourceUrl = stripHtmlTags(item?.foreign_landing_url || item?.creator_url || item?.url || "")
+      const imageUrl = String(item?.thumbnail || item?.url || "").trim()
+      const originalImageUrl = String(item?.url || item?.thumbnail || "").trim()
+      const license = buildOpenverseLicenseLabel(item)
+
+      return {
+        title,
+        description,
+        imageUrl,
+        originalImageUrl,
+        normalizedTitle: normalizeExcludedImageValue(title),
+        normalizedSourceUrl: normalizeExcludedImageValue(sourceUrl),
+        normalizedImageUrl: normalizeExcludedImageValue(imageUrl),
+        normalizedOriginalImageUrl: normalizeExcludedImageValue(originalImageUrl),
+        license,
+        author: stripHtmlTags(item?.creator || ""),
+        sourceUrl,
+        score: scoreReusableImageCandidate(
+          {
+            title,
+            description,
+            sourceUrl,
+          },
+          anchorTokens
+        ),
+      }
+    })
+    .filter(
+      (entry) =>
+        entry.imageUrl &&
+        isReusablePublicImageLicense(entry.license) &&
+        !excludedSources.has(entry.normalizedSourceUrl) &&
+        !excludedSources.has(entry.normalizedImageUrl) &&
+        !excludedSources.has(entry.normalizedOriginalImageUrl) &&
+        !excludedSources.has(entry.normalizedTitle)
+    )
+    .sort((left, right) => right.score - left.score)
+
+  const requiresStrongerMatch =
+    ["morocco", "marokko", "maroc", "rabat", "casablanca", "marrakesh", "marrakech", "fez", "fes", "sahara", "atlas", "julius", "caesar", "rome", "roman", "romeins"].some((token) =>
+      anchorTokens.includes(token)
+    )
+  const minimumScore = requiresStrongerMatch ? 4 : 2
+  const candidates = matches.filter((entry) => entry.score >= minimumScore).slice(0, 8)
+  const rotation = candidates.length ? safeAttemptIndex % candidates.length : 0
+  const rotatedCandidates = candidates.length
+    ? [...candidates.slice(rotation), ...candidates.slice(0, rotation)]
+    : []
+
+  for (const selectedImage of rotatedCandidates) {
+    const downloadUrls = [selectedImage.originalImageUrl, selectedImage.imageUrl].filter(Boolean)
+    for (const downloadUrl of downloadUrls) {
+      try {
+        const imageResponse = await fetchWithTimeout(downloadUrl, {}, PUBLIC_IMAGE_DOWNLOAD_TIMEOUT_MS)
+        if (!imageResponse.ok) continue
+
+        const imageBuffer = Buffer.from(await imageResponse.arrayBuffer())
+        if (!imageBuffer.length) continue
+
+        return {
+          buffer: imageBuffer,
+          contentType: String(imageResponse.headers.get("content-type") || "image/jpeg").split(";")[0].trim() || "image/jpeg",
+          source: "openverse",
+          license: selectedImage.license,
+          author: selectedImage.author,
+          sourceUrl: selectedImage.sourceUrl,
+          imageUrl: selectedImage.imageUrl,
+          originalImageUrl: selectedImage.originalImageUrl,
+          title: selectedImage.title,
+          searchQuery,
+        }
+      } catch (error) {
+        console.warn("[images] openverse candidate download failed:", error instanceof Error ? error.message : error)
+      }
+    }
+  }
+
+  return null
 }
 
 async function searchReusableReferenceImageByQuery(searchQuery = "", anchorTokens = [], excludedSources = new Set(), attemptIndex = 0) {
@@ -2448,6 +2620,13 @@ async function searchReusableReferenceImage({ prompt = "", category = "", kind =
   )
   for (const searchQuery of searchQueries) {
     try {
+      const openverseMatch = await searchOpenverseReferenceImageByQuery(searchQuery, anchorTokens, excludedSources, attemptIndex)
+      if (openverseMatch) return openverseMatch
+    } catch (error) {
+      console.warn("[images] openverse query failed:", error instanceof Error ? error.message : error)
+    }
+
+    try {
       const match = await searchReusableReferenceImageByQuery(searchQuery, anchorTokens, excludedSources, attemptIndex)
       if (match) return match
     } catch (error) {
@@ -2457,6 +2636,13 @@ async function searchReusableReferenceImage({ prompt = "", category = "", kind =
 
   const aiQuery = await buildAiPublicImageSearchQuery({ prompt, category, kind })
   if (aiQuery && !searchQueries.includes(aiQuery)) {
+    try {
+      const openverseMatch = await searchOpenverseReferenceImageByQuery(aiQuery, anchorTokens, excludedSources, attemptIndex)
+      if (openverseMatch) return openverseMatch
+    } catch (error) {
+      console.warn("[images] openverse AI fallback query failed:", error instanceof Error ? error.message : error)
+    }
+
     try {
       const match = await searchReusableReferenceImageByQuery(aiQuery, anchorTokens, excludedSources, attemptIndex)
       if (match) return match
@@ -3183,6 +3369,7 @@ function sanitizePresentationSlide(slide, viewer = "host") {
     manualImageSearchQuery: String(slide.manualImageSearchQuery || "").trim(),
     manualImageSourceTitle: String(slide.manualImageSourceTitle || "").trim(),
     manualImageSearchAttempt: Math.max(0, Number(slide.manualImageSearchAttempt) || 0),
+    manualImageSourceHistory: sanitizeImageSourceHistory(slide.manualImageSourceHistory || []),
   }
 }
 
@@ -4698,6 +4885,7 @@ async function updatePresentationSlideManualImage({ room, slideId, imageUrl, ima
               manualImageSourceImageUrl: "",
               manualImageSearchQuery: "",
               manualImageSourceTitle: "",
+              manualImageSourceHistory: sanitizeImageSourceHistory(slide.manualImageSourceHistory || []),
             }
           : slide
       ),
@@ -5587,6 +5775,7 @@ function normalizePresentationPackage(rawPresentation, lesson, { includeVideoPla
       manualImageSearchQuery: String(slide?.manualImageSearchQuery ?? "").trim(),
       manualImageSourceTitle: String(slide?.manualImageSourceTitle ?? "").trim(),
       manualImageSearchAttempt: Math.max(0, Number(slide?.manualImageSearchAttempt) || 0),
+      manualImageSourceHistory: sanitizeImageSourceHistory(slide?.manualImageSourceHistory || []),
     }))
     .filter((slide) => slide.title && (slide.bullets.length || slide.studentViewText || slide.focus))
     .slice(0, safeSlideCount)
@@ -5613,6 +5802,7 @@ function normalizePresentationPackage(rawPresentation, lesson, { includeVideoPla
           manualImageSearchQuery: "",
           manualImageSourceTitle: "",
           manualImageSearchAttempt: 0,
+          manualImageSourceHistory: [],
         })).slice(0, safeSlideCount)
 
   const rawVideo = safePresentation.video
@@ -7326,6 +7516,7 @@ io.on("connection", (socket) => {
       .join(" ")
       .trim()
     const excludedSources = [
+      ...(Array.isArray(targetSlide.manualImageSourceHistory) ? targetSlide.manualImageSourceHistory : []),
       targetSlide.manualImageSourceUrl,
       targetSlide.manualImageUrl,
       targetSlide.manualImageSourceImageUrl,
@@ -7402,6 +7593,13 @@ io.on("connection", (socket) => {
                 manualImageSearchQuery: referenceImage.searchQuery || "",
                 manualImageSourceTitle: referenceImage.title || "",
                 manualImageSearchAttempt: searchAttempt,
+                manualImageSourceHistory: sanitizeImageSourceHistory([
+                  ...(Array.isArray(slide.manualImageSourceHistory) ? slide.manualImageSourceHistory : []),
+                  referenceImage.sourceUrl,
+                  referenceImage.originalImageUrl,
+                  referenceImage.imageUrl,
+                  referenceImage.title,
+                ]),
               }
             : slide
         ),
@@ -7446,14 +7644,15 @@ io.on("connection", (socket) => {
             ? {
                 ...slide,
                 manualImageUrl: "",
-              manualImageSourceUrl: "",
-              manualImageSourceImageUrl: "",
-              manualImageSearchQuery: "",
-              manualImageSourceTitle: "",
-              manualImageSearchAttempt: 0,
-            }
-          : slide
-      ),
+                manualImageSourceUrl: "",
+                manualImageSourceImageUrl: "",
+                manualImageSearchQuery: "",
+                manualImageSourceTitle: "",
+                manualImageSearchAttempt: 0,
+                manualImageSourceHistory: sanitizeImageSourceHistory(slide.manualImageSourceHistory || []),
+              }
+            : slide
+        ),
       },
     }
 
