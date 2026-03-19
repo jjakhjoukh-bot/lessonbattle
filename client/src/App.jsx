@@ -788,7 +788,7 @@ function HostPage() {
     const onBackupRestoreSuccess = ({ roomCode, title }) => {
       const username = hostSessionRef.current.username || loginUsernameRef.current
       writeHostLastRoomCode(username, roomCode)
-      setStatus(`Lokale backup hersteld${title ? `: ${title}` : ""}. Roomcode ${roomCode}.`)
+      setStatus(`Lokale backup hersteld${title ? `: ${title}` : ""}. Sessiecode ${roomCode}.`)
     }
 
     socket.on("host:login:success", onLoginSuccess)
@@ -1420,7 +1420,7 @@ function HostPage() {
               {hostSession.role ? <small className="meta-role">{hostSession.role === "owner" ? "Hoofdbeheer" : hostSession.role === "manager" ? "Beheerder" : "Docent"}</small> : null}
             </div>
             <div className="meta-card">
-              <span>Spelcode</span>
+              <span>Sessiecode</span>
               <strong>{hostSession.roomCode || "-----"}</strong>
             </div>
             <div className="meta-actions">
@@ -1594,7 +1594,7 @@ function HostPage() {
                 >
                   <span>Instelling</span>
                   <strong>Individueel werken</strong>
-                  <p>Leerlingen vullen alleen hun naam en spelcode in. Er worden geen groepen gebruikt.</p>
+                  <p>Leerlingen vullen alleen hun naam en sessiecode in. Er worden geen groepen gebruikt.</p>
                 </button>
                 <button
                   className={`toggle-card ${groupModeEnabledDraft ? "is-active" : ""}`}
@@ -2071,7 +2071,7 @@ function PlayerPage() {
             : `Room ${payload.roomCode} gevonden.`
         )
       } else if (roomCode.length >= 5) {
-        setStatus("Deze spelcode bestaat niet.")
+        setStatus("Deze sessiecode bestaat niet.")
       }
     }
     const onRemoved = ({ message }) => {
@@ -2463,7 +2463,7 @@ function PlayerPage() {
       <section className="player-layout">
         <div className="glass join-card">
           <span className="eyebrow">Deelnemen</span>
-          <h1>{isHomeMathJoin ? "Ga thuis verder" : isMathPreview ? "Start rekenen" : "Join de battle"}</h1>
+          <h1>{isHomeMathJoin ? "Ga thuis verder" : isMathPreview ? "Start rekenen" : "Doe mee aan de sessie"}</h1>
           <p className="muted">{status}</p>
 
           <div className="mode-switch join-mode-switch">
@@ -2504,7 +2504,7 @@ function PlayerPage() {
 
           {needsRoomCode ? (
             <label className="field">
-              <span>Spelcode</span>
+              <span>Sessiecode</span>
               <input
                 value={roomCode}
                 onChange={(event) => setRoomCode(event.target.value.toUpperCase())}
@@ -2545,7 +2545,7 @@ function PlayerPage() {
           {!isHomeMathJoin ? (
             <div className="join-home-note">
               <strong>Thuis verder?</strong>
-              <p>Klik hierboven op Thuis rekenen. Dan vul je alleen je naam en leerlingcode in. Een spelcode is thuis niet nodig.</p>
+              <p>Klik hierboven op Thuis rekenen. Dan vul je alleen je naam en leerlingcode in. Een sessiecode is thuis niet nodig.</p>
             </div>
           ) : null}
         </div>
@@ -3099,12 +3099,12 @@ function LearnerCodeCard({ learnerCode, roomCode }) {
         </div>
         {roomCode ? (
           <div>
-            <span>Spelcode in de klas</span>
+            <span>Sessiecode in de klas</span>
             <strong>{roomCode}</strong>
           </div>
         ) : null}
       </div>
-      <p className="muted">In de klas gebruik je spelcode + leerlingcode. Thuis ga je verder met alleen je naam + leerlingcode.</p>
+      <p className="muted">In de klas gebruik je sessiecode + leerlingcode. Thuis ga je verder met alleen je naam + leerlingcode.</p>
     </section>
   )
 }
@@ -4479,7 +4479,7 @@ function LobbyCard({ roomCode, teams, players, onlineCount, groupModeEnabled = f
   return (
     <div className="lobby-card">
       <span className="eyebrow">Wachtruimte</span>
-      <h3>Open de quiz en voer de code in</h3>
+      <h3>Open de site en voer de sessiecode in</h3>
       <div className="lobby-code">{roomCode || "-----"}</div>
       <p>
         Open <strong>/join</strong>, voer de code in en vul je naam in.

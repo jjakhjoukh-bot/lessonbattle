@@ -2160,9 +2160,18 @@ function expandReusableImageTokens(tokens = []) {
     ["stad", ["city", "cities"]],
     ["city", ["stad", "steden", "cities"]],
     ["cities", ["stad", "steden", "city"]],
+    ["plein", ["square", "market", "marketplace"]],
+    ["square", ["plein", "market", "marketplace"]],
+    ["market", ["plein", "square", "marketplace"]],
+    ["marketplace", ["plein", "square", "market"]],
     ["kaart", ["map"]],
     ["map", ["kaart"]],
     ["atlasgebergte", ["atlas"]],
+    ["jemaa", ["djemaa", "jmaa", "fna", "fnaa", "marrakech", "marrakesh", "square", "plein"]],
+    ["djemaa", ["jemaa", "jmaa", "fna", "fnaa", "marrakech", "marrakesh", "square", "plein"]],
+    ["jmaa", ["jemaa", "djemaa", "fna", "fnaa", "marrakech", "marrakesh", "square", "plein"]],
+    ["fna", ["fnaa", "jemaa", "djemaa", "jmaa", "marrakech", "marrakesh"]],
+    ["fnaa", ["fna", "jemaa", "djemaa", "jmaa", "marrakech", "marrakesh"]],
     ["julius", ["caesar", "rome", "roman"]],
     ["caesar", ["julius", "rome", "roman", "romeins"]],
     ["rome", ["roman", "romeins"]],
@@ -2187,7 +2196,7 @@ function buildReusableImageAnchorTokens({ prompt = "", category = "" }) {
   const meaningfulTokens = baseTokens.filter(
     (token) =>
       token.length >= 5 ||
-      ["map", "city", "atlas", "rabat", "sahara", "maroc", "fez", "fes"].includes(token)
+      ["map", "city", "atlas", "rabat", "sahara", "maroc", "fez", "fes", "jmaa", "fna", "fnaa"].includes(token)
   )
   return expandReusableImageTokens(meaningfulTokens).slice(0, 12)
 }
@@ -2213,7 +2222,7 @@ function scoreReusableImageCandidate(entry, anchorTokens = []) {
     score -= 4
   }
 
-  const strongGeoTokens = ["morocco", "marokko", "maroc", "rabat", "casablanca", "marrakesh", "marrakech", "fez", "fes", "sahara", "atlas"]
+  const strongGeoTokens = ["morocco", "marokko", "maroc", "rabat", "casablanca", "marrakesh", "marrakech", "fez", "fes", "sahara", "atlas", "jemaa", "djemaa", "jmaa", "fna", "fnaa"]
   const hasStrongGeoAnchor = strongGeoTokens.some((token) => anchorTokens.includes(token))
   const hasStrongGeoCandidate = strongGeoTokens.some((token) => candidateTokens.has(token))
   if (hasStrongGeoAnchor && !hasStrongGeoCandidate) {
@@ -2365,13 +2374,142 @@ function sanitizeImageSourceHistory(values = []) {
   return [...new Set(normalized.map((value) => String(value || "").trim()).filter(Boolean))].slice(-24)
 }
 
+function buildReferenceImageCandidate({
+  title = "",
+  description = "",
+  imageUrl = "",
+  originalImageUrl = "",
+  sourceUrl = "",
+  license = "",
+  author = "",
+  searchQuery = "",
+  source = "",
+  anchorTokens = [],
+}) {
+  const normalizedTitle = normalizeExcludedImageValue(title)
+  const normalizedSourceUrl = normalizeExcludedImageValue(sourceUrl)
+  const normalizedImageUrl = normalizeExcludedImageValue(imageUrl)
+  const normalizedOriginalImageUrl = normalizeExcludedImageValue(originalImageUrl)
+
+  return {
+    title: stripHtmlTags(title),
+    description: stripHtmlTags(description),
+    imageUrl: String(imageUrl || "").trim(),
+    originalImageUrl: String(originalImageUrl || imageUrl || "").trim(),
+    normalizedTitle,
+    normalizedSourceUrl,
+    normalizedImageUrl,
+    normalizedOriginalImageUrl,
+    license: String(license || "").trim(),
+    author: stripHtmlTags(author),
+    sourceUrl: stripHtmlTags(sourceUrl),
+    searchQuery: String(searchQuery || "").trim(),
+    source: String(source || "").trim(),
+    score: scoreReusableImageCandidate(
+      {
+        title,
+        description,
+        sourceUrl,
+      },
+      anchorTokens
+    ),
+  }
+}
+
+function filterReferenceImageCandidates(candidates = [], excludedSources = new Set(), anchorTokens = []) {
+  const requiresStrongerMatch =
+    [
+      "morocco",
+      "marokko",
+      "maroc",
+      "rabat",
+      "casablanca",
+      "marrakesh",
+      "marrakech",
+      "fez",
+      "fes",
+      "sahara",
+      "atlas",
+      "julius",
+      "caesar",
+      "rome",
+      "roman",
+      "romeins",
+      "jemaa",
+      "djemaa",
+      "jmaa",
+      "fna",
+      "fnaa",
+    ].some((token) => anchorTokens.includes(token))
+  const minimumScore = requiresStrongerMatch ? 4 : 2
+
+  return candidates
+    .filter(
+      (entry) =>
+        entry.imageUrl &&
+        isReusablePublicImageLicense(entry.license) &&
+        !excludedSources.has(entry.normalizedSourceUrl) &&
+        !excludedSources.has(entry.normalizedImageUrl) &&
+        !excludedSources.has(entry.normalizedOriginalImageUrl) &&
+        !excludedSources.has(entry.normalizedTitle) &&
+        entry.score >= minimumScore
+    )
+    .sort((left, right) => right.score - left.score)
+}
+
+function dedupeReferenceImageCandidates(candidates = []) {
+  const seenKeys = new Set()
+  const unique = []
+  for (const candidate of candidates) {
+    const dedupeKey =
+      candidate.normalizedOriginalImageUrl ||
+      candidate.normalizedImageUrl ||
+      candidate.normalizedSourceUrl ||
+      candidate.normalizedTitle
+    if (!dedupeKey || seenKeys.has(dedupeKey)) continue
+    seenKeys.add(dedupeKey)
+    unique.push(candidate)
+  }
+  return unique
+}
+
+async function downloadReferenceImageCandidate(candidate) {
+  const downloadUrls = [candidate.originalImageUrl, candidate.imageUrl].filter(Boolean)
+  for (const downloadUrl of downloadUrls) {
+    try {
+      const imageResponse = await fetchWithTimeout(downloadUrl, {}, PUBLIC_IMAGE_DOWNLOAD_TIMEOUT_MS)
+      if (!imageResponse.ok) continue
+
+      const imageBuffer = Buffer.from(await imageResponse.arrayBuffer())
+      if (!imageBuffer.length) continue
+
+      return {
+        buffer: imageBuffer,
+        contentType: String(imageResponse.headers.get("content-type") || "image/jpeg").split(";")[0].trim() || "image/jpeg",
+        source: candidate.source,
+        license: candidate.license,
+        author: candidate.author,
+        sourceUrl: candidate.sourceUrl,
+        imageUrl: candidate.imageUrl,
+        originalImageUrl: candidate.originalImageUrl,
+        title: candidate.title,
+        searchQuery: candidate.searchQuery,
+      }
+    } catch (error) {
+      console.warn("[images] candidate download failed:", error instanceof Error ? error.message : error)
+    }
+  }
+
+  return null
+}
+
 function buildOpenverseLicenseLabel(entry = {}) {
   const license = String(entry?.license || "").trim()
   const version = String(entry?.license_version || "").trim()
   return [license, version].filter(Boolean).join(" ").trim()
 }
 
-async function searchOpenverseReferenceImageByQuery(searchQuery = "", anchorTokens = [], excludedSources = new Set(), attemptIndex = 0) {
+async function collectOpenverseReferenceImageCandidatesByQuery(searchQuery = "", anchorTokens = [], excludedSources = new Set(), attemptIndex = 0) {
   if (!searchQuery) return null
 
   const pageSize = 12
@@ -2413,82 +2551,25 @@ async function searchOpenverseReferenceImageByQuery(searchQuery = "", anchorToke
       const originalImageUrl = String(item?.url || item?.thumbnail || "").trim()
       const license = buildOpenverseLicenseLabel(item)
 
-      return {
+      return buildReferenceImageCandidate({
         title,
         description,
         imageUrl,
         originalImageUrl,
-        normalizedTitle: normalizeExcludedImageValue(title),
-        normalizedSourceUrl: normalizeExcludedImageValue(sourceUrl),
-        normalizedImageUrl: normalizeExcludedImageValue(imageUrl),
-        normalizedOriginalImageUrl: normalizeExcludedImageValue(originalImageUrl),
-        license,
-        author: stripHtmlTags(item?.creator || ""),
         sourceUrl,
-        score: scoreReusableImageCandidate(
-          {
-            title,
-            description,
-            sourceUrl,
-          },
-          anchorTokens
-        ),
-      }
+        license,
+        author: item?.creator || "",
+        searchQuery,
+        source: "openverse",
+        anchorTokens,
+      })
     })
-    .filter(
-      (entry) =>
-        entry.imageUrl &&
-        isReusablePublicImageLicense(entry.license) &&
-        !excludedSources.has(entry.normalizedSourceUrl) &&
-        !excludedSources.has(entry.normalizedImageUrl) &&
-        !excludedSources.has(entry.normalizedOriginalImageUrl) &&
-        !excludedSources.has(entry.normalizedTitle)
-    )
-    .sort((left, right) => right.score - left.score)
-
-  const requiresStrongerMatch =
-    ["morocco", "marokko", "maroc", "rabat", "casablanca", "marrakesh", "marrakech", "fez", "fes", "sahara", "atlas", "julius", "caesar", "rome", "roman", "romeins"].some((token) =>
-      anchorTokens.includes(token)
-    )
-  const minimumScore = requiresStrongerMatch ? 4 : 2
-  const candidates = matches.filter((entry) => entry.score >= minimumScore).slice(0, 8)
-  const rotation = candidates.length ? safeAttemptIndex % candidates.length : 0
-  const rotatedCandidates = candidates.length
-    ? [...candidates.slice(rotation), ...candidates.slice(0, rotation)]
-    : []
-
-  for (const selectedImage of rotatedCandidates) {
-    const downloadUrls = [selectedImage.originalImageUrl, selectedImage.imageUrl].filter(Boolean)
-    for (const downloadUrl of downloadUrls) {
-      try {
-        const imageResponse = await fetchWithTimeout(downloadUrl, {}, PUBLIC_IMAGE_DOWNLOAD_TIMEOUT_MS)
-        if (!imageResponse.ok) continue
-
-        const imageBuffer = Buffer.from(await imageResponse.arrayBuffer())
-        if (!imageBuffer.length) continue
-
-        return {
-          buffer: imageBuffer,
-          contentType: String(imageResponse.headers.get("content-type") || "image/jpeg").split(";")[0].trim() || "image/jpeg",
-          source: "openverse",
-          license: selectedImage.license,
-          author: selectedImage.author,
-          sourceUrl: selectedImage.sourceUrl,
-          imageUrl: selectedImage.imageUrl,
-          originalImageUrl: selectedImage.originalImageUrl,
-          title: selectedImage.title,
-          searchQuery,
-        }
-      } catch (error) {
-        console.warn("[images] openverse candidate download failed:", error instanceof Error ? error.message : error)
-      }
-    }
-  }
-
-  return null
+  const filtered = filterReferenceImageCandidates(matches, excludedSources, anchorTokens)
+  const rotation = filtered.length ? safeAttemptIndex % filtered.length : 0
+  return filtered.length ? [...filtered.slice(rotation), ...filtered.slice(0, rotation)].slice(0, 8) : []
 }
 
-async function searchReusableReferenceImageByQuery(searchQuery = "", anchorTokens = [], excludedSources = new Set(), attemptIndex = 0) {
+async function collectWikimediaReferenceImageCandidatesByQuery(searchQuery = "", anchorTokens = [], excludedSources = new Set(), attemptIndex = 0) {
   if (!searchQuery) return null
 
   const url = new URL("https://commons.wikimedia.org/w/api.php")
@@ -2534,121 +2615,244 @@ async function searchReusableReferenceImageByQuery(searchQuery = "", anchorToken
       const normalizedImageUrl = normalizeExcludedImageValue(imageInfo?.thumburl || imageInfo?.url || "")
       const normalizedOriginalImageUrl = normalizeExcludedImageValue(imageInfo?.url || "")
 
-      return {
-        title: stripHtmlTags(page?.title || ""),
+      return buildReferenceImageCandidate({
+        title: page?.title || "",
         description,
-        imageUrl: String(imageInfo?.thumburl || imageInfo?.url || "").trim(),
-        originalImageUrl: String(imageInfo?.url || "").trim(),
-        normalizedTitle,
-        normalizedSourceUrl,
-        normalizedImageUrl,
-        normalizedOriginalImageUrl,
+        imageUrl: imageInfo?.thumburl || imageInfo?.url || "",
+        originalImageUrl: imageInfo?.url || "",
+        sourceUrl,
         license,
         author,
-        sourceUrl,
-        score: scoreReusableImageCandidate(
-          {
-            title: page?.title || "",
-            description,
-            sourceUrl,
-          },
-          anchorTokens
-        ),
-      }
+        searchQuery,
+        source: "wikimedia-commons",
+        anchorTokens,
+      })
     })
-    .filter(
-      (entry) =>
-        entry.imageUrl &&
-        isReusablePublicImageLicense(entry.license) &&
-        !excludedSources.has(entry.normalizedSourceUrl) &&
-        !excludedSources.has(entry.normalizedImageUrl) &&
-        !excludedSources.has(entry.normalizedOriginalImageUrl) &&
-        !excludedSources.has(entry.normalizedTitle)
-    )
-    .sort((left, right) => right.score - left.score)
-
-  const requiresStrongerMatch = ["morocco", "marokko", "maroc", "rabat", "casablanca", "marrakesh", "marrakech", "fez", "fes", "sahara", "atlas"].some((token) =>
-    anchorTokens.includes(token)
-  )
-  const minimumScore = requiresStrongerMatch ? 4 : 2
-  const candidates = matches.filter((entry) => entry.score >= minimumScore).slice(0, 8)
+  const candidates = filterReferenceImageCandidates(matches, excludedSources, anchorTokens).slice(0, 8)
   const safeAttemptIndex = Math.max(0, Number(attemptIndex) || 0)
   const rotation = candidates.length ? safeAttemptIndex % candidates.length : 0
-  const rotatedCandidates = candidates.length
-    ? [...candidates.slice(rotation), ...candidates.slice(0, rotation)]
-    : []
-  for (const selectedImage of rotatedCandidates) {
-    const downloadUrls = [selectedImage.imageUrl, selectedImage.originalImageUrl].filter(Boolean)
-    for (const downloadUrl of downloadUrls) {
-      try {
-        const imageResponse = await fetchWithTimeout(downloadUrl, {}, PUBLIC_IMAGE_DOWNLOAD_TIMEOUT_MS)
-        if (!imageResponse.ok) continue
+  return candidates.length ? [...candidates.slice(rotation), ...candidates.slice(0, rotation)] : []
+}
 
-        const imageBuffer = Buffer.from(await imageResponse.arrayBuffer())
-        if (!imageBuffer.length) continue
+async function collectClevelandReferenceImageCandidatesByQuery(searchQuery = "", anchorTokens = [], excludedSources = new Set(), attemptIndex = 0) {
+  if (!searchQuery) return []
 
-        return {
-          buffer: imageBuffer,
-          contentType: String(imageResponse.headers.get("content-type") || "image/jpeg").split(";")[0].trim() || "image/jpeg",
-          source: "wikimedia-commons",
-          license: selectedImage.license,
-          author: selectedImage.author,
-          sourceUrl: selectedImage.sourceUrl,
-          imageUrl: selectedImage.imageUrl,
-          originalImageUrl: selectedImage.originalImageUrl,
-          title: selectedImage.title,
-          searchQuery,
-        }
-      } catch (error) {
-        console.warn("[images] candidate download failed:", error instanceof Error ? error.message : error)
-      }
-    }
+  const pageSize = 12
+  const safeAttemptIndex = Math.max(0, Number(attemptIndex) || 0)
+  const skip = Math.floor(safeAttemptIndex / pageSize) * pageSize
+  const url = new URL("https://openaccess-api.clevelandart.org/api/artworks/")
+  url.search = new URLSearchParams({
+    q: searchQuery,
+    cc0: "1",
+    has_image: "1",
+    limit: String(pageSize),
+    skip: String(skip),
+    fields: "title,url,description,images,share_license_status,creators,culture,type,department",
+  }).toString()
+
+  const response = await fetchWithTimeout(
+    url.toString(),
+    { headers: { accept: "application/json" } },
+    PUBLIC_IMAGE_QUERY_TIMEOUT_MS
+  )
+  if (!response.ok) {
+    throw new Error(`Cleveland Museum API zoekopdracht mislukte (${response.status}).`)
   }
 
-  return null
+  const payload = await response.json()
+  const results = Array.isArray(payload?.data) ? payload.data : []
+  const matches = results
+    .map((item) => {
+      const imageUrl =
+        String(item?.images?.web?.url || item?.images?.print?.url || "").trim()
+      const originalImageUrl =
+        String(item?.images?.print?.url || item?.images?.full?.url || item?.images?.web?.url || "").trim()
+      const description = [
+        item?.description,
+        item?.department,
+        item?.type,
+        Array.isArray(item?.culture) ? item.culture.join(" ") : item?.culture,
+        Array.isArray(item?.creators) ? item.creators.map((creator) => creator?.description || creator?.role || "").join(" ") : "",
+      ]
+        .filter(Boolean)
+        .join(" ")
+
+      return buildReferenceImageCandidate({
+        title: item?.title || "",
+        description,
+        imageUrl,
+        originalImageUrl,
+        sourceUrl: item?.url || "",
+        license: String(item?.share_license_status || "").trim(),
+        author: Array.isArray(item?.creators) ? item.creators.map((creator) => creator?.description || "").filter(Boolean).join(", ") : "",
+        searchQuery,
+        source: "cleveland-museum",
+        anchorTokens,
+      })
+    })
+  const filtered = filterReferenceImageCandidates(matches, excludedSources, anchorTokens)
+  const rotation = filtered.length ? safeAttemptIndex % filtered.length : 0
+  return filtered.length ? [...filtered.slice(rotation), ...filtered.slice(0, rotation)].slice(0, 8) : []
+}
+
+async function collectMetReferenceImageCandidatesByQuery(searchQuery = "", anchorTokens = [], excludedSources = new Set(), attemptIndex = 0) {
+  if (!searchQuery) return []
+
+  const searchUrl = new URL("https://collectionapi.metmuseum.org/public/collection/v1/search")
+  searchUrl.search = new URLSearchParams({
+    q: searchQuery,
+    hasImages: "true",
+  }).toString()
+
+  const searchResponse = await fetchWithTimeout(
+    searchUrl.toString(),
+    { headers: { accept: "application/json" } },
+    PUBLIC_IMAGE_QUERY_TIMEOUT_MS
+  )
+  if (!searchResponse.ok) {
+    throw new Error(`Met Museum API zoekopdracht mislukte (${searchResponse.status}).`)
+  }
+
+  const searchPayload = await searchResponse.json()
+  const objectIds = Array.isArray(searchPayload?.objectIDs) ? searchPayload.objectIDs.slice(0, 12) : []
+  if (!objectIds.length) return []
+
+  const detailPayloads = await Promise.all(
+    objectIds.map(async (objectId) => {
+      try {
+        const detailResponse = await fetchWithTimeout(
+          `https://collectionapi.metmuseum.org/public/collection/v1/objects/${encodeURIComponent(objectId)}`,
+          { headers: { accept: "application/json" } },
+          PUBLIC_IMAGE_QUERY_TIMEOUT_MS
+        )
+        if (!detailResponse.ok) return null
+        return await detailResponse.json()
+      } catch {
+        return null
+      }
+    })
+  )
+
+  const matches = detailPayloads
+    .filter(Boolean)
+    .map((item) => {
+      const imageUrl = String(item?.primaryImageSmall || item?.primaryImage || "").trim()
+      const originalImageUrl = String(item?.primaryImage || item?.primaryImageSmall || "").trim()
+      const description = [
+        item?.artistDisplayName,
+        item?.culture,
+        item?.period,
+        item?.dynasty,
+        item?.objectName,
+        item?.department,
+        Array.isArray(item?.tags) ? item.tags.map((tag) => tag?.term || "").join(" ") : "",
+      ]
+        .filter(Boolean)
+        .join(" ")
+
+      return buildReferenceImageCandidate({
+        title: item?.title || "",
+        description,
+        imageUrl,
+        originalImageUrl,
+        sourceUrl: item?.objectURL || "",
+        license: item?.isPublicDomain ? "CC0" : "",
+        author: item?.artistDisplayName || "",
+        searchQuery,
+        source: "met-museum",
+        anchorTokens,
+      })
+    })
+    .filter((item) => item.imageUrl)
+
+  const filtered = filterReferenceImageCandidates(matches, excludedSources, anchorTokens)
+  const safeAttemptIndex = Math.max(0, Number(attemptIndex) || 0)
+  const rotation = filtered.length ? safeAttemptIndex % filtered.length : 0
+  return filtered.length ? [...filtered.slice(rotation), ...filtered.slice(0, rotation)].slice(0, 8) : []
+}
+
+function buildTopicSpecificImageQueries({ prompt = "", category = "", anchorTokens = [] }) {
+  const normalizedSource = `${prompt} ${category}`.toLowerCase()
+  const variants = []
+
+  const jemaaSignals = ["jemaa", "djemaa", "jmaa", "fna", "fnaa", "marrakech", "marrakesh", "plein", "square"]
+  if (jemaaSignals.some((token) => anchorTokens.includes(token) || normalizedSource.includes(token))) {
+    variants.push("jemaa el fna marrakech", "djemaa el fna square morocco", "jemaa el fnaa marrakesh market")
+  }
+
+  const juliusSignals = ["julius", "caesar", "rome", "roman", "romeins", "senaat", "senate"]
+  if (juliusSignals.some((token) => anchorTokens.includes(token) || normalizedSource.includes(token))) {
+    variants.push("julius caesar ancient rome", "julius caesar bust roman", "roman senate caesar statue")
+  }
+
+  return [...new Set(variants.map((value) => normalizePublicImageSearchQuery(value)).filter(Boolean))]
 }
 
 async function searchReusableReferenceImage({ prompt = "", category = "", kind = "slide", exclude = [], attemptIndex = 0 }) {
   if (kind !== "slide") return null
 
-  const searchQueries = buildPublicImageSearchQueries({ prompt, category, attemptIndex })
   const anchorTokens = buildReusableImageAnchorTokens({ prompt, category })
+  const specificQueries = buildTopicSpecificImageQueries({ prompt, category, anchorTokens })
+  const searchQueries = [
+    ...specificQueries,
+    ...buildPublicImageSearchQueries({ prompt, category, attemptIndex }),
+  ]
   const excludedSources = new Set(
     (Array.isArray(exclude) ? exclude : [])
       .map((value) => normalizeExcludedImageValue(value))
       .filter(Boolean)
   )
-  for (const searchQuery of searchQueries) {
-    try {
-      const openverseMatch = await searchOpenverseReferenceImageByQuery(searchQuery, anchorTokens, excludedSources, attemptIndex)
-      if (openverseMatch) return openverseMatch
-    } catch (error) {
-      console.warn("[images] openverse query failed:", error instanceof Error ? error.message : error)
-    }
 
-    try {
-      const match = await searchReusableReferenceImageByQuery(searchQuery, anchorTokens, excludedSources, attemptIndex)
-      if (match) return match
-    } catch (error) {
-      console.warn("[images] reusable image search query failed:", error instanceof Error ? error.message : error)
+  const providerCollectors = [
+    collectOpenverseReferenceImageCandidatesByQuery,
+    collectWikimediaReferenceImageCandidatesByQuery,
+    collectClevelandReferenceImageCandidatesByQuery,
+    collectMetReferenceImageCandidatesByQuery,
+  ]
+
+  const aggregatedCandidates = []
+
+  for (const searchQuery of [...new Set(searchQueries.filter(Boolean))]) {
+    for (const collector of providerCollectors) {
+      try {
+        const candidates = await collector(searchQuery, anchorTokens, excludedSources, attemptIndex)
+        if (Array.isArray(candidates) && candidates.length) {
+          aggregatedCandidates.push(...candidates)
+        }
+      } catch (error) {
+        console.warn("[images] candidate source failed:", error instanceof Error ? error.message : error)
+      }
     }
   }
 
   const aiQuery = await buildAiPublicImageSearchQuery({ prompt, category, kind })
   if (aiQuery && !searchQueries.includes(aiQuery)) {
-    try {
-      const openverseMatch = await searchOpenverseReferenceImageByQuery(aiQuery, anchorTokens, excludedSources, attemptIndex)
-      if (openverseMatch) return openverseMatch
-    } catch (error) {
-      console.warn("[images] openverse AI fallback query failed:", error instanceof Error ? error.message : error)
+    for (const collector of providerCollectors) {
+      try {
+        const candidates = await collector(aiQuery, anchorTokens, excludedSources, attemptIndex)
+        if (Array.isArray(candidates) && candidates.length) {
+          aggregatedCandidates.push(...candidates)
+        }
+      } catch (error) {
+        console.warn("[images] AI fallback source failed:", error instanceof Error ? error.message : error)
+      }
     }
+  }
 
-    try {
-      const match = await searchReusableReferenceImageByQuery(aiQuery, anchorTokens, excludedSources, attemptIndex)
-      if (match) return match
-    } catch (error) {
-      console.warn("[images] reusable image AI fallback query failed:", error instanceof Error ? error.message : error)
-    }
+  const uniqueCandidates = dedupeReferenceImageCandidates(
+    aggregatedCandidates.sort((left, right) => right.score - left.score)
+  )
+  if (!uniqueCandidates.length) return null
+
+  const safeAttemptIndex = Math.max(0, Number(attemptIndex) || 0)
+  const rotation = uniqueCandidates.length ? safeAttemptIndex % uniqueCandidates.length : 0
+  const rotatedCandidates = uniqueCandidates.length
+    ? [...uniqueCandidates.slice(rotation), ...uniqueCandidates.slice(0, rotation)]
+    : []
+
+  for (const candidate of rotatedCandidates) {
+    const downloaded = await downloadReferenceImageCandidate(candidate)
+    if (downloaded) return downloaded
   }
 
   return null
@@ -7018,7 +7222,7 @@ io.on("connection", (socket) => {
     for (const player of room.players) {
       if (player.socketId) {
         socketToRoom.delete(player.socketId)
-        io.to(player.socketId).emit("player:removed", { message: "De spelcode is vernieuwd. Voer de nieuwe code in." })
+        io.to(player.socketId).emit("player:removed", { message: "De sessiecode is vernieuwd. Voer de nieuwe code in." })
       }
     }
 
@@ -7965,7 +8169,7 @@ io.on("connection", (socket) => {
 
     if (playerToRemove.socketId) {
       io.to(playerToRemove.socketId).emit("player:removed", {
-        message: "Je bent verwijderd door de beheerder. Je kunt opnieuw deelnemen met de spelcode.",
+        message: "Je bent verwijderd door de beheerder. Je kunt opnieuw deelnemen met de sessiecode.",
       })
     }
 
@@ -8056,7 +8260,7 @@ io.on("connection", (socket) => {
       room = await restoreMathRoomFromCloud(normalizedRoomCode)
     }
     if (!room) {
-      socket.emit("player:error", { message: "De spelcode klopt niet." })
+      socket.emit("player:error", { message: "De sessiecode klopt niet." })
       return
     }
 
@@ -8189,7 +8393,7 @@ io.on("connection", (socket) => {
     let match = findMathRoomForHomeResume(trimmedName, requestedLearnerCode)
     if (match.ambiguous) {
       socket.emit("player:error", {
-        message: "Deze naam en leerlingcode horen bij meer dan een rekenroute. Vraag dan toch even de spelcode aan je docent.",
+        message: "Deze naam en leerlingcode horen bij meer dan een rekenroute. Vraag dan toch even de sessiecode aan je docent.",
       })
       return
     }
