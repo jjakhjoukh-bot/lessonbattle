@@ -203,7 +203,24 @@ function normalizeParticipantName(value = "") {
 }
 
 function normalizeMultilineSecret(value = "") {
-  return String(value || "").replace(/\\n/g, "\n").trim()
+  return String(value || "")
+    .trim()
+    .replace(/^['"]+|['"]+$/g, "")
+    .replace(/\\r\\n/g, "\n")
+    .replace(/\\n/g, "\n")
+    .replace(/\r\n/g, "\n")
+    .trim()
+}
+
+function validatePrivateKeyFormat(privateKey = "") {
+  const normalized = normalizeMultilineSecret(privateKey)
+  if (!normalized) return false
+  try {
+    crypto.createPrivateKey({ key: normalized, format: "pem" })
+    return true
+  } catch {
+    return false
+  }
 }
 
 function parseFirebaseServiceAccount() {
@@ -235,6 +252,12 @@ const firebaseServiceAccount = parseFirebaseServiceAccount()
 const mathCloudEnabled = Boolean(
   firebaseServiceAccount?.projectId && firebaseServiceAccount?.clientEmail && firebaseServiceAccount?.privateKey
 )
+
+if (mathCloudEnabled && !validatePrivateKeyFormat(firebaseServiceAccount.privateKey)) {
+  console.error(
+    'FIREBASE_PRIVATE_KEY lijkt onjuist geformatteerd. Gebruik de volledige private_key uit het service-account JSON-bestand, inclusief BEGIN/END PRIVATE KEY, zonder extra quotes.'
+  )
+}
 
 function base64UrlEncode(value) {
   const buffer = Buffer.isBuffer(value) ? value : Buffer.from(String(value || ""))
@@ -300,7 +323,19 @@ async function getMathCloudAccessToken() {
   const signer = crypto.createSign("RSA-SHA256")
   signer.update(unsignedToken)
   signer.end()
-  const signature = base64UrlEncode(signer.sign(firebaseServiceAccount.privateKey))
+  let signature = ""
+  try {
+    signature = base64UrlEncode(
+      signer.sign({
+        key: firebaseServiceAccount.privateKey,
+        format: "pem",
+      })
+    )
+  } catch (error) {
+    throw new Error(
+      "De Firebase private key kan niet worden gelezen. Controleer in Render of FIREBASE_PRIVATE_KEY de volledige key bevat, zonder extra quotes."
+    )
+  }
   const assertion = `${unsignedToken}.${signature}`
 
   const response = await fetch(MATH_CLOUD_TOKEN_URL, {
