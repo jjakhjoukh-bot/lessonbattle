@@ -2174,48 +2174,185 @@ function tokenizePublicImageText(value = "") {
     .filter(Boolean)
 }
 
+function normalizeSearchPhrase(value = "") {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\u00c0-\u024f\s-]/gi, " ")
+    .replace(/[-_]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+}
+
+const PUBLIC_IMAGE_CONTEXT_STOPWORDS = new Set([
+  "conclusie",
+  "summary",
+  "samenvatting",
+  "slot",
+  "afsluiting",
+  "intro",
+  "introduction",
+  "inleiding",
+  "presentatie",
+  "slide",
+  "dia",
+  "lesson",
+  "les",
+  "opdracht",
+  "uitleg",
+  "basis",
+  "overzicht",
+  "live",
+  "vraag",
+  "vragen",
+  "antwoord",
+  "antwoorden",
+  "kijk",
+  "kijken",
+  "bekijk",
+  "bekijken",
+  "toon",
+  "toont",
+  "noem",
+  "vertel",
+  "leg",
+  "uit",
+])
+
+const PUBLIC_IMAGE_CANDIDATE_NOISE_TOKENS = new Set([
+  "museum",
+  "collection",
+  "commons",
+  "wikimedia",
+  "photo",
+  "image",
+  "images",
+  "visual",
+  "thumbnail",
+  "public",
+  "domain",
+  "creative",
+  "license",
+  "source",
+  "pagina",
+  "page",
+  "object",
+  "objects",
+  "archive",
+  "archief",
+  "title",
+  "description",
+  "historic",
+  "history",
+])
+
+const PUBLIC_IMAGE_SHORT_TOKENS = new Set([
+  "map",
+  "sea",
+  "war",
+  "art",
+  "law",
+  "god",
+  "sun",
+  "moon",
+])
+
+function splitReusableImageSearchClauses(values = []) {
+  const clauses = []
+  for (const value of Array.isArray(values) ? values : [values]) {
+    const rawClauses = String(value || "")
+      .split(/[\n\r.!?;:]+/)
+      .map((part) => normalizeSearchPhrase(part))
+      .filter(Boolean)
+    clauses.push(...rawClauses)
+  }
+  return [...new Set(clauses)]
+}
+
+function buildReusableImageAnchorPhrases({ prompt = "", category = "" }) {
+  const rawSegments = [
+    ...splitReusableImageSearchClauses([category, prompt]),
+    ...[category, prompt].map((value) => String(value || "").trim()).filter(Boolean),
+  ]
+  const phraseMeta = new Map()
+
+  for (const segment of rawSegments) {
+    const normalized = normalizeSearchPhrase(segment)
+    if (!normalized) continue
+    const words = normalized
+      .split(/\s+/)
+      .filter(Boolean)
+      .filter((word) => !PUBLIC_IMAGE_CONTEXT_STOPWORDS.has(word))
+
+    if (!words.length) continue
+
+    const maxWindow = Math.min(words.length, 5)
+    for (let size = maxWindow; size >= 2; size -= 1) {
+      for (let index = 0; index <= words.length - size; index += 1) {
+        const phrase = words.slice(index, index + size).join(" ").trim()
+        if (phrase.length < 6) continue
+        const longWordCount = phrase.split(/\s+/).filter((word) => word.length >= 5).length
+        const quality = size * 4 + longWordCount * 2 - index
+        const previousQuality = phraseMeta.get(phrase)?.quality || -Infinity
+        if (quality > previousQuality) {
+          phraseMeta.set(phrase, { phrase, quality })
+        }
+      }
+    }
+
+    const leadingPhrase = words.slice(0, Math.min(words.length, 4)).join(" ").trim()
+    if (leadingPhrase.length >= 6) {
+      const quality = leadingPhrase.split(/\s+/).length * 4 + 3
+      const previousQuality = phraseMeta.get(leadingPhrase)?.quality || -Infinity
+      if (quality > previousQuality) {
+        phraseMeta.set(leadingPhrase, { phrase: leadingPhrase, quality })
+      }
+    }
+  }
+
+  return [...phraseMeta.values()]
+    .sort((left, right) => right.quality - left.quality)
+    .map((entry) => entry.phrase)
+    .slice(0, 10)
+}
+
 function expandReusableImageTokens(tokens = []) {
   const aliasMap = new Map([
-    ["marokko", ["morocco", "maroc"]],
-    ["morocco", ["marokko", "maroc"]],
-    ["maroc", ["morocco", "marokko"]],
-    ["rabat", ["capital", "hoofdstad"]],
-    ["casablanca", ["city", "stad"]],
-    ["marrakesh", ["marrakech", "city", "stad"]],
-    ["marrakech", ["marrakesh", "city", "stad"]],
-    ["fez", ["fes", "city", "stad"]],
-    ["fes", ["fez", "city", "stad"]],
+    ["city", ["stad", "steden", "cities", "capital", "hoofdstad"]],
+    ["stad", ["city", "cities", "capital", "hoofdstad"]],
+    ["steden", ["city", "cities"]],
+    ["cities", ["city", "stad", "steden"]],
+    ["country", ["land", "nation"]],
+    ["land", ["country", "nation"]],
+    ["capital", ["hoofdstad", "city", "stad"]],
+    ["hoofdstad", ["capital", "city", "stad"]],
     ["woestijn", ["desert"]],
     ["desert", ["woestijn"]],
-    ["bergen", ["mountains", "mountain"]],
-    ["berg", ["mountain", "mountains"]],
+    ["bergen", ["mountains", "mountain", "berg"]],
+    ["berg", ["mountain", "mountains", "bergen"]],
     ["mountain", ["berg", "bergen", "mountains"]],
     ["mountains", ["berg", "bergen", "mountain"]],
-    ["steden", ["cities", "city"]],
-    ["stad", ["city", "cities"]],
-    ["city", ["stad", "steden", "cities"]],
-    ["cities", ["stad", "steden", "city"]],
-    ["plein", ["square", "market", "marketplace"]],
-    ["square", ["plein", "market", "marketplace"]],
-    ["market", ["plein", "square", "marketplace"]],
-    ["marketplace", ["plein", "square", "market"]],
-    ["kaart", ["map"]],
+    ["plein", ["square", "market", "markt"]],
+    ["square", ["plein", "market", "markt"]],
+    ["markt", ["market", "plein", "square"]],
+    ["market", ["markt", "plein", "square"]],
+    ["moskee", ["mosque"]],
+    ["mosque", ["moskee"]],
+    ["kaart", ["map", "atlas"]],
     ["map", ["kaart"]],
-    ["atlasgebergte", ["atlas"]],
-    ["jemaa", ["djemaa", "jmaa", "fna", "fnaa", "marrakech", "marrakesh", "square", "plein"]],
-    ["djemaa", ["jemaa", "jmaa", "fna", "fnaa", "marrakech", "marrakesh", "square", "plein"]],
-    ["jmaa", ["jemaa", "djemaa", "fna", "fnaa", "marrakech", "marrakesh", "square", "plein"]],
-    ["fna", ["fnaa", "jemaa", "djemaa", "jmaa", "marrakech", "marrakesh"]],
-    ["fnaa", ["fna", "jemaa", "djemaa", "jmaa", "marrakech", "marrakesh"]],
-    ["julius", ["caesar", "rome", "roman"]],
-    ["caesar", ["julius", "rome", "roman", "romeins"]],
-    ["rome", ["roman", "romeins"]],
-    ["roman", ["rome", "romeins"]],
-    ["romeins", ["roman", "rome"]],
-    ["senaat", ["senate", "rome", "roman"]],
-    ["senate", ["senaat", "rome", "roman"]],
-    ["keizer", ["emperor", "rome", "roman"]],
-    ["emperor", ["keizer", "rome", "roman"]],
+    ["atlas", ["map", "kaart"]],
+    ["gerecht", ["food", "dish", "meal", "cuisine"]],
+    ["food", ["gerecht", "dish", "meal", "cuisine"]],
+    ["dish", ["gerecht", "food", "meal"]],
+    ["portret", ["portrait"]],
+    ["portrait", ["portret"]],
+    ["keizer", ["emperor"]],
+    ["emperor", ["keizer"]],
+    ["koning", ["king"]],
+    ["king", ["koning"]],
+    ["koningin", ["queen"]],
+    ["queen", ["koningin"]],
+    ["senaat", ["senate"]],
+    ["senate", ["senaat"]],
   ])
 
   const expanded = new Set(tokens)
@@ -2226,83 +2363,251 @@ function expandReusableImageTokens(tokens = []) {
   return [...expanded]
 }
 
-function buildReusableImageAnchorTokens({ prompt = "", category = "" }) {
-  const baseTokens = tokenizePublicImageText([category, prompt].filter(Boolean).join(" "))
-  const meaningfulTokens = baseTokens.filter(
-    (token) =>
-      token.length >= 5 ||
-      ["map", "city", "atlas", "rabat", "sahara", "maroc", "fez", "fes", "jmaa", "fna", "fnaa"].includes(token)
-  )
-  return expandReusableImageTokens(meaningfulTokens).slice(0, 12)
+function buildReusableImageTokenVariants(token = "") {
+  const base = normalizeSearchPhrase(token)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+  if (!base) return []
+
+  const variants = new Set([base])
+  const compact = base.replace(/\s+/g, "")
+  if (compact && compact !== base) variants.add(compact)
+
+  const endings = ["s", "es", "en", "e", "er", "ers"]
+  for (const value of [base, compact]) {
+    if (!value) continue
+    for (const ending of endings) {
+      if (value.length > ending.length + 3 && value.endsWith(ending)) {
+        variants.add(value.slice(0, -ending.length))
+      }
+    }
+  }
+
+  return [...variants]
 }
 
-function scoreReusableImageCandidate(entry, anchorTokens = []) {
+function mergeReusableImageAnchorTokens(tokens = [], limit = 24) {
+  const merged = []
+  const seen = new Set()
+
+  for (const token of Array.isArray(tokens) ? tokens : [tokens]) {
+    const baseToken = normalizeSearchPhrase(token)
+    if (!baseToken) continue
+
+    const expansionInputs = [baseToken, ...buildReusableImageTokenVariants(baseToken)]
+    const expandedTokens = expandReusableImageTokens(expansionInputs)
+      .flatMap((value) => buildReusableImageTokenVariants(value))
+      .map((value) => normalizeSearchPhrase(value))
+      .filter(Boolean)
+
+    for (const expandedToken of expandedTokens) {
+      if (
+        seen.has(expandedToken) ||
+        PUBLIC_IMAGE_CONTEXT_STOPWORDS.has(expandedToken) ||
+        (expandedToken.length < 4 && !/\d/.test(expandedToken) && !PUBLIC_IMAGE_SHORT_TOKENS.has(expandedToken))
+      ) {
+        continue
+      }
+      seen.add(expandedToken)
+      merged.push(expandedToken)
+      if (merged.length >= limit) return merged
+    }
+  }
+
+  return merged
+}
+
+function buildReusableImageAnchorTokens({ prompt = "", category = "" }) {
+  const baseTokens = tokenizePublicImageText([category, prompt].filter(Boolean).join(" "))
+  const phraseTokens = tokenizePublicImageText(buildReusableImageAnchorPhrases({ prompt, category }).join(" "))
+  const meaningfulTokens = baseTokens.filter(
+    (token) => token.length >= 4 || /\d/.test(token) || PUBLIC_IMAGE_SHORT_TOKENS.has(token)
+  )
+  return mergeReusableImageAnchorTokens([...meaningfulTokens, ...phraseTokens], 18)
+}
+
+function buildReusableImageQueryAnchorPhrases({ prompt = "", category = "", searchQueries = [] }) {
+  return [
+    ...new Set(
+      [
+        ...buildReusableImageAnchorPhrases({ prompt, category }),
+        ...(Array.isArray(searchQueries) ? searchQueries : []),
+      ]
+        .map((phrase) => normalizeSearchPhrase(phrase))
+        .filter((phrase) => phrase && phrase.length >= 6)
+    ),
+  ].slice(0, 12)
+}
+
+function buildReusableImageQueryAnchorTokens({ prompt = "", category = "", searchQueries = [] }) {
+  const queryTokens = (Array.isArray(searchQueries) ? searchQueries : [])
+    .flatMap((query) => tokenizePublicImageText(query))
+    .filter((token) => token.length >= 4 || /\d/.test(token))
+  return mergeReusableImageAnchorTokens(
+    [...buildReusableImageAnchorTokens({ prompt, category }), ...queryTokens],
+    24
+  )
+}
+
+function inferReusableImageIntent({ prompt = "", category = "", anchorTokens = [], anchorPhrases = [] }) {
+  const source = normalizeSearchPhrase([prompt, category, ...anchorPhrases, ...anchorTokens].join(" "))
+  const has = (pattern) => pattern.test(source)
+
+  return {
+    isPlace: has(/\b(city|stad|steden|capital|hoofdstad|country|land|plein|square|market|markt|mosque|moskee|street|straat|landscape|desert|woestijn|mountain|berg|bergen|river|rivier|sea|zee|ocean|kust|region|regio|village|dorp|landmark|map|kaart|atlas)\b/),
+    isPerson: has(/\b(person|persoon|portrait|portret|leader|leider|emperor|keizer|king|koning|queen|koningin|philosopher|filosoof|scientist|wetenschapper|writer|schrijver|poet|dichter|biografie|biography)\b/),
+    isHistoric: has(/\b(history|geschiedenis|historisch|historie|ancient|oudheid|romein|middeleeuw|war|oorlog|battle|slag|treaty|verdrag|revolution|revolutie|empire|rijk|dynasty|dynastie)\b/),
+    isFood: has(/\b(food|eten|gerecht|dish|meal|cuisine|keuken|recipe|recept|drink|drank)\b/),
+    isMap: has(/\b(map|kaart|plattegrond|atlas|cartography|cartografie)\b/),
+    isNature: has(/\b(animal|dier|forest|bos|tree|boom|landscape|natuur|desert|woestijn|mountain|berg|river|rivier|sea|zee|ocean|natuurgebied|plant|bloem)\b/),
+  }
+}
+
+function buildReusableImageTokenIndex(tokens = []) {
+  const index = new Set()
+  for (const token of Array.isArray(tokens) ? tokens : [tokens]) {
+    const expansions = mergeReusableImageAnchorTokens([token], 12)
+    for (const expansion of expansions) {
+      index.add(expansion)
+    }
+  }
+  return index
+}
+
+function hasReusableTokenMatch(token = "", candidateTokenIndex = new Set()) {
+  const normalizedToken = normalizeSearchPhrase(token)
+  if (!normalizedToken) return false
+  const variants = mergeReusableImageAnchorTokens([normalizedToken], 12)
+  return variants.some((variant) => candidateTokenIndex.has(variant))
+}
+
+function buildReusableImageTokenQueryCombos(anchorTokens = []) {
+  const tokens = anchorTokens.filter((token) => token.length >= 4 || /\d/.test(token)).slice(0, 6)
+  if (!tokens.length) return []
+
+  const combos = [
+    tokens.slice(0, 2).join(" "),
+    tokens.slice(0, 3).join(" "),
+    tokens.slice(-2).join(" "),
+    tokens.slice(-3).join(" "),
+    [tokens[0], tokens[2], tokens[3]].filter(Boolean).join(" "),
+  ]
+
+  return [...new Set(combos.map((value) => normalizePublicImageSearchQuery(value)).filter(Boolean))].slice(0, 5)
+}
+
+function scoreReusableImageCandidate(entry, anchorTokens = [], anchorPhrases = [], imageIntent = {}) {
   const rawText = [entry?.title, entry?.description, entry?.sourceUrl]
     .filter(Boolean)
     .join(" ")
     .toLowerCase()
-  const candidateTokens = new Set(tokenizePublicImageText(rawText))
+  const normalizedRawText = normalizeSearchPhrase(rawText)
+  const candidateTokens = tokenizePublicImageText(rawText)
+  const candidateTokenIndex = buildReusableImageTokenIndex(candidateTokens)
+  const anchorTokenIndex = buildReusableImageTokenIndex(anchorTokens)
+  const matchedAnchorTokens = anchorTokens.filter((token) => hasReusableTokenMatch(token, candidateTokenIndex))
+  const salientAnchorTokens = anchorTokens.filter((token) => token.length >= 5 || /\d/.test(token))
+  const salientMatchedTokens = salientAnchorTokens.filter((token) => hasReusableTokenMatch(token, candidateTokenIndex))
 
   let score = 0
-  for (const token of anchorTokens) {
-    if (!candidateTokens.has(token)) continue
+  for (const token of matchedAnchorTokens) {
     score += token.length >= 6 ? 3 : 2
+  }
+
+  let phraseMatches = 0
+  for (const phrase of anchorPhrases) {
+    const normalizedPhrase = normalizeSearchPhrase(phrase)
+    if (!normalizedPhrase) continue
+    if (!normalizedRawText.includes(normalizedPhrase)) continue
+    phraseMatches += 1
+    score += normalizedPhrase.split(/\s+/).length >= 3 ? 8 : 5
+  }
+
+  if (anchorPhrases.length > 0 && phraseMatches === 0) {
+    score -= 4
+  }
+
+  if (salientAnchorTokens.length >= 3 && salientMatchedTokens.length === 0 && phraseMatches === 0) {
+    score -= 14
+  } else if (salientAnchorTokens.length >= 4 && salientMatchedTokens.length <= 1 && phraseMatches === 0) {
+    score -= 6
+  }
+
+  const candidateSalientNoise = [...new Set(candidateTokens)]
+    .filter((token) => token.length >= 5)
+    .filter((token) => !PUBLIC_IMAGE_CANDIDATE_NOISE_TOKENS.has(token))
+    .filter((token) => !hasReusableTokenMatch(token, anchorTokenIndex))
+  if (candidateSalientNoise.length >= 6 && salientMatchedTokens.length <= 1 && phraseMatches === 0) {
+    score -= Math.min(10, Math.ceil(candidateSalientNoise.length / 2))
   }
 
   if (/(comparative heights|principal mountains|north america|south america|world|continents?)/i.test(rawText)) {
     score -= 8
   }
 
-  if ((candidateTokens.has("atlas") || candidateTokens.has("mountains")) && !candidateTokens.has("morocco") && !candidateTokens.has("marokko") && !candidateTokens.has("maroc")) {
-    score -= 4
-  }
-
-  const strongGeoTokens = ["morocco", "marokko", "maroc", "rabat", "casablanca", "marrakesh", "marrakech", "fez", "fes", "sahara", "atlas", "jemaa", "djemaa", "jmaa", "fna", "fnaa"]
-  const hasStrongGeoAnchor = strongGeoTokens.some((token) => anchorTokens.includes(token))
-  const hasStrongGeoCandidate = strongGeoTokens.some((token) => candidateTokens.has(token))
-  if (hasStrongGeoAnchor && !hasStrongGeoCandidate) {
-    score -= 12
-  }
-
-  const strongHistoricTokens = ["julius", "caesar", "rome", "roman", "romeins", "senate", "senaat", "emperor", "keizer"]
-  const hasStrongHistoricAnchor = strongHistoricTokens.some((token) => anchorTokens.includes(token))
-  const hasStrongHistoricCandidate = strongHistoricTokens.some((token) => candidateTokens.has(token))
-  if (hasStrongHistoricAnchor && !hasStrongHistoricCandidate) {
+  if (
+    imageIntent.isPlace &&
+    !imageIntent.isHistoric &&
+    !imageIntent.isPerson &&
+    /(treaty|marriage|princess|prince|king|queen|court scene|auction|advertisement|brochure|hotel|real estate|stock photo)/i.test(rawText)
+  ) {
     score -= 10
   }
 
-  if (
-    hasStrongGeoAnchor &&
-    /(treaty|troyes|henry|england|france|roi|king|queen|marriage|princess|prince)/i.test(rawText)
-  ) {
-    score -= 12
+  if (imageIntent.isMap) {
+    if (/(map|atlas|cartograph|kaart|plattegrond|globe)/i.test(rawText)) {
+      score += 6
+    } else {
+      score -= 5
+    }
   }
 
-  if (
-    hasStrongHistoricAnchor &&
-    /(morocco|marokko|maroc|casablanca|sahara|mountain resort|travel brochure|real estate|modern skyline)/i.test(rawText)
-  ) {
-    score -= 8
+  if (imageIntent.isPlace || imageIntent.isNature) {
+    if (/(city|stad|capital|hoofdstad|square|plein|market|markt|mosque|moskee|street|straat|desert|woestijn|mountain|bergen?|landscape|skyline|coast|kust|map|kaart|landmark)/i.test(rawText)) {
+      score += 4
+    }
+    if (
+      !imageIntent.isHistoric &&
+      !imageIntent.isPerson &&
+      /(portrait|portret|bust|statue|sculpture|engraving|etching|court scene)/i.test(rawText)
+    ) {
+      score -= 6
+    }
   }
 
-  if ((anchorTokens.includes("morocco") || anchorTokens.includes("marokko") || anchorTokens.includes("maroc")) &&
-    (candidateTokens.has("morocco") || candidateTokens.has("marokko") || candidateTokens.has("maroc"))) {
-    score += 6
+  if (imageIntent.isPerson) {
+    if (/(portrait|portret|bust|statue|sculpture|figure|head|coin|painting|relief)/i.test(rawText)) {
+      score += 4
+    }
+    if (/(city|stad|landscape|mountain|woestijn|market|plein|map|kaart)/i.test(rawText)) {
+      score -= 4
+    }
   }
 
-  if (anchorTokens.includes("sahara") && candidateTokens.has("sahara")) score += 5
-  if (anchorTokens.includes("rabat") && candidateTokens.has("rabat")) score += 5
-  if ((anchorTokens.includes("casablanca") || anchorTokens.includes("city") || anchorTokens.includes("stad")) &&
-    (candidateTokens.has("casablanca") || candidateTokens.has("city") || candidateTokens.has("stad"))) score += 4
-  if ((anchorTokens.includes("marrakesh") || anchorTokens.includes("marrakech")) &&
-    (candidateTokens.has("marrakesh") || candidateTokens.has("marrakech"))) score += 5
-  if (anchorTokens.includes("atlas") && candidateTokens.has("atlas")) score += 3
-  if ((anchorTokens.includes("julius") || anchorTokens.includes("caesar")) &&
-    (candidateTokens.has("julius") || candidateTokens.has("caesar"))) score += 7
-  if ((anchorTokens.includes("rome") || anchorTokens.includes("roman") || anchorTokens.includes("romeins")) &&
-    (candidateTokens.has("rome") || candidateTokens.has("roman") || candidateTokens.has("romeins"))) score += 5
-  if ((anchorTokens.includes("senate") || anchorTokens.includes("senaat")) &&
-    (candidateTokens.has("senate") || candidateTokens.has("senaat"))) score += 4
+  if (imageIntent.isFood) {
+    if (/(food|gerecht|dish|meal|cuisine|recipe|market|plate|restaurant|kitchen|keuken)/i.test(rawText)) {
+      score += 5
+    } else {
+      score -= 3
+    }
+  }
+
+  if (imageIntent.isHistoric) {
+    if (/(history|histor|ancient|empire|battle|war|treaty|archaeolog|museum|artifact|statue|coin|relief)/i.test(rawText)) {
+      score += 3
+    }
+  }
+
+  if (imageIntent.isPlace || imageIntent.isNature || imageIntent.isFood || imageIntent.isMap) {
+    if (entry?.source === "openverse" || entry?.source === "wikimedia-commons") score += 2
+    if (entry?.source === "cleveland-museum" || entry?.source === "met-museum") score -= 2
+  } else if (imageIntent.isPerson || imageIntent.isHistoric) {
+    if (entry?.source === "wikimedia-commons" || entry?.source === "cleveland-museum" || entry?.source === "met-museum") {
+      score += 2
+    }
+  }
 
   return score
 }
@@ -2312,32 +2617,57 @@ function buildPublicImageSearchQueries({ prompt = "", category = "", attemptInde
   const promptOnly = normalizePublicImageSearchQuery(prompt)
   const categoryOnly = normalizePublicImageSearchQuery(category)
   const anchorTokens = buildReusableImageAnchorTokens({ prompt, category })
+  const anchorPhrases = buildReusableImageAnchorPhrases({ prompt, category })
+  const clauseQueries = splitReusableImageSearchClauses([category, prompt])
+    .map((value) => normalizePublicImageSearchQuery(value))
+    .filter(Boolean)
   const compactAnchorQuery = normalizePublicImageSearchQuery(anchorTokens.slice(0, 5).join(" "))
   const subjectLedQuery = normalizePublicImageSearchQuery([anchorTokens[0], anchorTokens[1], anchorTokens[2]].filter(Boolean).join(" "))
-  const ordered = [...new Set([fallback, promptOnly, categoryOnly, compactAnchorQuery, subjectLedQuery].filter(Boolean))].slice(0, 5)
+  const tokenComboQueries = buildReusableImageTokenQueryCombos(anchorTokens)
+  const phraseQueries = anchorPhrases.map((phrase) => normalizePublicImageSearchQuery(phrase)).filter(Boolean)
+  const ordered = [
+    ...new Set(
+      [
+        ...clauseQueries,
+        ...phraseQueries,
+        compactAnchorQuery,
+        subjectLedQuery,
+        ...tokenComboQueries,
+        fallback,
+        promptOnly,
+        categoryOnly,
+      ].filter(Boolean)
+    ),
+  ].slice(0, 10)
   if (!ordered.length) return []
   const safeAttemptIndex = Math.max(0, Number(attemptIndex) || 0)
   const rotation = safeAttemptIndex % ordered.length
   return [...ordered.slice(rotation), ...ordered.slice(0, rotation)]
 }
 
-async function buildAiPublicImageSearchQuery({ prompt = "", category = "", kind = "slide" }) {
+async function buildAiPublicImageSearchQueries({ prompt = "", category = "", kind = "slide" }) {
   const preferredProvider = openAI ? "openai" : genAI ? "gemini" : groq ? "groq" : ""
-  if (!preferredProvider) return ""
+  if (!preferredProvider) return []
 
   const searchPrompt = `
-Maak 1 korte zoekopdracht van 3 tot 6 Engelse kernwoorden voor een bestaande rechtenvrije afbeelding.
+Maak 5 verschillende korte zoekopdrachten van 3 tot 7 Engelse kernwoorden voor een bestaande rechtenvrije afbeelding.
 Context:
 - type: ${kind}
 - categorie: ${category || "algemeen"}
 - beschrijving: ${prompt || "algemeen onderwerp"}
 
 Regels:
+- Geef precies 5 regels terug.
+- Elke regel is 1 zoekopdracht.
 - Alleen kernwoorden.
 - Geen volledige zin.
-- Geen leestekens.
+- Geen opsommingstekens of nummers.
 - Geen stijlwoorden zoals cinematic, polished, realistic of illustration.
-- Focus op het onderwerp of object dat echt op de afbeelding moet staan.
+- Variant 1: het meest directe onderwerp of de meest waarschijnlijke naam.
+- Variant 2: een bredere beschrijving die een publieke beeldbank kan herkennen.
+- Variant 3: een archief- of encyclopedische formulering.
+- Variant 4: een alternatieve spelling, transliteratie of context.
+- Variant 5: een concrete visuele insteek die nog steeds bij hetzelfde onderwerp hoort.
 `
 
   try {
@@ -2347,10 +2677,16 @@ Regels:
       PUBLIC_IMAGE_QUERY_AI_TIMEOUT_MS,
       "Je maakt extreem korte zoekopdrachten voor rechtenvrije afbeeldingszoekmachines."
     )
-    return normalizePublicImageSearchQuery(result)
+    return [...new Set(
+      String(result || "")
+        .split(/\r?\n/)
+        .map((line) => line.replace(/^[\-\d\.\)\s]+/, ""))
+        .map((line) => normalizePublicImageSearchQuery(line))
+        .filter(Boolean)
+    )].slice(0, 6)
   } catch (error) {
     console.warn("[images] public image search query fallback:", error instanceof Error ? error.message : error)
-    return ""
+    return []
   }
 }
 
@@ -2420,6 +2756,8 @@ function buildReferenceImageCandidate({
   searchQuery = "",
   source = "",
   anchorTokens = [],
+  anchorPhrases = [],
+  imageIntent = {},
 }) {
   const normalizedTitle = normalizeExcludedImageValue(title)
   const normalizedSourceUrl = normalizeExcludedImageValue(sourceUrl)
@@ -2445,38 +2783,30 @@ function buildReferenceImageCandidate({
         title,
         description,
         sourceUrl,
+        source,
       },
-      anchorTokens
+      anchorTokens,
+      anchorPhrases,
+      imageIntent
     ),
   }
 }
 
-function filterReferenceImageCandidates(candidates = [], excludedSources = new Set(), anchorTokens = []) {
+function filterReferenceImageCandidates(candidates = [], excludedSources = new Set(), anchorTokens = [], anchorPhrases = [], imageIntent = {}) {
   const requiresStrongerMatch =
-    [
-      "morocco",
-      "marokko",
-      "maroc",
-      "rabat",
-      "casablanca",
-      "marrakesh",
-      "marrakech",
-      "fez",
-      "fes",
-      "sahara",
-      "atlas",
-      "julius",
-      "caesar",
-      "rome",
-      "roman",
-      "romeins",
-      "jemaa",
-      "djemaa",
-      "jmaa",
-      "fna",
-      "fnaa",
-    ].some((token) => anchorTokens.includes(token))
-  const minimumScore = requiresStrongerMatch ? 4 : 2
+    anchorPhrases.length > 0 ||
+    anchorTokens.length >= 4 ||
+    imageIntent.isPlace ||
+    imageIntent.isPerson ||
+    imageIntent.isHistoric ||
+    imageIntent.isMap ||
+    imageIntent.isFood
+  const minimumScore =
+    imageIntent.isPlace || imageIntent.isPerson || imageIntent.isMap || imageIntent.isFood
+      ? 5
+      : requiresStrongerMatch
+        ? 4
+        : 2
 
   return candidates
     .filter(
@@ -2544,7 +2874,7 @@ function buildOpenverseLicenseLabel(entry = {}) {
   return [license, version].filter(Boolean).join(" ").trim()
 }
 
-async function collectOpenverseReferenceImageCandidatesByQuery(searchQuery = "", anchorTokens = [], excludedSources = new Set(), attemptIndex = 0) {
+async function collectOpenverseReferenceImageCandidatesByQuery(searchQuery = "", anchorTokens = [], anchorPhrases = [], excludedSources = new Set(), attemptIndex = 0, imageIntent = {}) {
   if (!searchQuery) return null
 
   const pageSize = 12
@@ -2597,14 +2927,16 @@ async function collectOpenverseReferenceImageCandidatesByQuery(searchQuery = "",
         searchQuery,
         source: "openverse",
         anchorTokens,
+        anchorPhrases,
+        imageIntent,
       })
     })
-  const filtered = filterReferenceImageCandidates(matches, excludedSources, anchorTokens)
+  const filtered = filterReferenceImageCandidates(matches, excludedSources, anchorTokens, anchorPhrases, imageIntent)
   const rotation = filtered.length ? safeAttemptIndex % filtered.length : 0
   return filtered.length ? [...filtered.slice(rotation), ...filtered.slice(0, rotation)].slice(0, 8) : []
 }
 
-async function collectWikimediaReferenceImageCandidatesByQuery(searchQuery = "", anchorTokens = [], excludedSources = new Set(), attemptIndex = 0) {
+async function collectWikimediaReferenceImageCandidatesByQuery(searchQuery = "", anchorTokens = [], anchorPhrases = [], excludedSources = new Set(), attemptIndex = 0, imageIntent = {}) {
   if (!searchQuery) return null
 
   const url = new URL("https://commons.wikimedia.org/w/api.php")
@@ -2661,15 +2993,17 @@ async function collectWikimediaReferenceImageCandidatesByQuery(searchQuery = "",
         searchQuery,
         source: "wikimedia-commons",
         anchorTokens,
+        anchorPhrases,
+        imageIntent,
       })
     })
-  const candidates = filterReferenceImageCandidates(matches, excludedSources, anchorTokens).slice(0, 8)
+  const candidates = filterReferenceImageCandidates(matches, excludedSources, anchorTokens, anchorPhrases, imageIntent).slice(0, 8)
   const safeAttemptIndex = Math.max(0, Number(attemptIndex) || 0)
   const rotation = candidates.length ? safeAttemptIndex % candidates.length : 0
   return candidates.length ? [...candidates.slice(rotation), ...candidates.slice(0, rotation)] : []
 }
 
-async function collectClevelandReferenceImageCandidatesByQuery(searchQuery = "", anchorTokens = [], excludedSources = new Set(), attemptIndex = 0) {
+async function collectClevelandReferenceImageCandidatesByQuery(searchQuery = "", anchorTokens = [], anchorPhrases = [], excludedSources = new Set(), attemptIndex = 0, imageIntent = {}) {
   if (!searchQuery) return []
 
   const pageSize = 12
@@ -2723,14 +3057,16 @@ async function collectClevelandReferenceImageCandidatesByQuery(searchQuery = "",
         searchQuery,
         source: "cleveland-museum",
         anchorTokens,
+        anchorPhrases,
+        imageIntent,
       })
     })
-  const filtered = filterReferenceImageCandidates(matches, excludedSources, anchorTokens)
+  const filtered = filterReferenceImageCandidates(matches, excludedSources, anchorTokens, anchorPhrases, imageIntent)
   const rotation = filtered.length ? safeAttemptIndex % filtered.length : 0
   return filtered.length ? [...filtered.slice(rotation), ...filtered.slice(0, rotation)].slice(0, 8) : []
 }
 
-async function collectMetReferenceImageCandidatesByQuery(searchQuery = "", anchorTokens = [], excludedSources = new Set(), attemptIndex = 0) {
+async function collectMetReferenceImageCandidatesByQuery(searchQuery = "", anchorTokens = [], anchorPhrases = [], excludedSources = new Set(), attemptIndex = 0, imageIntent = {}) {
   if (!searchQuery) return []
 
   const searchUrl = new URL("https://collectionapi.metmuseum.org/public/collection/v1/search")
@@ -2796,80 +3132,90 @@ async function collectMetReferenceImageCandidatesByQuery(searchQuery = "", ancho
         searchQuery,
         source: "met-museum",
         anchorTokens,
+        anchorPhrases,
+        imageIntent,
       })
     })
     .filter((item) => item.imageUrl)
 
-  const filtered = filterReferenceImageCandidates(matches, excludedSources, anchorTokens)
+  const filtered = filterReferenceImageCandidates(matches, excludedSources, anchorTokens, anchorPhrases, imageIntent)
   const safeAttemptIndex = Math.max(0, Number(attemptIndex) || 0)
   const rotation = filtered.length ? safeAttemptIndex % filtered.length : 0
   return filtered.length ? [...filtered.slice(rotation), ...filtered.slice(0, rotation)].slice(0, 8) : []
 }
 
-function buildTopicSpecificImageQueries({ prompt = "", category = "", anchorTokens = [] }) {
-  const normalizedSource = `${prompt} ${category}`.toLowerCase()
-  const variants = []
-
-  const jemaaSignals = ["jemaa", "djemaa", "jmaa", "fna", "fnaa", "marrakech", "marrakesh", "plein", "square"]
-  if (jemaaSignals.some((token) => anchorTokens.includes(token) || normalizedSource.includes(token))) {
-    variants.push("jemaa el fna marrakech", "djemaa el fna square morocco", "jemaa el fnaa marrakesh market")
-  }
-
-  const juliusSignals = ["julius", "caesar", "rome", "roman", "romeins", "senaat", "senate"]
-  if (juliusSignals.some((token) => anchorTokens.includes(token) || normalizedSource.includes(token))) {
-    variants.push("julius caesar ancient rome", "julius caesar bust roman", "roman senate caesar statue")
-  }
-
-  return [...new Set(variants.map((value) => normalizePublicImageSearchQuery(value)).filter(Boolean))]
-}
-
 async function searchReusableReferenceImage({ prompt = "", category = "", kind = "slide", exclude = [], attemptIndex = 0 }) {
   if (kind !== "slide") return null
 
-  const anchorTokens = buildReusableImageAnchorTokens({ prompt, category })
-  const specificQueries = buildTopicSpecificImageQueries({ prompt, category, anchorTokens })
-  const searchQueries = [
-    ...specificQueries,
+  const baseAnchorPhrases = buildReusableImageAnchorPhrases({ prompt, category })
+  const baseSearchQueries = [
+    ...baseAnchorPhrases.map((phrase) => normalizePublicImageSearchQuery(phrase)).filter(Boolean),
     ...buildPublicImageSearchQueries({ prompt, category, attemptIndex }),
   ]
+  const aiQueries = await buildAiPublicImageSearchQueries({ prompt, category, kind })
+  const combinedSearchQueries = [...new Set([...baseSearchQueries, ...aiQueries].filter(Boolean))]
+  const anchorTokens = buildReusableImageQueryAnchorTokens({
+    prompt,
+    category,
+    searchQueries: combinedSearchQueries,
+  })
+  const anchorPhrases = buildReusableImageQueryAnchorPhrases({
+    prompt,
+    category,
+    searchQueries: combinedSearchQueries,
+  })
+  const imageIntent = inferReusableImageIntent({
+    prompt,
+    category,
+    anchorTokens,
+    anchorPhrases,
+  })
   const excludedSources = new Set(
     (Array.isArray(exclude) ? exclude : [])
       .map((value) => normalizeExcludedImageValue(value))
       .filter(Boolean)
   )
 
-  const providerCollectors = [
-    collectOpenverseReferenceImageCandidatesByQuery,
-    collectWikimediaReferenceImageCandidatesByQuery,
-    collectClevelandReferenceImageCandidatesByQuery,
-    collectMetReferenceImageCandidatesByQuery,
-  ]
+  const providerCollectors =
+    imageIntent.isPlace || imageIntent.isNature || imageIntent.isFood || imageIntent.isMap
+      ? [
+          collectOpenverseReferenceImageCandidatesByQuery,
+          collectWikimediaReferenceImageCandidatesByQuery,
+          collectClevelandReferenceImageCandidatesByQuery,
+          collectMetReferenceImageCandidatesByQuery,
+        ]
+      : imageIntent.isPerson || imageIntent.isHistoric
+        ? [
+            collectWikimediaReferenceImageCandidatesByQuery,
+            collectMetReferenceImageCandidatesByQuery,
+            collectClevelandReferenceImageCandidatesByQuery,
+            collectOpenverseReferenceImageCandidatesByQuery,
+          ]
+        : [
+            collectOpenverseReferenceImageCandidatesByQuery,
+            collectWikimediaReferenceImageCandidatesByQuery,
+            collectMetReferenceImageCandidatesByQuery,
+            collectClevelandReferenceImageCandidatesByQuery,
+          ]
 
   const aggregatedCandidates = []
 
-  for (const searchQuery of [...new Set(searchQueries.filter(Boolean))]) {
+  for (const searchQuery of combinedSearchQueries) {
     for (const collector of providerCollectors) {
       try {
-        const candidates = await collector(searchQuery, anchorTokens, excludedSources, attemptIndex)
+        const candidates = await collector(
+          searchQuery,
+          anchorTokens,
+          anchorPhrases,
+          excludedSources,
+          attemptIndex,
+          imageIntent
+        )
         if (Array.isArray(candidates) && candidates.length) {
           aggregatedCandidates.push(...candidates)
         }
       } catch (error) {
         console.warn("[images] candidate source failed:", error instanceof Error ? error.message : error)
-      }
-    }
-  }
-
-  const aiQuery = await buildAiPublicImageSearchQuery({ prompt, category, kind })
-  if (aiQuery && !searchQueries.includes(aiQuery)) {
-    for (const collector of providerCollectors) {
-      try {
-        const candidates = await collector(aiQuery, anchorTokens, excludedSources, attemptIndex)
-        if (Array.isArray(candidates) && candidates.length) {
-          aggregatedCandidates.push(...candidates)
-        }
-      } catch (error) {
-        console.warn("[images] AI fallback source failed:", error instanceof Error ? error.message : error)
       }
     }
   }
