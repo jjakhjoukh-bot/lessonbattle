@@ -157,6 +157,24 @@ function formatHistoryDate(value) {
   }).format(date)
 }
 
+function normalizeSearchText(value = "") {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+}
+
+function matchesSearchTokens(value = "", query = "") {
+  const haystack = normalizeSearchText(value)
+  const needles = normalizeSearchText(query)
+    .split(" ")
+    .filter(Boolean)
+  if (!needles.length) return true
+  return needles.every((token) => haystack.includes(token))
+}
+
 function sortTeamsByScore(teams = []) {
   return [...teams].sort((left, right) => right.score - left.score || left.name.localeCompare(right.name))
 }
@@ -528,6 +546,11 @@ function HostPage() {
   const [hostInsights, setHostInsights] = useState(null)
   const [lessonLibrary, setLessonLibrary] = useState([])
   const [sessionHistory, setSessionHistory] = useState([])
+  const [librarySearch, setLibrarySearch] = useState("")
+  const [libraryAudienceFilter, setLibraryAudienceFilter] = useState("all")
+  const [historySearch, setHistorySearch] = useState("")
+  const [historyTypeFilter, setHistoryTypeFilter] = useState("all")
+  const [historyCategoryFilter, setHistoryCategoryFilter] = useState("all")
   const [teacherAccounts, setTeacherAccounts] = useState([])
   const [teacherAccountForm, setTeacherAccountForm] = useState({
     username: "",
@@ -621,6 +644,37 @@ function HostPage() {
               : "Battle nog niet gestart"
         : "Nog geen live sessie"
   const recentSessionEntries = useMemo(() => sessionHistory.slice(0, 3), [sessionHistory])
+  const lessonLibraryAudiences = useMemo(
+    () => [...new Set(lessonLibrary.map((lesson) => String(lesson.audience || "").trim()).filter(Boolean))].sort(),
+    [lessonLibrary]
+  )
+  const filteredLessonLibrary = useMemo(
+    () =>
+      lessonLibrary.filter((lesson) => {
+        if (libraryAudienceFilter !== "all" && String(lesson.audience || "").trim() !== libraryAudienceFilter) return false
+        return matchesSearchTokens(
+          [lesson.title, lesson.topic, lesson.lessonGoal, lesson.model, lesson.audience].filter(Boolean).join(" "),
+          librarySearch
+        )
+      }),
+    [lessonLibrary, libraryAudienceFilter, librarySearch]
+  )
+  const historyCategories = useMemo(
+    () => [...new Set(sessionHistory.map((entry) => String(entry.category || "").trim()).filter(Boolean))].sort(),
+    [sessionHistory]
+  )
+  const filteredSessionHistory = useMemo(
+    () =>
+      sessionHistory.filter((entry) => {
+        if (historyTypeFilter !== "all" && String(entry.type || "") !== historyTypeFilter) return false
+        if (historyCategoryFilter !== "all" && String(entry.category || "").trim() !== historyCategoryFilter) return false
+        return matchesSearchTokens(
+          [entry.title, entry.topic, entry.lessonGoal, entry.category, entry.providerLabel, entry.audience].filter(Boolean).join(" "),
+          historySearch
+        )
+      }),
+    [historyCategoryFilter, historySearch, historyTypeFilter, sessionHistory]
+  )
   const liveGroupModeEnabled = Boolean(game.groupModeEnabled)
   const canGoToPreviousLessonStep =
     game.mode === "lesson" &&
@@ -2059,17 +2113,31 @@ function HostPage() {
           {managementPanel === "library" ? (
             <LessonLibrarySection
               activeLessonId={game.lesson?.libraryId || null}
-              lessons={lessonLibrary}
+              audienceFilter={libraryAudienceFilter}
+              availableAudiences={lessonLibraryAudiences}
+              lessons={filteredLessonLibrary}
               onDelete={deleteLessonFromLibrary}
               onLoad={loadLessonFromLibrary}
+              onAudienceFilterChange={setLibraryAudienceFilter}
+              onSearchChange={setLibrarySearch}
+              searchValue={librarySearch}
+              totalCount={lessonLibrary.length}
             />
           ) : null}
 
           {managementPanel === "history" ? (
             <SessionHistorySection
-              entries={sessionHistory}
+              categoryFilter={historyCategoryFilter}
+              entries={filteredSessionHistory}
+              historyCategories={historyCategories}
               onDelete={deleteSessionFromHistory}
               onLoad={loadSessionFromHistory}
+              onCategoryFilterChange={setHistoryCategoryFilter}
+              onSearchChange={setHistorySearch}
+              onTypeFilterChange={setHistoryTypeFilter}
+              searchValue={historySearch}
+              totalCount={sessionHistory.length}
+              typeFilter={historyTypeFilter}
             />
           ) : null}
 
@@ -3907,12 +3975,54 @@ function PracticeCompleteCard() {
   )
 }
 
-function LessonLibrarySection({ lessons, activeLessonId, onLoad, onDelete }) {
+function LessonLibrarySection({
+  lessons,
+  activeLessonId,
+  onLoad,
+  onDelete,
+  searchValue,
+  onSearchChange,
+  audienceFilter,
+  onAudienceFilterChange,
+  availableAudiences,
+  totalCount,
+}) {
   return (
     <section className="glass board-card lesson-library-section">
       <div className="section-head">
         <h2>Lesbibliotheek</h2>
-        <span className="pill">{lessons.length} opgeslagen</span>
+        <span className="pill">
+          {lessons.length} van {totalCount} zichtbaar
+        </span>
+      </div>
+      <div className="management-toolbar">
+        <label className="field management-search-field">
+          <span>Zoek les</span>
+          <input
+            onChange={(event) => onSearchChange(event.target.value)}
+            placeholder="Zoek op titel, onderwerp, doel of doelgroep"
+            value={searchValue}
+          />
+        </label>
+        <div className="management-filter-group">
+          <button
+            className={`management-filter-chip ${audienceFilter === "all" ? "is-active" : ""}`}
+            onClick={() => onAudienceFilterChange("all")}
+            type="button"
+          >
+            Alle doelgroepen
+          </button>
+          {availableAudiences.map((audience) => (
+            <button
+              className={`management-filter-chip ${audienceFilter === audience ? "is-active" : ""}`}
+              key={audience}
+              onClick={() => onAudienceFilterChange(audience)}
+              type="button"
+            >
+              {audience}
+            </button>
+          ))}
+        </div>
       </div>
 
       {lessons.length ? (
@@ -3945,6 +4055,11 @@ function LessonLibrarySection({ lessons, activeLessonId, onLoad, onDelete }) {
             </article>
           ))}
         </div>
+      ) : totalCount ? (
+        <div className="empty-state compact-empty">
+          <h3>Geen les gevonden</h3>
+          <p>Pas je zoekterm of doelgroepfilter aan om een opgeslagen les terug te vinden.</p>
+        </div>
       ) : (
         <div className="empty-state compact-empty">
           <h3>Nog geen lessen opgeslagen</h3>
@@ -3955,12 +4070,85 @@ function LessonLibrarySection({ lessons, activeLessonId, onLoad, onDelete }) {
   )
 }
 
-function SessionHistorySection({ entries, onLoad, onDelete }) {
+function SessionHistorySection({
+  entries,
+  onLoad,
+  onDelete,
+  searchValue,
+  onSearchChange,
+  typeFilter,
+  onTypeFilterChange,
+  categoryFilter,
+  onCategoryFilterChange,
+  historyCategories,
+  totalCount,
+}) {
   return (
     <section className="glass board-card lesson-library-section session-history-section">
       <div className="section-head">
         <h2>Sessiegeschiedenis</h2>
-        <span className="pill">{entries.length} bewaard</span>
+        <span className="pill">
+          {entries.length} van {totalCount} zichtbaar
+        </span>
+      </div>
+      <div className="management-toolbar">
+        <label className="field management-search-field">
+          <span>Zoek sessie</span>
+          <input
+            onChange={(event) => onSearchChange(event.target.value)}
+            placeholder="Zoek op titel, onderwerp, categorie of doelgroep"
+            value={searchValue}
+          />
+        </label>
+        <div className="management-filter-group">
+          <button
+            className={`management-filter-chip ${typeFilter === "all" ? "is-active" : ""}`}
+            onClick={() => onTypeFilterChange("all")}
+            type="button"
+          >
+            Alles
+          </button>
+          <button
+            className={`management-filter-chip ${typeFilter === "lesson" ? "is-active" : ""}`}
+            onClick={() => onTypeFilterChange("lesson")}
+            type="button"
+          >
+            Les
+          </button>
+          <button
+            className={`management-filter-chip ${typeFilter === "practice" ? "is-active" : ""}`}
+            onClick={() => onTypeFilterChange("practice")}
+            type="button"
+          >
+            Oefentoets
+          </button>
+          <button
+            className={`management-filter-chip ${typeFilter === "battle" ? "is-active" : ""}`}
+            onClick={() => onTypeFilterChange("battle")}
+            type="button"
+          >
+            Battle
+          </button>
+        </div>
+        <div className="management-filter-group">
+          <button
+            className={`management-filter-chip ${categoryFilter === "all" ? "is-active" : ""}`}
+            onClick={() => onCategoryFilterChange("all")}
+            type="button"
+          >
+            Alle thema's
+          </button>
+          {historyCategories.map((category) => (
+            <button
+              className={`management-filter-chip ${categoryFilter === category ? "is-active" : ""}`}
+              key={category}
+              onClick={() => onCategoryFilterChange(category)}
+              type="button"
+            >
+              {category}
+            </button>
+          ))}
+        </div>
       </div>
 
       {entries.length ? (
@@ -3997,6 +4185,11 @@ function SessionHistorySection({ entries, onLoad, onDelete }) {
               </div>
             </article>
           ))}
+        </div>
+      ) : totalCount ? (
+        <div className="empty-state compact-empty">
+          <h3>Geen sessie gevonden</h3>
+          <p>Probeer een andere zoekterm of zet je filters terug om meer sessies te zien.</p>
         </div>
       ) : (
         <div className="empty-state compact-empty">

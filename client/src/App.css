@@ -2833,6 +2833,44 @@ body::after {
   margin-top: 0;
 }
 
+.management-toolbar {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.management-search-field {
+  margin-top: 0;
+}
+
+.management-filter-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.management-filter-chip {
+  border: 1px solid rgba(176, 197, 230, 0.12);
+  border-radius: 999px;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.035);
+  color: #e6eefc;
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
+}
+
+.management-filter-chip:hover,
+.management-filter-chip:focus-visible {
+  background: rgba(255, 255, 255, 0.07);
+  border-color: rgba(176, 197, 230, 0.2);
+}
+
+.management-filter-chip.is-active {
+  background: linear-gradient(135deg, rgba(84, 235, 223, 0.14), rgba(119, 168, 255, 0.14));
+  border-color: rgba(125, 211, 252, 0.36);
+}
+
 .lesson-library-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
