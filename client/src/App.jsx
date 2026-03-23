@@ -4739,6 +4739,8 @@ function HostStartPanel({
   liveWorkspaceId,
   liveWorkspaceLabel,
 }) {
+  const [visualFailed, setVisualFailed] = useState(false)
+  const [visualLoaded, setVisualLoaded] = useState(false)
   const liveSummary =
     game.mode === "lesson"
       ? `${game.totalPhases || 0} lesstappen klaar`
@@ -4753,11 +4755,25 @@ function HostStartPanel({
       <section className="glass board-card host-start-hero">
         <div className="host-start-copy">
           <span className="eyebrow">Docentenomgeving</span>
-          <h1>Een rustige werkplek voor lessen, presentaties, battles en rekenen.</h1>
+          <h1>Rustig starten als docent.</h1>
           <p>
-            Open links het menu en kies alleen de werkruimte die je nu nodig hebt. Zo blijft je scherm rustig, houd je focus en
-            zie je per onderdeel alleen de knoppen die daar echt bij horen.
+            Open het menu linksboven en kies alleen de werkruimte die je op dat moment nodig hebt. Zo blijft het scherm
+            overzichtelijk en werk je zonder overvol dashboard.
           </p>
+          <div className="host-start-summary">
+            <div className="host-start-summary-item">
+              <span>Sessiecode</span>
+              <strong>{roomCode || "-----"}</strong>
+            </div>
+            <div className="host-start-summary-item">
+              <span>Online</span>
+              <strong>{onlinePlayerCount}</strong>
+            </div>
+            <div className="host-start-summary-item">
+              <span>Nu live</span>
+              <strong>{liveSummary}</strong>
+            </div>
+          </div>
           <div className="host-start-actions">
             <button className="button-primary" onClick={() => onOpenWorkspace("lesson")} type="button">
               Start met lesmodus
@@ -4777,7 +4793,32 @@ function HostStartPanel({
           </div>
         </div>
         <div className="host-start-visual">
-          <img alt="Onderwijsbeeld voor de docentenomgeving" src={imageUrl} />
+          {!visualFailed ? (
+            <img
+              alt="Onderwijsbeeld voor de docentenomgeving"
+              className={visualLoaded ? "is-ready" : ""}
+              onError={() => {
+                setVisualFailed(true)
+                setVisualLoaded(false)
+              }}
+              onLoad={() => setVisualLoaded(true)}
+              src={imageUrl}
+            />
+          ) : null}
+          <div className={`host-start-visual-fallback ${!visualLoaded || visualFailed ? "is-visible" : ""}`} aria-hidden={visualLoaded && !visualFailed}>
+            <div className="host-start-visual-scene">
+              <div className="host-start-screen" />
+              <div className="host-start-desk" />
+              <div className="host-start-figure teacher" />
+              <div className="host-start-figure student-a" />
+              <div className="host-start-figure student-b" />
+              <div className="host-start-figure student-c" />
+            </div>
+            <div className="host-start-visual-copy">
+              <strong>Onderwijsbeeld</strong>
+              <span>Rustige fallback voor de docentstartpagina</span>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -4808,26 +4849,6 @@ function HostStartPanel({
               <span>Docentaccount</span>
               <strong>{hostSession.displayName || hostSession.username || "Docent"}</strong>
             </div>
-          </div>
-        </article>
-
-        <article className="glass board-card host-overview-card">
-          <div className="section-head">
-            <h2>Veelgebruikte werkruimtes</h2>
-            <span className="pill">Snel naar</span>
-          </div>
-          <div className="host-quick-links">
-            {HOST_WORKSPACE_OPTIONS.filter((option) => option.id !== "home").map((option) => (
-              <button
-                key={option.id}
-                className="host-quick-link"
-                onClick={() => onOpenWorkspace(option.id)}
-                type="button"
-              >
-                <strong>{option.label}</strong>
-                <span>{option.description}</span>
-              </button>
-            ))}
           </div>
         </article>
 

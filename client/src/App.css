@@ -1017,45 +1017,76 @@ body::after {
 
 .host-start-hero {
   display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
-  gap: 22px;
+  grid-template-columns: minmax(0, 1.05fr) minmax(300px, 0.95fr);
+  gap: 20px;
   align-items: stretch;
 }
 
 .host-start-copy {
   display: grid;
-  gap: 14px;
+  gap: 12px;
 }
 
 .host-start-copy h1 {
   margin: 0;
-  max-width: 12ch;
+  max-width: 10ch;
   font-family: "Avenir Next Condensed", "Trebuchet MS", sans-serif;
-  font-size: clamp(2.8rem, 5vw, 5rem);
-  line-height: 0.94;
+  font-size: clamp(2.2rem, 4vw, 3.9rem);
+  line-height: 0.96;
   letter-spacing: -0.05em;
 }
 
 .host-start-copy p {
   margin: 0;
-  max-width: 56ch;
+  max-width: 48ch;
   color: var(--muted);
-  line-height: 1.7;
+  line-height: 1.65;
 }
 
 .host-start-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
-  margin-top: 8px;
+  margin-top: 4px;
+}
+
+.host-start-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.host-start-summary-item {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(176, 197, 230, 0.1);
+}
+
+.host-start-summary-item span {
+  color: rgba(191, 219, 254, 0.74);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.host-start-summary-item strong {
+  font-size: 1rem;
+  line-height: 1.35;
 }
 
 .host-start-visual {
   position: relative;
-  min-height: 320px;
+  min-height: 300px;
   overflow: hidden;
   border-radius: 24px;
-  background: linear-gradient(145deg, rgba(255, 255, 255, 0.12), rgba(84, 235, 223, 0.14));
+  background:
+    linear-gradient(160deg, rgba(37, 99, 235, 0.12), rgba(15, 23, 42, 0.3)),
+    rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(176, 197, 230, 0.1);
 }
 
 .host-start-visual img {
@@ -1063,10 +1094,124 @@ body::after {
   height: 100%;
   object-fit: cover;
   display: block;
+  opacity: 0;
+  transition: opacity 220ms ease;
+}
+
+.host-start-visual img.is-ready {
+  opacity: 1;
+}
+
+.host-start-visual-fallback {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  align-content: end;
+  padding: 20px;
+  background:
+    radial-gradient(circle at 20% 22%, rgba(96, 165, 250, 0.18), transparent 24%),
+    radial-gradient(circle at 78% 20%, rgba(14, 165, 233, 0.16), transparent 22%),
+    linear-gradient(180deg, rgba(15, 23, 42, 0.2), rgba(15, 23, 42, 0.75));
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 180ms ease;
+}
+
+.host-start-visual-fallback.is-visible {
+  opacity: 1;
+}
+
+.host-start-visual-scene {
+  position: absolute;
+  inset: 18px 18px 88px 18px;
+  border-radius: 22px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(15, 23, 42, 0.18)),
+    rgba(255, 255, 255, 0.03);
+  overflow: hidden;
+}
+
+.host-start-screen {
+  position: absolute;
+  top: 24px;
+  left: 50%;
+  width: 58%;
+  height: 24%;
+  transform: translateX(-50%);
+  border-radius: 18px;
+  background: linear-gradient(135deg, rgba(191, 219, 254, 0.95), rgba(59, 130, 246, 0.64));
+}
+
+.host-start-desk {
+  position: absolute;
+  left: 10%;
+  right: 10%;
+  bottom: 18%;
+  height: 12%;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.22);
+}
+
+.host-start-figure {
+  position: absolute;
+  bottom: 22%;
+  width: 12%;
+  aspect-ratio: 1 / 1.45;
+  border-radius: 999px 999px 18px 18px;
+  background: linear-gradient(180deg, rgba(226, 232, 240, 0.95), rgba(148, 163, 184, 0.56));
+}
+
+.host-start-figure::before {
+  content: "";
+  position: absolute;
+  top: -18%;
+  left: 50%;
+  width: 42%;
+  aspect-ratio: 1;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  background: rgba(248, 250, 252, 0.94);
+}
+
+.host-start-figure.teacher {
+  left: 18%;
+  width: 14%;
+  background: linear-gradient(180deg, rgba(125, 211, 252, 0.92), rgba(37, 99, 235, 0.58));
+}
+
+.host-start-figure.student-a {
+  left: 42%;
+}
+
+.host-start-figure.student-b {
+  left: 57%;
+}
+
+.host-start-figure.student-c {
+  left: 72%;
+}
+
+.host-start-visual-copy {
+  position: relative;
+  display: grid;
+  gap: 4px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: rgba(15, 23, 42, 0.56);
+  border: 1px solid rgba(176, 197, 230, 0.12);
+}
+
+.host-start-visual-copy strong {
+  font-size: 1rem;
+}
+
+.host-start-visual-copy span {
+  color: rgba(223, 233, 255, 0.76);
+  font-size: 0.92rem;
 }
 
 .host-start-grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .host-overview-card {
@@ -1095,29 +1240,6 @@ body::after {
 .host-overview-item strong {
   font-size: 1.05rem;
   text-align: right;
-}
-
-.host-quick-links {
-  grid-template-columns: 1fr;
-}
-
-.host-quick-link {
-  display: grid;
-  gap: 6px;
-  text-align: left;
-  border: 0;
-  border-radius: 18px;
-  padding: 15px 16px;
-  background:
-    linear-gradient(150deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.04)),
-    rgba(255, 255, 255, 0.04);
-  color: #eff6ff;
-  cursor: pointer;
-}
-
-.host-quick-link span {
-  color: rgba(223, 233, 255, 0.76);
-  line-height: 1.5;
 }
 
 .host-support-card .muted {
@@ -3110,6 +3232,7 @@ body::after {
 
   .host-start-hero,
   .host-start-grid,
+  .host-start-summary,
   .host-support-actions {
     grid-template-columns: 1fr;
   }
@@ -3248,6 +3371,11 @@ body::after {
   .host-start-copy h1 {
     max-width: none;
     font-size: 2.8rem;
+  }
+
+  .host-start-summary-item strong,
+  .host-overview-item strong {
+    text-align: left;
   }
 
   .host-start-visual {
