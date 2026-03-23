@@ -71,6 +71,11 @@ body::after {
   z-index: 1;
 }
 
+.host-shell {
+  display: grid;
+  gap: 22px;
+}
+
 .glass {
   background:
     linear-gradient(180deg, rgba(54, 34, 122, 0.95), rgba(29, 21, 74, 0.94)),
@@ -586,9 +591,16 @@ body::after {
 .button-primary,
 .button-secondary,
 .button-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   padding: 14px 16px;
   font-weight: 700;
   border: 2px solid transparent;
+  text-align: center;
+  line-height: 1.2;
+  white-space: normal;
+  text-wrap: balance;
 }
 
 .control-card .action-row > .button-primary,
@@ -624,6 +636,342 @@ body::after {
   background: rgba(255, 255, 255, 0.09);
   color: #d9ebff;
   border-color: rgba(255, 255, 255, 0.12);
+}
+
+.support-link-button {
+  text-decoration: none;
+}
+
+.host-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 18px;
+  padding: 18px 22px;
+  border-radius: 28px;
+  position: sticky;
+  top: 18px;
+  z-index: 18;
+  background:
+    linear-gradient(140deg, rgba(26, 18, 69, 0.94), rgba(16, 22, 59, 0.96)),
+    rgba(32, 25, 77, 0.88);
+}
+
+.host-header-main,
+.host-header-status,
+.host-header-copy {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.host-header-copy {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.host-header-copy strong {
+  font-family: "Avenir Next Condensed", "Trebuchet MS", sans-serif;
+  font-size: 1.6rem;
+  line-height: 1;
+}
+
+.host-header-copy small,
+.host-header-kicker {
+  color: rgba(223, 233, 255, 0.72);
+}
+
+.host-header-kicker {
+  font-size: 0.76rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+
+.host-header-status {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.host-menu-button {
+  display: inline-grid;
+  gap: 5px;
+  width: 52px;
+  min-width: 52px;
+  height: 52px;
+  padding: 12px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.08);
+  cursor: pointer;
+}
+
+.host-menu-button span {
+  display: block;
+  width: 100%;
+  height: 3px;
+  border-radius: 999px;
+  background: #f5fbff;
+  transition: transform 180ms ease, opacity 180ms ease;
+}
+
+.host-menu-button.is-open span:nth-child(1) {
+  transform: translateY(8px) rotate(45deg);
+}
+
+.host-menu-button.is-open span:nth-child(2) {
+  opacity: 0;
+}
+
+.host-menu-button.is-open span:nth-child(3) {
+  transform: translateY(-8px) rotate(-45deg);
+}
+
+.host-menu-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(7, 9, 24, 0.46);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 180ms ease;
+  z-index: 24;
+}
+
+.host-menu-overlay.is-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.host-drawer {
+  position: fixed;
+  top: 18px;
+  left: 18px;
+  bottom: 18px;
+  width: min(360px, calc(100vw - 36px));
+  padding: 22px;
+  border-radius: 30px;
+  z-index: 25;
+  transform: translateX(calc(-100% - 22px));
+  transition: transform 220ms ease;
+  overflow-y: auto;
+  background:
+    linear-gradient(180deg, rgba(36, 25, 89, 0.97), rgba(17, 22, 60, 0.98)),
+    rgba(31, 24, 76, 0.94);
+}
+
+.host-drawer.is-open {
+  transform: translateX(0);
+}
+
+.host-drawer-head,
+.host-drawer-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.host-drawer-head {
+  margin-bottom: 18px;
+}
+
+.host-drawer-head h2 {
+  margin: 6px 0 0;
+  font-family: "Avenir Next Condensed", "Trebuchet MS", sans-serif;
+  font-size: 2rem;
+  line-height: 0.95;
+}
+
+.host-drawer-group {
+  display: grid;
+  gap: 10px;
+}
+
+.host-drawer-divider {
+  height: 1px;
+  margin: 18px 0;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.host-drawer-link {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  border-radius: 22px;
+  padding: 16px 18px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #f5fbff;
+  cursor: pointer;
+}
+
+.host-drawer-link strong {
+  font-size: 1.05rem;
+}
+
+.host-drawer-link span {
+  color: rgba(223, 233, 255, 0.78);
+  line-height: 1.45;
+}
+
+.host-drawer-link.is-active {
+  background:
+    linear-gradient(135deg, rgba(84, 235, 223, 0.16), rgba(119, 168, 255, 0.18)),
+    rgba(255, 255, 255, 0.07);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.host-drawer-management {
+  margin-top: 12px;
+}
+
+.host-drawer-footer {
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  flex-wrap: wrap;
+}
+
+.host-drawer-close {
+  min-height: 44px;
+}
+
+.host-start-shell,
+.host-start-grid,
+.host-overview-list,
+.host-quick-links,
+.host-support-actions {
+  display: grid;
+  gap: 18px;
+}
+
+.host-start-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
+  gap: 22px;
+  align-items: stretch;
+}
+
+.host-start-copy {
+  display: grid;
+  gap: 14px;
+}
+
+.host-start-copy h1 {
+  margin: 0;
+  max-width: 12ch;
+  font-family: "Avenir Next Condensed", "Trebuchet MS", sans-serif;
+  font-size: clamp(2.8rem, 5vw, 5rem);
+  line-height: 0.94;
+  letter-spacing: -0.05em;
+}
+
+.host-start-copy p {
+  margin: 0;
+  max-width: 56ch;
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+.host-start-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.host-start-visual {
+  position: relative;
+  min-height: 320px;
+  overflow: hidden;
+  border-radius: 24px;
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.12), rgba(84, 235, 223, 0.14));
+}
+
+.host-start-visual img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.host-start-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.host-overview-card {
+  display: grid;
+  gap: 18px;
+}
+
+.host-overview-list {
+  gap: 12px;
+}
+
+.host-overview-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.host-overview-item span {
+  color: rgba(223, 233, 255, 0.74);
+}
+
+.host-overview-item strong {
+  font-size: 1.05rem;
+  text-align: right;
+}
+
+.host-quick-links {
+  grid-template-columns: 1fr;
+}
+
+.host-quick-link {
+  display: grid;
+  gap: 6px;
+  text-align: left;
+  border: 0;
+  border-radius: 18px;
+  padding: 15px 16px;
+  background:
+    linear-gradient(150deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.04)),
+    rgba(255, 255, 255, 0.04);
+  color: #eff6ff;
+  cursor: pointer;
+}
+
+.host-quick-link span {
+  color: rgba(223, 233, 255, 0.76);
+  line-height: 1.5;
+}
+
+.host-support-card .muted {
+  max-width: none;
+  margin: 0;
+}
+
+.host-support-actions {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.host-support-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.host-support-meta span {
+  color: rgba(223, 233, 255, 0.74);
 }
 
 .question-stage {
@@ -2591,6 +2939,21 @@ body::after {
   .manual-image-grid {
     grid-template-columns: 1fr;
   }
+
+  .host-start-hero,
+  .host-start-grid,
+  .host-support-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .host-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .host-header-status {
+    justify-content: flex-start;
+  }
 }
 
 @media (max-width: 720px) {
@@ -2608,6 +2971,7 @@ body::after {
   .action-row,
   .answer-grid,
   .host-meta-bar,
+  .host-support-actions,
   .lobby-stats,
   .player-score-strip,
   .mode-switch,
@@ -2683,5 +3047,42 @@ body::after {
   .manual-image-actions,
   .manual-image-meta {
     display: grid;
+  }
+
+  .host-header {
+    top: 10px;
+    padding: 16px;
+    border-radius: 22px;
+  }
+
+  .host-header-main,
+  .host-header-status,
+  .host-support-meta,
+  .host-overview-item,
+  .host-drawer-head,
+  .host-drawer-footer {
+    display: grid;
+  }
+
+  .host-header-copy strong {
+    font-size: 1.4rem;
+  }
+
+  .host-drawer {
+    top: 10px;
+    left: 10px;
+    bottom: 10px;
+    width: calc(100vw - 20px);
+    padding: 18px;
+    border-radius: 24px;
+  }
+
+  .host-start-copy h1 {
+    max-width: none;
+    font-size: 2.8rem;
+  }
+
+  .host-start-visual {
+    min-height: 240px;
   }
 }

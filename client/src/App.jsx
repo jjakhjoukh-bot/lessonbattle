@@ -25,6 +25,7 @@ const MANUAL_UPLOAD_QUALITY_STEPS = [0.82, 0.72, 0.62, 0.52, 0.44]
 const MATH_LEVEL_OPTIONS = ["0f", "1f", "2f", "3f", "4f"]
 const PLAYER_JOIN_MODE_CLASSROOM = "classroom"
 const PLAYER_JOIN_MODE_HOME_MATH = "home-math"
+const SUPPORT_MAILTO_LINK = "mailto:?subject=Vraag%20over%20Lesson%20Battle&body=Hallo,%0D%0A%0D%0AIk%20heb%20een%20vraag%20over%20Lesson%20Battle:%0D%0A%0D%0A"
 const DEFAULT_HOST_SESSION = {
   authenticated: false,
   username: "",
@@ -36,6 +37,11 @@ const DEFAULT_HOST_SESSION = {
 }
 
 const HOST_WORKSPACE_OPTIONS = [
+  {
+    id: "home",
+    label: "Start",
+    description: "Rustige startpagina met snelle acties en overzicht.",
+  },
   {
     id: "lesson",
     label: "Lesmodus",
@@ -497,8 +503,9 @@ function HostPage() {
   const { players, teams, leaderboard, game } = useQuizState()
   const storedHostSession = readStoredHostSession()
   const [sessionMode, setSessionMode] = useState("battle")
-  const [hostWorkspace, setHostWorkspace] = useState("lesson")
+  const [hostWorkspace, setHostWorkspace] = useState("home")
   const [managementPanel, setManagementPanel] = useState("learners")
+  const [hostMenuOpen, setHostMenuOpen] = useState(false)
   const [topic, setTopic] = useState("")
   const [audience, setAudience] = useState("vmbo")
   const [questionCount, setQuestionCount] = useState(12)
@@ -572,6 +579,7 @@ function HostPage() {
   )
   const activeManagementMeta =
     visibleManagementOptions.find((option) => option.id === managementPanel) || visibleManagementOptions[0]
+  const primaryWorkspaceOptions = HOST_WORKSPACE_OPTIONS.filter((option) => option.id !== "management")
   const buildActionLabel =
     selectedSuiteMode === "math"
       ? "Rekenroute starten"
@@ -583,6 +591,15 @@ function HostPage() {
           ? "Oefentoets opbouwen"
           : "Les opbouwen"
   const currentPresentationSlide = game.lesson?.presentation?.currentSlide || null
+  const hostStartImageUrl = useMemo(
+    () =>
+      buildQuestionImageUrl(
+        "calm secondary classroom teacher guiding students with tablets bright school learning environment",
+        "onderwijs",
+        { kind: "slide" }
+      ),
+    []
+  )
   const liveGroupModeEnabled = Boolean(game.groupModeEnabled)
   const canGoToPreviousLessonStep =
     game.mode === "lesson" &&
@@ -604,6 +621,23 @@ function HostPage() {
     if (visibleManagementOptions.some((option) => option.id === managementPanel)) return
     setManagementPanel(visibleManagementOptions[0]?.id || "learners")
   }, [hostWorkspace, managementPanel, visibleManagementOptions])
+
+  useEffect(() => {
+    if (!hostSession.authenticated) {
+      setHostMenuOpen(false)
+    }
+  }, [hostSession.authenticated])
+
+  useEffect(() => {
+    if (!hostMenuOpen) return undefined
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") {
+        setHostMenuOpen(false)
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown)
+    return () => window.removeEventListener("keydown", handleKeyDown)
+  }, [hostMenuOpen])
 
   useEffect(() => {
     if (game.lessonModel) setLessonModel(game.lessonModel)
@@ -1051,8 +1085,14 @@ function HostPage() {
 
   const openHostWorkspace = (nextWorkspace) => {
     setHostWorkspace(nextWorkspace)
+    setHostMenuOpen(false)
+    if (nextWorkspace === "home") return
     if (nextWorkspace === "management") return
     selectSessionMode(nextWorkspace)
+  }
+
+  const openSupportMail = () => {
+    setStatus("Je mailapp wordt geopend voor een vraag of opmerking.")
   }
 
   const login = () => {
@@ -1292,107 +1332,125 @@ function HostPage() {
   }
 
   const isManagementWorkspace = hostWorkspace === "management"
+  const isHomeWorkspace = hostWorkspace === "home"
 
   return (
     <main className="page-shell host-shell">
-      <section className="hero-card">
-        <div className="hero-copy">
-          <span className="eyebrow">Lesson Battle Arcade</span>
-          <h1>Maak van je les een kleurrijke battle waar leerlingen direct in duiken.</h1>
-          <p>
-            Minder dashboardgevoel, meer spelgevoel: snelle battles, vrolijke presentaties en oefentoetsen
-            die op iPad meteen duidelijk en aantrekkelijk aanvoelen voor leerlingen.
-          </p>
-          <div className="hero-tags">
-            <span>Snelle battle</span>
-            <span>Quiz vibes</span>
-            <span>Presentatie slides</span>
-            <span>Oefentoets</span>
-            <span>Live reacties</span>
-            <span>Teamenergie</span>
-          </div>
-        </div>
-        <div className="hero-panel glass">
-          <div className="hero-stat">
-            <strong>{liveGroupModeEnabled ? teams.length : "Uit"}</strong>
-            <span>{liveGroupModeEnabled ? "Actieve groepen" : "Groepsmodus"}</span>
-          </div>
-          <div className="hero-stat">
-            <strong>{onlinePlayerCount}</strong>
-            <span>Verbonden spelers</span>
-          </div>
-          <div className="hero-stat">
-            <strong>{game.mode === "lesson" ? game.totalPhases || 0 : game.mode === "math" ? game.math?.intakeTotal || 0 : game.totalQuestions || questionCount}</strong>
-            <span>{game.mode === "lesson" ? "Lesstappen klaar" : game.mode === "math" ? "Instapvragen klaar" : "Battlevragen klaar"}</span>
-          </div>
-          <button className="button-secondary present-button" onClick={togglePresenterMode} type="button">
-            {presenterMode ? presenterFullscreen ? "Sluit digibordmodus" : "Sluit presentatie" : "Digibordmodus"}
-          </button>
-        </div>
-      </section>
-
       {!hostSession.authenticated ? (
-        <section className="glass control-card login-card">
-          <div className="section-head">
-            <h2>Docentenlogin</h2>
-            <span className="pill">{status}</span>
-          </div>
-          <div className="field-row">
-            <label className="field">
-              <span>Gebruikersnaam</span>
-              <input
-                value={loginForm.username}
-                onChange={(event) => setLoginForm((current) => ({ ...current, username: event.target.value }))}
-                placeholder="bijv. j.devries"
-              />
-            </label>
-            <label className="field">
-              <span>Wachtwoord</span>
-              <input
-                type="password"
-                value={loginForm.password}
-                onChange={(event) => setLoginForm((current) => ({ ...current, password: event.target.value }))}
-                placeholder="wachtwoord"
-              />
-            </label>
-          </div>
-          <div className="action-row single-action">
-            <button className="button-primary" onClick={login} type="button">
-              Inloggen
-            </button>
-          </div>
-        </section>
+        <>
+          <section className="hero-card host-login-hero">
+            <div className="hero-copy">
+              <span className="eyebrow">Docentenomgeving</span>
+              <h1>Werk rustig, helder en zonder overvol dashboard.</h1>
+              <p>
+                Lesson Battle helpt je om lessen, presentaties, battles en rekenroutes op te bouwen vanuit één rustige
+                werkplek. Na het inloggen kies je via het menu alleen het onderdeel dat je op dat moment nodig hebt.
+              </p>
+              <div className="hero-tags">
+                <span>Les opbouwen</span>
+                <span>Presenteren</span>
+                <span>Battle starten</span>
+                <span>Rekenen volgen</span>
+              </div>
+            </div>
+            <div className="hero-panel glass">
+              <div className="hero-stat">
+                <strong>Rustig</strong>
+                <span>Minder afleiding op je scherm</span>
+              </div>
+              <div className="hero-stat">
+                <strong>Snel</strong>
+                <span>Werkruimtes via het menu</span>
+              </div>
+              <div className="hero-stat">
+                <strong>Direct</strong>
+                <span>Digibord, presentatie en oefenroutes</span>
+              </div>
+            </div>
+          </section>
+          <section className="glass control-card login-card">
+            <div className="section-head">
+              <h2>Docentenlogin</h2>
+              <span className="pill">{status}</span>
+            </div>
+            <div className="field-row">
+              <label className="field">
+                <span>Gebruikersnaam</span>
+                <input
+                  value={loginForm.username}
+                  onChange={(event) => setLoginForm((current) => ({ ...current, username: event.target.value }))}
+                  placeholder="bijv. j.devries"
+                />
+              </label>
+              <label className="field">
+                <span>Wachtwoord</span>
+                <input
+                  type="password"
+                  value={loginForm.password}
+                  onChange={(event) => setLoginForm((current) => ({ ...current, password: event.target.value }))}
+                  placeholder="wachtwoord"
+                />
+              </label>
+            </div>
+            <div className="action-row single-action">
+              <button className="button-primary" onClick={login} type="button">
+                Inloggen
+              </button>
+            </div>
+          </section>
+        </>
       ) : null}
 
       {hostSession.authenticated ? (
-        <section className="glass board-card workspace-selector-card">
-          <div className="section-head">
-            <h2>Kies je werkruimte</h2>
-            <span className="pill">{activeWorkspaceMeta.label}</span>
-          </div>
-          <p className="muted">
-            Kies eerst wat je nu wilt doen. Daarna tonen we alleen de informatie en knoppen die bij die werkruimte horen.
-          </p>
-          <div className="workspace-selector-grid">
-            {HOST_WORKSPACE_OPTIONS.map((option) => (
+        <>
+          <header className="glass host-header">
+            <div className="host-header-main">
               <button
-                key={option.id}
-                className={`workspace-tile ${hostWorkspace === option.id ? "is-active" : ""}`}
-                onClick={() => openHostWorkspace(option.id)}
+                aria-expanded={hostMenuOpen}
+                aria-label="Open werkruimtes"
+                className={`host-menu-button ${hostMenuOpen ? "is-open" : ""}`}
+                onClick={() => setHostMenuOpen((current) => !current)}
                 type="button"
               >
-                <strong>{option.label}</strong>
-                <span>{option.description}</span>
+                <span />
+                <span />
+                <span />
               </button>
-            ))}
-          </div>
-          {isManagementWorkspace ? (
-            <div className="management-switch-row">
-              {visibleManagementOptions.map((option) => (
+              <div className="host-header-copy">
+                <span className="host-header-kicker">Docentenomgeving</span>
+                <strong>{isManagementWorkspace ? activeManagementMeta?.label || "Beheer" : activeWorkspaceMeta.label}</strong>
+                <small>{isManagementWorkspace ? "Beheer leerlingen, geschiedenis en accounts." : activeWorkspaceMeta.description}</small>
+              </div>
+            </div>
+            <div className="host-header-status">
+              <span className="pill">Sessiecode {hostSession.roomCode || "-----"}</span>
+              <span className="pill">{onlinePlayerCount} online</span>
+              <button className="button-ghost" onClick={togglePresenterMode} type="button">
+                {presenterMode ? presenterFullscreen ? "Sluit digibordmodus" : "Sluit presentatie" : "Digibordmodus"}
+              </button>
+              <button className="button-ghost subtle-danger" onClick={logout} type="button">
+                Uitloggen
+              </button>
+            </div>
+          </header>
+
+          <div className={`host-menu-overlay ${hostMenuOpen ? "is-visible" : ""}`} onClick={() => setHostMenuOpen(false)} />
+          <aside className={`glass host-drawer ${hostMenuOpen ? "is-open" : ""}`}>
+            <div className="host-drawer-head">
+              <div>
+                <span className="host-header-kicker">Werkruimtes</span>
+                <h2>{hostSession.displayName || hostSession.username || "Docent"}</h2>
+              </div>
+              <button className="button-ghost host-drawer-close" onClick={() => setHostMenuOpen(false)} type="button">
+                Sluit
+              </button>
+            </div>
+            <div className="host-drawer-group">
+              {primaryWorkspaceOptions.map((option) => (
                 <button
                   key={option.id}
-                  className={`management-chip ${managementPanel === option.id ? "is-active" : ""}`}
-                  onClick={() => setManagementPanel(option.id)}
+                  className={`host-drawer-link ${hostWorkspace === option.id ? "is-active" : ""}`}
+                  onClick={() => openHostWorkspace(option.id)}
                   type="button"
                 >
                   <strong>{option.label}</strong>
@@ -1400,11 +1458,60 @@ function HostPage() {
                 </button>
               ))}
             </div>
-          ) : null}
-        </section>
+            <div className="host-drawer-divider" />
+            <div className="host-drawer-group">
+              <button
+                className={`host-drawer-link ${hostWorkspace === "management" ? "is-active" : ""}`}
+                onClick={() => openHostWorkspace("management")}
+                type="button"
+              >
+                <strong>Beheer</strong>
+                <span>Leerlingen, bibliotheek, geschiedenis en docentaccounts.</span>
+              </button>
+              {hostWorkspace === "management" ? (
+                <div className="management-switch-row host-drawer-management">
+                  {visibleManagementOptions.map((option) => (
+                    <button
+                      key={option.id}
+                      className={`management-chip ${managementPanel === option.id ? "is-active" : ""}`}
+                      onClick={() => {
+                        setManagementPanel(option.id)
+                        setHostMenuOpen(false)
+                      }}
+                      type="button"
+                    >
+                      <strong>{option.label}</strong>
+                      <span>{option.description}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+            <div className="host-drawer-footer">
+              <span className="pill">Sessiecode {hostSession.roomCode || "-----"}</span>
+              <button className="button-secondary" onClick={() => socket.emit("host:room:refresh")} type="button">
+                Nieuwe code
+              </button>
+            </div>
+          </aside>
+        </>
       ) : null}
 
-      {hostSession.authenticated && !isManagementWorkspace ? (
+      {hostSession.authenticated && isHomeWorkspace ? (
+        <HostStartPanel
+          game={game}
+          hostSession={hostSession}
+          imageUrl={hostStartImageUrl}
+          liveGroupModeEnabled={liveGroupModeEnabled}
+          onMailClick={openSupportMail}
+          onOpenWorkspace={openHostWorkspace}
+          onlinePlayerCount={onlinePlayerCount}
+          roomCode={hostSession.roomCode}
+          teamCount={teams.length}
+        />
+      ) : null}
+
+      {hostSession.authenticated && !isManagementWorkspace && !isHomeWorkspace ? (
         <>
       <section className="host-grid">
         <div className="glass control-card">
@@ -4616,6 +4723,126 @@ function buildQuestionImageUrl(prompt, category, options = {}) {
   })
 
   return `/api/question-image?${searchParams.toString()}`
+}
+
+function HostStartPanel({
+  imageUrl,
+  onMailClick,
+  onOpenWorkspace,
+  roomCode,
+  onlinePlayerCount,
+  liveGroupModeEnabled,
+  teamCount,
+  game,
+  hostSession,
+}) {
+  const liveSummary =
+    game.mode === "lesson"
+      ? `${game.totalPhases || 0} lesstappen klaar`
+      : game.mode === "math"
+        ? `${game.math?.players?.length || 0} leerlingen oefenen`
+        : game.mode === "battle"
+          ? `${game.totalQuestions || 0} vragen in de battle`
+          : "Nog geen actieve sessie"
+
+  return (
+    <section className="host-start-shell">
+      <section className="glass board-card host-start-hero">
+        <div className="host-start-copy">
+          <span className="eyebrow">Docentenomgeving</span>
+          <h1>Een rustige werkplek voor lessen, presentaties, battles en rekenen.</h1>
+          <p>
+            Open links het menu en kies alleen de werkruimte die je nu nodig hebt. Zo blijft je scherm rustig, houd je focus en
+            zie je per onderdeel alleen de knoppen die daar echt bij horen.
+          </p>
+          <div className="host-start-actions">
+            <button className="button-primary" onClick={() => onOpenWorkspace("lesson")} type="button">
+              Start met lesmodus
+            </button>
+            <button className="button-secondary" onClick={() => onOpenWorkspace("presentation")} type="button">
+              Maak een presentatie
+            </button>
+            <a className="button-ghost support-link-button" href={SUPPORT_MAILTO_LINK} onClick={onMailClick}>
+              Stuur een mail of vraag
+            </a>
+          </div>
+        </div>
+        <div className="host-start-visual">
+          <img alt="Onderwijsbeeld voor de docentenomgeving" src={imageUrl} />
+        </div>
+      </section>
+
+      <section className="host-start-grid">
+        <article className="glass board-card host-overview-card">
+          <div className="section-head">
+            <h2>Snel overzicht</h2>
+            <span className="pill">Live</span>
+          </div>
+          <div className="host-overview-list">
+            <div className="host-overview-item">
+              <span>Actieve sessiecode</span>
+              <strong>{roomCode || "-----"}</strong>
+            </div>
+            <div className="host-overview-item">
+              <span>Verbonden leerlingen</span>
+              <strong>{onlinePlayerCount}</strong>
+            </div>
+            <div className="host-overview-item">
+              <span>Groepsmodus</span>
+              <strong>{liveGroupModeEnabled ? `${teamCount} groepen` : "Uit"}</strong>
+            </div>
+            <div className="host-overview-item">
+              <span>Huidige activiteit</span>
+              <strong>{liveSummary}</strong>
+            </div>
+          </div>
+        </article>
+
+        <article className="glass board-card host-overview-card">
+          <div className="section-head">
+            <h2>Veelgebruikte werkruimtes</h2>
+            <span className="pill">Snel naar</span>
+          </div>
+          <div className="host-quick-links">
+            {HOST_WORKSPACE_OPTIONS.filter((option) => option.id !== "home").map((option) => (
+              <button
+                key={option.id}
+                className="host-quick-link"
+                onClick={() => onOpenWorkspace(option.id)}
+                type="button"
+              >
+                <strong>{option.label}</strong>
+                <span>{option.description}</span>
+              </button>
+            ))}
+          </div>
+        </article>
+
+        <article className="glass board-card host-overview-card host-support-card">
+          <div className="section-head">
+            <h2>Ondersteuning</h2>
+            <span className="pill">Direct hulp</span>
+          </div>
+          <p className="muted">
+            Gebruik deze knop om snel een mail te openen met een voorgestelde onderwerpregel. Wil je straks je eigen mailadres
+            koppelen, dan kunnen we dat later ook netjes vast instellen.
+          </p>
+          <div className="host-support-actions">
+            <a className="button-primary support-link-button" href={SUPPORT_MAILTO_LINK} onClick={onMailClick}>
+              Open mailapp
+            </a>
+            <button className="button-ghost" onClick={() => onOpenWorkspace("management")} type="button">
+              Naar beheer
+            </button>
+          </div>
+          <div className="host-support-meta">
+            <span>Ingelogd als</span>
+            <strong>{hostSession.displayName || hostSession.username || "Docent"}</strong>
+          </div>
+        </article>
+      </section>
+    </section>
+  )
 }
 
 export default App
