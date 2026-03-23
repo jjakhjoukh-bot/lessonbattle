@@ -81,6 +81,11 @@ const MANAGEMENT_PANEL_OPTIONS = [
     description: "Zoek leerlingen, zie voortgang en beheer codes.",
   },
   {
+    id: "classes",
+    label: "Klassen",
+    description: "Beheer klassen, leerlingcodes en vaste rosters.",
+  },
+  {
     id: "library",
     label: "Bibliotheek",
     description: "Open of verwijder opgeslagen lessen.",
@@ -604,6 +609,8 @@ function HostPage() {
   const [mathBand, setMathBand] = useState("1f")
   const [mathAssignmentTitle, setMathAssignmentTitle] = useState("")
   const [mathAssignmentDueAt, setMathAssignmentDueAt] = useState("")
+  const [mathTargetPracticeCount, setMathTargetPracticeCount] = useState(12)
+  const [selectedMathClassId, setSelectedMathClassId] = useState("")
   const [lessonDurationMinutes, setLessonDurationMinutes] = useState(45)
   const [presentationSlideCount, setPresentationSlideCount] = useState(6)
   const [practiceQuestionCount, setPracticeQuestionCount] = useState(8)
@@ -616,6 +623,9 @@ function HostPage() {
   const [status, setStatus] = useState("Vul het onderwerp in, kies eventueel groepen en start de ronde.")
   const [hostInsights, setHostInsights] = useState(null)
   const [lessonLibrary, setLessonLibrary] = useState([])
+  const [classrooms, setClassrooms] = useState([])
+  const [classroomSearch, setClassroomSearch] = useState("")
+  const [classroomAudienceFilter, setClassroomAudienceFilter] = useState("all")
   const [sessionHistory, setSessionHistory] = useState([])
   const [librarySearch, setLibrarySearch] = useState("")
   const [libraryAudienceFilter, setLibraryAudienceFilter] = useState("all")
@@ -635,6 +645,10 @@ function HostPage() {
   const [teacherPasswordDrafts, setTeacherPasswordDrafts] = useState({})
   const [learnerCodeDrafts, setLearnerCodeDrafts] = useState({})
   const [newMathLearner, setNewMathLearner] = useState({ name: "", learnerCode: "" })
+  const [newClassroomForm, setNewClassroomForm] = useState({ name: "", sectionName: "Algemene sectie", audience: "vmbo" })
+  const [classroomDrafts, setClassroomDrafts] = useState({})
+  const [classroomLearnerDrafts, setClassroomLearnerDrafts] = useState({})
+  const [classroomLearnerEditDrafts, setClassroomLearnerEditDrafts] = useState({})
   const [loginForm, setLoginForm] = useState(storedHostSession.loginForm)
   const [hostSession, setHostSession] = useState(storedHostSession.hostSession)
   const [localRoomBackup, setLocalRoomBackup] = useState(() =>
@@ -775,6 +789,33 @@ function HostPage() {
     () => (hostInsights?.mode === "math" ? hostInsights.players || [] : game.math?.players || []),
     [game.math?.players, hostInsights]
   )
+  const selectedMathClassroom = useMemo(
+    () => classrooms.find((entry) => entry.id === selectedMathClassId) || null,
+    [classrooms, selectedMathClassId]
+  )
+  const classroomAudiences = useMemo(
+    () => [...new Set(classrooms.map((entry) => String(entry.audience || "").trim()).filter(Boolean))].sort(),
+    [classrooms]
+  )
+  const filteredClassrooms = useMemo(
+    () =>
+      classrooms.filter((classroom) => {
+        if (classroomAudienceFilter !== "all" && String(classroom.audience || "").trim() !== classroomAudienceFilter) return false
+        return matchesSearchTokens(
+          [
+            classroom.name,
+            classroom.sectionName,
+            classroom.audience,
+            classroom.ownerDisplayName,
+            ...(classroom.learners || []).flatMap((learner) => [learner.name, learner.learnerCode]),
+          ]
+            .filter(Boolean)
+            .join(" "),
+          classroomSearch
+        )
+      }),
+    [classroomAudienceFilter, classroomSearch, classrooms]
+  )
   const liveGroupModeEnabled = Boolean(game.groupModeEnabled)
   const canGoToPreviousLessonStep =
     game.mode === "lesson" &&
@@ -834,7 +875,16 @@ function HostPage() {
     if (game.mode !== "math") return
     setMathAssignmentTitle(game.math?.assignmentTitle || game.math?.title || "")
     setMathAssignmentDueAt(formatDateTimeLocalInput(game.math?.dueAt))
-  }, [game.math?.assignmentTitle, game.math?.dueAt, game.math?.title, game.mode])
+    setMathTargetPracticeCount(Number(game.math?.targetPracticeQuestionCount) || 12)
+    setSelectedMathClassId(game.math?.classId || "")
+  }, [game.math?.assignmentTitle, game.math?.classId, game.math?.dueAt, game.math?.targetPracticeQuestionCount, game.math?.title, game.mode])
+
+  useEffect(() => {
+    if (!selectedMathClassId) return
+    if (classrooms.some((entry) => entry.id === selectedMathClassId)) return
+    if (game.mode === "math" && game.math?.classId === selectedMathClassId) return
+    setSelectedMathClassId("")
+  }, [classrooms, game.math?.classId, game.mode, selectedMathClassId])
 
   useEffect(() => {
     if (game.mode !== "lesson") return
@@ -871,6 +921,39 @@ function HostPage() {
       return nextDrafts
     })
   }, [lessonLibrary])
+
+  useEffect(() => {
+    setClassroomDrafts((current) => {
+      const nextDrafts = { ...current }
+      for (const classroom of classrooms) {
+        nextDrafts[classroom.id] = {
+          name: nextDrafts[classroom.id]?.name ?? classroom.name ?? "",
+          sectionName: nextDrafts[classroom.id]?.sectionName ?? classroom.sectionName ?? "",
+          audience: nextDrafts[classroom.id]?.audience ?? classroom.audience ?? "vmbo",
+        }
+      }
+      return nextDrafts
+    })
+    setClassroomLearnerDrafts((current) => {
+      const nextDrafts = { ...current }
+      for (const classroom of classrooms) {
+        nextDrafts[classroom.id] = nextDrafts[classroom.id] || { name: "", learnerCode: "" }
+      }
+      return nextDrafts
+    })
+    setClassroomLearnerEditDrafts((current) => {
+      const nextDrafts = { ...current }
+      for (const classroom of classrooms) {
+        for (const learner of classroom.learners || []) {
+          nextDrafts[learner.id] = {
+            name: nextDrafts[learner.id]?.name ?? learner.name ?? "",
+            learnerCode: nextDrafts[learner.id]?.learnerCode ?? learner.learnerCode ?? "",
+          }
+        }
+      }
+      return nextDrafts
+    })
+  }, [classrooms])
 
   useEffect(() => {
     hostSessionRef.current = hostSession
@@ -924,6 +1007,7 @@ function HostPage() {
     }
     const onStarted = ({ message }) => setStatus(message)
     const onLessonStarted = ({ message }) => setStatus(message)
+    const onClassesUpdate = ({ classrooms: nextClassrooms }) => setClassrooms(Array.isArray(nextClassrooms) ? nextClassrooms : [])
     const onLibraryUpdate = ({ lessons }) => setLessonLibrary(Array.isArray(lessons) ? lessons : [])
     const onHistoryUpdate = ({ entries }) => setSessionHistory(Array.isArray(entries) ? entries : [])
     const onTeacherAccountsUpdate = ({ accounts }) => setTeacherAccounts(Array.isArray(accounts) ? accounts : [])
@@ -1000,6 +1084,10 @@ function HostPage() {
       setNewMathLearner({ name: "", learnerCode: "" })
       setStatus(message || "Leercode bijgewerkt.")
     }
+    const onClassesSuccess = ({ message }) => {
+      setNewClassroomForm((current) => ({ ...current, name: "" }))
+      setStatus(message || "Klassen zijn bijgewerkt.")
+    }
     const onPresentationImageSuccess = ({ manualImageUrl, imageAlt, sourceTitle, searchAttempt }) => {
       hostRestoreRetryRef.current = false
       setSlideImageBusy(false)
@@ -1030,6 +1118,7 @@ function HostPage() {
     socket.on("host:room:update", onRoomUpdate)
     socket.on("host:generate:started", onStarted)
     socket.on("host:generate-lesson:started", onLessonStarted)
+    socket.on("host:classes:update", onClassesUpdate)
     socket.on("host:lesson-library:update", onLibraryUpdate)
     socket.on("host:session-history:update", onHistoryUpdate)
     socket.on("host:teacher-accounts:update", onTeacherAccountsUpdate)
@@ -1047,6 +1136,7 @@ function HostPage() {
     socket.on("host:history:delete:success", onHistoryDeleteSuccess)
     socket.on("host:teacher-accounts:success", onTeacherAccountsSuccess)
     socket.on("host:learner-code:success", onLearnerCodeSuccess)
+    socket.on("host:classes:success", onClassesSuccess)
     socket.on("host:presentation-image:success", onPresentationImageSuccess)
     socket.on("host:room:backup", onRoomBackup)
     socket.on("host:backup:restore:success", onBackupRestoreSuccess)
@@ -1057,6 +1147,7 @@ function HostPage() {
       socket.off("host:room:update", onRoomUpdate)
       socket.off("host:generate:started", onStarted)
       socket.off("host:generate-lesson:started", onLessonStarted)
+      socket.off("host:classes:update", onClassesUpdate)
       socket.off("host:lesson-library:update", onLibraryUpdate)
       socket.off("host:session-history:update", onHistoryUpdate)
       socket.off("host:teacher-accounts:update", onTeacherAccountsUpdate)
@@ -1074,6 +1165,7 @@ function HostPage() {
       socket.off("host:history:delete:success", onHistoryDeleteSuccess)
       socket.off("host:teacher-accounts:success", onTeacherAccountsSuccess)
       socket.off("host:learner-code:success", onLearnerCodeSuccess)
+      socket.off("host:classes:success", onClassesSuccess)
       socket.off("host:presentation-image:success", onPresentationImageSuccess)
       socket.off("host:room:backup", onRoomBackup)
       socket.off("host:backup:restore:success", onBackupRestoreSuccess)
@@ -1338,6 +1430,8 @@ function HostPage() {
       band: mathBand,
       assignmentTitle: mathAssignmentTitle,
       dueAt: mathAssignmentDueAt ? new Date(mathAssignmentDueAt).toISOString() : "",
+      classId: selectedMathClassId,
+      targetPracticeQuestionCount: mathTargetPracticeCount,
     })
   }
 
@@ -1461,6 +1555,59 @@ function HostPage() {
     socket.emit("host:math:learner:create", newMathLearner)
   }
 
+  const createClassroom = () => {
+    setStatus("Klas wordt toegevoegd...")
+    socket.emit("host:classes:create", newClassroomForm)
+  }
+
+  const updateClassroom = (classId) => {
+    const draft = classroomDrafts[classId]
+    if (!draft) return
+    setStatus("Klas wordt bijgewerkt...")
+    socket.emit("host:classes:update", {
+      classId,
+      name: draft.name,
+      sectionName: draft.sectionName,
+      audience: draft.audience,
+    })
+  }
+
+  const deleteClassroom = (classId) => {
+    setStatus("Klas wordt verwijderd...")
+    socket.emit("host:classes:delete", { classId })
+  }
+
+  const addLearnerToClassroom = (classId) => {
+    const draft = classroomLearnerDrafts[classId] || { name: "", learnerCode: "" }
+    setStatus("Leerling wordt aan de klas toegevoegd...")
+    socket.emit("host:classes:learner:add", {
+      classId,
+      name: draft.name,
+      learnerCode: draft.learnerCode,
+    })
+    setClassroomLearnerDrafts((current) => ({
+      ...current,
+      [classId]: { name: "", learnerCode: "" },
+    }))
+  }
+
+  const saveClassroomLearner = (classId, learnerId) => {
+    const draft = classroomLearnerEditDrafts[learnerId]
+    if (!draft) return
+    setStatus("Leerlinggegevens worden bijgewerkt...")
+    socket.emit("host:classes:learner:update", {
+      classId,
+      learnerId,
+      name: draft.name,
+      learnerCode: draft.learnerCode,
+    })
+  }
+
+  const deleteClassroomLearner = (classId, learnerId) => {
+    setStatus("Leerling wordt uit de klas verwijderd...")
+    socket.emit("host:classes:learner:delete", { classId, learnerId })
+  }
+
   const restoreLocalRoomBackup = () => {
     if (!localRoomBackup?.snapshot) {
       setStatus("Er is geen lokale backup gevonden om te herstellen.")
@@ -1530,15 +1677,44 @@ function HostPage() {
     setStatus("Sessiegeschiedenis geëxporteerd als CSV.")
   }
 
+  const exportClassroomsCsv = () => {
+    if (!filteredClassrooms.length) {
+      setStatus("Er zijn geen klassen zichtbaar om te exporteren.")
+      return
+    }
+    downloadCsvFile(
+      `lessonbattle-klassen-${slugifyFilePart(hostSession.roomCode || "school") || "export"}.csv`,
+      ["Klas", "Sectie", "Doelgroep", "Eigenaar", "Leerling", "Leerlingcode", "Aangemaakt", "Laatst bijgewerkt"],
+      filteredClassrooms.flatMap((classroom) => {
+        const learners = classroom.learners?.length
+          ? classroom.learners
+          : [{ id: `${classroom.id}-empty`, name: "", learnerCode: "", createdAt: "", updatedAt: "" }]
+        return learners.map((learner) => [
+          classroom.name,
+          classroom.sectionName || "",
+          classroom.audience || "",
+          classroom.ownerDisplayName || "",
+          learner.name || "",
+          learner.learnerCode || "",
+          learner.createdAt ? formatHistoryDate(learner.createdAt) : "",
+          learner.updatedAt ? formatHistoryDate(learner.updatedAt) : "",
+        ])
+      })
+    )
+    setStatus("Klassen en leerlingcodes geëxporteerd als CSV.")
+  }
+
   const exportLearnersCsv = () => {
     const rows =
       game.mode === "math"
         ? mathLearnerRows.map((player) => [
             game.math?.assignmentTitle || game.math?.title || "",
             game.math?.dueAt ? formatHistoryDate(game.math.dueAt) : "",
+            game.math?.className || "",
             player.name || "",
             player.learnerCode || "",
             player.connected ? "online" : "offline",
+            player.assignmentStatus?.label || "",
             player.phase === "practice" ? "Adaptief oefenen" : "Instaptoets",
             player.placementLevel || "",
             player.targetLevel || "",
@@ -1569,7 +1745,7 @@ function HostPage() {
 
     const headers =
       game.mode === "math"
-        ? ["Opdracht", "Deadline", "Naam", "Leerlingcode", "Status", "Fase", "Plaatsing", "Oefenniveau", "Gemaakt", "Goed", "Fout", "Nauwkeurigheid", "Focusdomeinen", "Werkhouding", "Geoefende routes", "Gemiddelde groei", "Laatst geoefend", "Laatste actief"]
+        ? ["Opdracht", "Deadline", "Klas", "Naam", "Leerlingcode", "Status", "Opdrachtstatus", "Fase", "Plaatsing", "Oefenniveau", "Gemaakt", "Goed", "Fout", "Nauwkeurigheid", "Focusdomeinen", "Werkhouding", "Geoefende routes", "Gemiddelde groei", "Laatst geoefend", "Laatste actief"]
         : ["Naam", "Leerlingcode", "Status", "Groep", "Score", "Modus"]
 
     downloadCsvFile(
@@ -1930,6 +2106,27 @@ function HostPage() {
                     value={mathAssignmentDueAt}
                   />
                 </label>
+                <label className="field">
+                  <span>Klas</span>
+                  <select value={selectedMathClassId} onChange={(event) => setSelectedMathClassId(event.target.value)}>
+                    <option value="">Geen vaste klas</option>
+                    {classrooms.map((classroom) => (
+                      <option key={classroom.id} value={classroom.id}>
+                        {classroom.name} ({classroom.learnerCount} leerlingen)
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Doel sommen na intake</span>
+                  <input
+                    type="number"
+                    min="4"
+                    max="50"
+                    onChange={(event) => setMathTargetPracticeCount(Number(event.target.value))}
+                    value={mathTargetPracticeCount}
+                  />
+                </label>
               </div>
               <div className="field math-config-card">
                 <span>Rekenroute</span>
@@ -1938,6 +2135,11 @@ function HostPage() {
                   automatisch sommen aan op het volgende niveau. Hun leercode blijft zichtbaar zodat ze later weer
                   verder kunnen.
                 </p>
+                {selectedMathClassroom ? (
+                  <p>
+                    Deze opdracht wordt klaargezet voor <strong>{selectedMathClassroom.name}</strong> met {selectedMathClassroom.learnerCount} leerlingen.
+                  </p>
+                ) : null}
               </div>
             </>
           ) : (
@@ -2392,6 +2594,62 @@ function HostPage() {
                 />
               </section>
             </>
+          ) : null}
+
+          {managementPanel === "classes" ? (
+            <ClassesSection
+              audienceFilter={classroomAudienceFilter}
+              classroomDrafts={classroomDrafts}
+              classroomLearnerDrafts={classroomLearnerDrafts}
+              classroomLearnerEditDrafts={classroomLearnerEditDrafts}
+              classrooms={filteredClassrooms}
+              availableAudiences={classroomAudiences}
+              newClassroomForm={newClassroomForm}
+              onAudienceFilterChange={setClassroomAudienceFilter}
+              onClassroomDelete={deleteClassroom}
+              onClassroomDraftChange={(classId, updater) =>
+                setClassroomDrafts((current) => ({
+                  ...current,
+                  [classId]:
+                    typeof updater === "function"
+                      ? updater(current[classId] || { name: "", sectionName: "", audience: "vmbo" })
+                      : updater,
+                }))
+              }
+              onClassroomLearnerAdd={addLearnerToClassroom}
+              onClassroomLearnerDelete={deleteClassroomLearner}
+              onClassroomLearnerDraftChange={(classId, updater) =>
+                setClassroomLearnerDrafts((current) => ({
+                  ...current,
+                  [classId]:
+                    typeof updater === "function"
+                      ? updater(current[classId] || { name: "", learnerCode: "" })
+                      : updater,
+                }))
+              }
+              onClassroomLearnerEditChange={(learnerId, updater) =>
+                setClassroomLearnerEditDrafts((current) => ({
+                  ...current,
+                  [learnerId]:
+                    typeof updater === "function"
+                      ? updater(current[learnerId] || { name: "", learnerCode: "" })
+                      : updater,
+                }))
+              }
+              onClassroomLearnerSave={saveClassroomLearner}
+              onClassroomSave={updateClassroom}
+              onCreateClassroom={createClassroom}
+              onNewClassroomChange={setNewClassroomForm}
+              onExportCsv={exportClassroomsCsv}
+              onSearchChange={setClassroomSearch}
+              onSelectForMath={(classId) => {
+                setSelectedMathClassId(classId)
+                setStatus(`Klas ${classrooms.find((entry) => entry.id === classId)?.name || ""} staat klaar voor de volgende rekenroute.`)
+              }}
+              searchValue={classroomSearch}
+              selectedMathClassId={selectedMathClassId}
+              totalCount={classrooms.length}
+            />
           ) : null}
 
           {managementPanel === "library" ? (
@@ -3393,7 +3651,9 @@ function MathHostPanel({
         <div className="math-host-actions">
           <div className="math-summary-stack">
             {math.assignmentTitle ? <span className="score-chip">Opdracht {math.assignmentTitle}</span> : null}
+            {math.className ? <span className="score-chip">Klas {math.className}</span> : null}
             {deadlineLabel ? <span className="score-chip">Deadline {deadlineLabel}</span> : null}
+            <span className="score-chip">Doel {math.targetPracticeQuestionCount || 12} sommen</span>
             <span className="score-chip">Instap {math.intakeTotal || 0} vragen</span>
             <span className="score-chip">{math.intakeCount || 0} in intake</span>
             <span className="score-chip">{math.practiceCount || 0} aan het oefenen</span>
@@ -3470,18 +3730,24 @@ function MathHostPanel({
         <div className="math-host-card-head">
           <div>
             <strong>Leerlingcodes klaarzetten</strong>
-            <span>Voeg leerlingen toe en geef ze een eenvoudige 4-cijferige code.</span>
+            <span>
+              {math.className
+                ? `Deze route gebruikt de vaste klas ${math.className}. Voeg nieuwe leerlingen toe via Beheer > Klassen.`
+                : "Voeg leerlingen toe en geef ze een eenvoudige 4-cijferige code."}
+            </span>
           </div>
         </div>
         <div className="math-create-row">
           <input
             className="math-code-input"
+            disabled={Boolean(math.classId)}
             onChange={(event) => onNewLearnerChange((current) => ({ ...current, name: event.target.value }))}
             placeholder="Naam leerling"
             value={newMathLearner.name}
           />
           <input
             className="math-code-input"
+            disabled={Boolean(math.classId)}
             inputMode="numeric"
             maxLength={4}
             onChange={(event) =>
@@ -3490,7 +3756,7 @@ function MathHostPanel({
             placeholder="4 cijfers of leeg"
             value={newMathLearner.learnerCode}
           />
-          <button className="button-primary" onClick={onCreateLearner} type="button">
+          <button className="button-primary" disabled={Boolean(math.classId)} onClick={onCreateLearner} type="button">
             Voeg toe
           </button>
         </div>
@@ -3508,7 +3774,9 @@ function MathHostPanel({
             </div>
             <div className="math-host-meta">
               <span>Opdracht: {math.assignmentTitle || math.title || `Rekenroute ${math.selectedBand}`}</span>
+              {math.className ? <span>Klas: {math.className}</span> : null}
               {deadlineLabel ? <span>Deadline: {deadlineLabel}</span> : null}
+              <span>Opdrachtstatus: {player.assignmentStatus?.label || "Open"}</span>
               <span>Werkhouding: {player.workLabel || "Nog niet gestart"}</span>
               <span>Gemaakt: {player.answeredCount || 0}</span>
               <span>Goed: {player.correctCount || 0}</span>
@@ -3585,7 +3853,9 @@ function MathStudentPanel({ math, answer, onAnswerChange, onSubmit, onNext, onRe
       <div className="math-student-strip">
         <span className="score-chip">Route {math.selectedBand || "-"}</span>
         {math.assignmentTitle ? <span className="score-chip">{math.assignmentTitle}</span> : null}
+        {math.className ? <span className="score-chip">{math.className}</span> : null}
         {deadlineLabel ? <span className="score-chip">Deadline {deadlineLabel}</span> : null}
+        {math.assignmentStatus?.label ? <span className="score-chip">Status {math.assignmentStatus.label}</span> : null}
         <span className="score-chip">Instap {Math.min((math.intakeIndex || 0) + (math.currentTask ? 1 : 0), math.intakeTotal || 0)} / {math.intakeTotal || 0}</span>
         {math.placementLevel ? <span className="score-chip">Jij zit op {math.placementLevel}</span> : null}
         {math.targetLevel ? <span className="score-chip">Je oefent op {math.targetLevel}</span> : null}
@@ -3609,6 +3879,7 @@ function MathStudentPanel({ math, answer, onAnswerChange, onSubmit, onNext, onRe
           <strong>{math.assignmentTitle || "Jouw rekenroute"}</strong>
           <p>
             {deadlineLabel ? `Werk aan deze route voor ${deadlineLabel}. ` : ""}
+            {math.targetPracticeQuestionCount ? `Na de instap werk je toe naar ${math.targetPracticeQuestionCount} oefensommen. ` : ""}
             {math.growthSummary?.sessionCount
               ? `Je hebt al ${math.growthSummary.sessionCount} eerdere routes gedaan met gemiddeld ${math.growthSummary.averageAccuracy || 0}% goed.`
               : "Dit is je eerste opgeslagen route op deze leerlingcode."}
@@ -4543,6 +4814,269 @@ function LessonLibrarySection({
         <div className="empty-state compact-empty">
           <h3>Nog geen lessen opgeslagen</h3>
           <p>Genereer eerst een les in Lesmodus en sla die daarna op in de bibliotheek.</p>
+        </div>
+      )}
+    </section>
+  )
+}
+
+function ClassesSection({
+  audienceFilter,
+  availableAudiences,
+  classrooms,
+  newClassroomForm,
+  onAudienceFilterChange,
+  onCreateClassroom,
+  onExportCsv,
+  onNewClassroomChange,
+  onSearchChange,
+  classroomDrafts,
+  onClassroomDraftChange,
+  onClassroomSave,
+  onClassroomDelete,
+  classroomLearnerDrafts,
+  onClassroomLearnerDraftChange,
+  onClassroomLearnerAdd,
+  classroomLearnerEditDrafts,
+  onClassroomLearnerEditChange,
+  onClassroomLearnerSave,
+  onClassroomLearnerDelete,
+  searchValue,
+  selectedMathClassId,
+  onSelectForMath,
+  totalCount,
+}) {
+  return (
+    <section className="glass board-card lesson-library-section">
+      <div className="section-head">
+        <h2>Klassen</h2>
+        <span className="pill">
+          {classrooms.length} zichtbaar{typeof totalCount === "number" ? ` van ${totalCount}` : ""}
+        </span>
+      </div>
+
+      <div className="management-toolbar classes-toolbar">
+        <label className="field inline-field">
+          <span>Zoek klas of leerling</span>
+          <input
+            onChange={(event) => onSearchChange(event.target.value)}
+            placeholder="Bijv. 3KB, Amina of 4821"
+            value={searchValue}
+          />
+        </label>
+        <label className="field inline-field">
+          <span>Doelgroep</span>
+          <select onChange={(event) => onAudienceFilterChange(event.target.value)} value={audienceFilter}>
+            <option value="all">Alle doelgroepen</option>
+            {availableAudiences.map((audience) => (
+              <option key={audience} value={audience}>
+                {audience}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="management-toolbar-actions">
+          <button className="button-ghost" onClick={onExportCsv} type="button">
+            Exporteer CSV
+          </button>
+        </div>
+      </div>
+
+      <div className="management-toolbar classes-toolbar">
+        <label className="field inline-field">
+          <span>Nieuwe klas</span>
+          <input
+            onChange={(event) => onNewClassroomChange((current) => ({ ...current, name: event.target.value }))}
+            placeholder="Bijv. 3KB of Brugklas A"
+            value={newClassroomForm.name}
+          />
+        </label>
+        <label className="field inline-field">
+          <span>Sectie</span>
+          <input
+            onChange={(event) => onNewClassroomChange((current) => ({ ...current, sectionName: event.target.value }))}
+            placeholder="Bijv. Rekenen"
+            value={newClassroomForm.sectionName}
+          />
+        </label>
+        <label className="field inline-field">
+          <span>Doelgroep</span>
+          <select
+            onChange={(event) => onNewClassroomChange((current) => ({ ...current, audience: event.target.value }))}
+            value={newClassroomForm.audience}
+          >
+            <option value="vmbo">VMBO</option>
+            <option value="brugklas">Brugklas</option>
+            <option value="mavo/havo">Mavo/Havo</option>
+            <option value="mbo">MBO</option>
+            <option value="algemeen">Algemeen</option>
+          </select>
+        </label>
+        <div className="management-toolbar-actions">
+          <button className="button-secondary" onClick={onCreateClassroom} type="button">
+            Voeg klas toe
+          </button>
+        </div>
+      </div>
+
+      {classrooms.length ? (
+        <div className="lesson-library-grid">
+          {classrooms.map((classroom) => {
+            const classroomDraft = classroomDrafts[classroom.id] || {
+              name: classroom.name,
+              sectionName: classroom.sectionName,
+              audience: classroom.audience,
+            }
+            const learnerDraft = classroomLearnerDrafts[classroom.id] || { name: "", learnerCode: "" }
+            return (
+              <article className="lesson-library-card classroom-card" key={classroom.id}>
+                <div className="lesson-library-head">
+                  <div>
+                    <span className="eyebrow">{classroom.sectionName}</span>
+                    <h3>{classroom.name}</h3>
+                  </div>
+                  <span className="pill">{classroom.learnerCount} leerlingen</span>
+                </div>
+                <div className="lesson-library-meta">
+                  <span>{classroom.audience}</span>
+                  <span>Door {classroom.ownerDisplayName}</span>
+                  {selectedMathClassId === classroom.id ? <span>Nu gekozen voor rekenen</span> : null}
+                </div>
+
+                <div className="lesson-library-edit-grid">
+                  <label className="field inline-field">
+                    <span>Naam</span>
+                    <input
+                      onChange={(event) =>
+                        onClassroomDraftChange(classroom.id, (current) => ({ ...current, name: event.target.value }))
+                      }
+                      value={classroomDraft.name}
+                    />
+                  </label>
+                  <label className="field inline-field">
+                    <span>Sectie</span>
+                    <input
+                      onChange={(event) =>
+                        onClassroomDraftChange(classroom.id, (current) => ({ ...current, sectionName: event.target.value }))
+                      }
+                      value={classroomDraft.sectionName}
+                    />
+                  </label>
+                  <label className="field inline-field">
+                    <span>Doelgroep</span>
+                    <select
+                      onChange={(event) =>
+                        onClassroomDraftChange(classroom.id, (current) => ({ ...current, audience: event.target.value }))
+                      }
+                      value={classroomDraft.audience}
+                    >
+                      <option value="vmbo">VMBO</option>
+                      <option value="brugklas">Brugklas</option>
+                      <option value="mavo/havo">Mavo/Havo</option>
+                      <option value="mbo">MBO</option>
+                      <option value="algemeen">Algemeen</option>
+                    </select>
+                  </label>
+                </div>
+
+                <div className="lesson-library-actions">
+                  <button className="button-secondary" onClick={() => onSelectForMath(classroom.id)} type="button">
+                    {selectedMathClassId === classroom.id ? "Gekozen voor rekenen" : "Gebruik voor rekenen"}
+                  </button>
+                  <button className="button-ghost" onClick={() => onClassroomSave(classroom.id)} type="button">
+                    Bewaar klas
+                  </button>
+                  <button className="button-ghost" onClick={() => onClassroomDelete(classroom.id)} type="button">
+                    Verwijder klas
+                  </button>
+                </div>
+
+                <div className="math-host-card">
+                  <div className="math-host-card-head">
+                    <div>
+                      <strong>Leerlingen in deze klas</strong>
+                      <span>Leerlingen kunnen met hun naam en leerlingcode later verdergaan.</span>
+                    </div>
+                  </div>
+                  <div className="math-create-row">
+                    <input
+                      className="math-code-input"
+                      onChange={(event) =>
+                        onClassroomLearnerDraftChange(classroom.id, (current) => ({ ...current, name: event.target.value }))
+                      }
+                      placeholder="Naam leerling"
+                      value={learnerDraft.name}
+                    />
+                    <input
+                      className="math-code-input"
+                      inputMode="numeric"
+                      maxLength={4}
+                      onChange={(event) =>
+                        onClassroomLearnerDraftChange(classroom.id, (current) => ({
+                          ...current,
+                          learnerCode: event.target.value.replace(/\D/g, "").slice(0, 4),
+                        }))
+                      }
+                      placeholder="4 cijfers"
+                      value={learnerDraft.learnerCode}
+                    />
+                    <button className="button-primary" onClick={() => onClassroomLearnerAdd(classroom.id)} type="button">
+                      Voeg leerling toe
+                    </button>
+                  </div>
+
+                  <div className="classroom-learner-list">
+                    {(classroom.learners || []).map((learner) => {
+                      const learnerEditDraft = classroomLearnerEditDrafts[learner.id] || {
+                        name: learner.name,
+                        learnerCode: learner.learnerCode,
+                      }
+                      return (
+                        <div className="classroom-learner-row" key={learner.id}>
+                          <input
+                            className="math-code-input"
+                            onChange={(event) =>
+                              onClassroomLearnerEditChange(learner.id, (current) => ({ ...current, name: event.target.value }))
+                            }
+                            value={learnerEditDraft.name}
+                          />
+                          <input
+                            className="math-code-input"
+                            inputMode="numeric"
+                            maxLength={4}
+                            onChange={(event) =>
+                              onClassroomLearnerEditChange(learner.id, (current) => ({
+                                ...current,
+                                learnerCode: event.target.value.replace(/\D/g, "").slice(0, 4),
+                              }))
+                            }
+                            value={learnerEditDraft.learnerCode}
+                          />
+                          <button className="button-ghost" onClick={() => onClassroomLearnerSave(classroom.id, learner.id)} type="button">
+                            Bewaar
+                          </button>
+                          <button className="button-ghost" onClick={() => onClassroomLearnerDelete(classroom.id, learner.id)} type="button">
+                            Verwijder
+                          </button>
+                        </div>
+                      )
+                    })}
+                    {!classroom.learners?.length ? <p className="math-task-preview">Nog geen leerlingen in deze klas.</p> : null}
+                  </div>
+                </div>
+              </article>
+            )
+          })}
+        </div>
+      ) : totalCount ? (
+        <div className="empty-state compact-empty">
+          <h3>Geen klassen gevonden</h3>
+          <p>Pas je zoekterm of doelgroepfilter aan om de juiste klas of leerling terug te vinden.</p>
+        </div>
+      ) : (
+        <div className="empty-state compact-empty">
+          <h3>Nog geen klassen</h3>
+          <p>Maak eerst een klas aan, voeg daarna leerlingen met hun 4-cijferige code toe en gebruik die klas vervolgens voor rekenen.</p>
         </div>
       )}
     </section>

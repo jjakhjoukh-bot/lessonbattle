@@ -19,6 +19,7 @@ const lessonLibraryPath = path.join(sharedDataPath, "lesson-library.json")
 const sessionHistoryPath = path.join(sharedDataPath, "session-history.json")
 const activeRoomsPath = path.join(sharedDataPath, "active-rooms.json")
 const teacherAccountsPath = path.join(sharedDataPath, "teacher-accounts.json")
+const classroomsPath = path.join(sharedDataPath, "classrooms.json")
 const mathGrowthHistoryPath = path.join(sharedDataPath, "math-growth-history.json")
 const generatedImagesPath = path.join(sharedDataPath, "generated-images")
 const manualImagesPath = path.join(sharedDataPath, "manual-images")
@@ -130,6 +131,7 @@ const MATH_CLOUD_COLLECTION = "lessonBattleMathRooms"
 const MATH_CLOUD_RESUME_COLLECTION = "lessonBattleMathResume"
 const MATH_CLOUD_HOST_COLLECTION = "lessonBattleMathHosts"
 const MATH_CLOUD_GROWTH_COLLECTION = "lessonBattleMathGrowth"
+const CLASSROOM_CLOUD_COLLECTION = "lessonBattleClassrooms"
 const MATH_CLOUD_SCOPE = "https://www.googleapis.com/auth/datastore"
 const MATH_CLOUD_TOKEN_URL = "https://oauth2.googleapis.com/token"
 const MATH_CLOUD_PERSIST_DEBOUNCE_MS = 800
@@ -151,6 +153,7 @@ const mathCloudPersistTimers = new Map()
 let mathCloudTokenCache = null
 let roomPersistenceTimer = null
 let mathGrowthHistory = new Map()
+let classroomsCloudHydrationPromise = null
 
 function generateEntityId(prefix = "item") {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
@@ -176,6 +179,9 @@ function createPlayerRecord({
   socketId = null,
   name = "",
   teamId = "",
+  classId = "",
+  className = "",
+  classLearnerId = "",
   score = 0,
   connected = false,
 } = {}) {
@@ -185,6 +191,9 @@ function createPlayerRecord({
     socketId: socketId ? String(socketId) : null,
     name: String(name).trim(),
     teamId: String(teamId).trim(),
+    classId: String(classId).trim(),
+    className: String(className).trim(),
+    classLearnerId: String(classLearnerId).trim(),
     score: Number(score) || 0,
     connected: Boolean(connected && socketId),
   }
@@ -461,6 +470,9 @@ function createEmptyMathState() {
     title: "",
     assignmentTitle: "",
     dueAt: "",
+    classId: "",
+    className: "",
+    targetPracticeQuestionCount: 12,
     selectedBand: "",
     intakeQuestions: [],
     playerProgress: new Map(),
@@ -1379,6 +1391,9 @@ function buildMathSession(selectedBand = MATH_LEVELS[1], options = {}) {
     title: String(options.title || "").trim() || `Rekenroute ${formatMathLevel(safeBand)}`,
     assignmentTitle: String(options.assignmentTitle || "").trim() || "",
     dueAt: normalizeIsoDateTime(options.dueAt),
+    classId: String(options.classId || "").trim(),
+    className: String(options.className || "").trim(),
+    targetPracticeQuestionCount: Math.max(4, Math.min(50, Number(options.targetPracticeQuestionCount) || 12)),
     selectedBand: safeBand,
     intakeQuestions: buildMathIntakePlan(safeBand),
     playerProgress: new Map(),
@@ -1654,6 +1669,45 @@ function getMathWorkLabel(progress) {
   return "Stilgevallen"
 }
 
+function getMathAssignmentStatus(mathState, progress) {
+  const totalAnswered = getMathAnsweredCount(progress)
+  const targetPracticeQuestionCount = Math.max(1, Number(mathState?.targetPracticeQuestionCount) || 12)
+  const minimumCompletion = (mathState?.intakeQuestions?.length || 0) + targetPracticeQuestionCount
+  const dueAt = mathState?.dueAt ? new Date(mathState.dueAt).getTime() : 0
+  const isOverdue = Boolean(dueAt && Date.now() > dueAt)
+
+  if (totalAnswered >= minimumCompletion) {
+    return {
+      key: "completed",
+      label: "Ingeleverd",
+      minimumCompletion,
+      isOverdue,
+    }
+  }
+  if (isOverdue) {
+    return {
+      key: "overdue",
+      label: totalAnswered > 0 ? "Verlopen" : "Niet gestart, verlopen",
+      minimumCompletion,
+      isOverdue,
+    }
+  }
+  if (totalAnswered > 0) {
+    return {
+      key: "in-progress",
+      label: "Bezig",
+      minimumCompletion,
+      isOverdue,
+    }
+  }
+  return {
+    key: "open",
+    label: "Open",
+    minimumCompletion,
+    isOverdue,
+  }
+}
+
 function updateMathDifficulty(progress, correct) {
   const currentDifficulty = clampMathDifficulty(progress.practiceDifficulty || 2)
   const currentStreak = Number(progress.streak) || 0
@@ -1702,10 +1756,14 @@ function sanitizeMathState(room, viewer = "host", playerId = "") {
     const progress = playerId ? ensureMathProgress(room, playerId) : null
     const activePlayer = playerId ? room.players.find((player) => player.id === playerId) || null : null
     const growthRecord = activePlayer ? getMathGrowthSummary(activePlayer.name, activePlayer.learnerCode) : null
+    const assignmentStatus = getMathAssignmentStatus(room.math, progress)
     return {
       title: room.math.title,
       assignmentTitle: room.math.assignmentTitle || room.math.title,
       dueAt: room.math.dueAt || "",
+      classId: room.math.classId || "",
+      className: room.math.className || "",
+      targetPracticeQuestionCount: Math.max(1, Number(room.math.targetPracticeQuestionCount) || 12),
       selectedBand: formatMathLevel(room.math.selectedBand),
       learnerCode: activePlayer?.learnerCode || "",
       phase: progress?.phase || "intake",
@@ -1750,6 +1808,7 @@ function sanitizeMathState(room, viewer = "host", playerId = "") {
           }
         : null,
       growthSummary: growthRecord,
+      assignmentStatus,
       updatedAt: progress?.updatedAt || null,
     }
   }
@@ -1757,12 +1816,16 @@ function sanitizeMathState(room, viewer = "host", playerId = "") {
   const playerRows = room.players.map((player) => {
     const progress = room.math.playerProgress.get(player.id) || null
     const growthRecord = getMathGrowthSummary(player.name, player.learnerCode)
+    const assignmentStatus = getMathAssignmentStatus(room.math, progress)
     return {
       playerId: player.id,
       learnerCode: player.learnerCode || "",
       name: player.name,
       connected: player.connected !== false,
+      classId: player.classId || "",
+      className: player.className || "",
       growthSummary: growthRecord,
+      assignmentStatus,
       placementLevel: progress?.placementLevel ? formatMathLevel(progress.placementLevel) : "",
       targetLevel: progress?.targetLevel ? formatMathLevel(progress.targetLevel) : "",
       phase: progress?.phase || "intake",
@@ -1791,6 +1854,9 @@ function sanitizeMathState(room, viewer = "host", playerId = "") {
     title: room.math.title,
     assignmentTitle: room.math.assignmentTitle || room.math.title,
     dueAt: room.math.dueAt || "",
+    classId: room.math.classId || "",
+    className: room.math.className || "",
+    targetPracticeQuestionCount: Math.max(1, Number(room.math.targetPracticeQuestionCount) || 12),
     selectedBand: formatMathLevel(room.math.selectedBand),
     intakeTotal: room.math.intakeQuestions.length,
     playerCount: playerRows.length,
@@ -1806,6 +1872,9 @@ function serializeMathState(mathState) {
       title: "",
       assignmentTitle: "",
       dueAt: "",
+      classId: "",
+      className: "",
+      targetPracticeQuestionCount: 12,
       selectedBand: "",
       intakeQuestions: [],
       playerProgress: [],
@@ -1817,6 +1886,9 @@ function serializeMathState(mathState) {
     title: mathState.title,
     assignmentTitle: String(mathState.assignmentTitle || "").trim(),
     dueAt: normalizeIsoDateTime(mathState.dueAt),
+    classId: String(mathState.classId || "").trim(),
+    className: String(mathState.className || "").trim(),
+    targetPracticeQuestionCount: Math.max(1, Number(mathState.targetPracticeQuestionCount) || 12),
     selectedBand: normalizeMathLevel(mathState.selectedBand),
     intakeQuestions: (mathState.intakeQuestions || []).map(cloneMathTask).filter(Boolean),
     playerProgress: [...(mathState.playerProgress || new Map()).entries()].map(([playerId, progress]) => [
@@ -1843,6 +1915,9 @@ function deserializeMathState(rawMathState) {
     title: String(rawMathState.title ?? `Rekenroute ${formatMathLevel(rawMathState.selectedBand)}`),
     assignmentTitle: String(rawMathState.assignmentTitle ?? rawMathState.title ?? "").trim(),
     dueAt: normalizeIsoDateTime(rawMathState.dueAt),
+    classId: String(rawMathState.classId ?? "").trim(),
+    className: String(rawMathState.className ?? "").trim(),
+    targetPracticeQuestionCount: Math.max(1, Number(rawMathState.targetPracticeQuestionCount) || 12),
     selectedBand: normalizeMathLevel(rawMathState.selectedBand),
     intakeQuestions: Array.isArray(rawMathState.intakeQuestions)
       ? rawMathState.intakeQuestions.map(cloneMathTask).filter(Boolean)
@@ -3717,6 +3792,7 @@ function createRoom(hostSocketId) {
     code: roomCode,
     hostSocketId,
     ownerUsername: "",
+    ownerDisplayName: "",
     hostOnline: true,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -4357,7 +4433,10 @@ function sanitizePlayerForClient(player) {
   return {
     id: player.id,
     name: player.name,
+    learnerCode: player.learnerCode || "",
     teamId: player.teamId,
+    classId: player.classId || "",
+    className: player.className || "",
     score: player.score,
     connected: player.connected !== false,
   }
@@ -4761,6 +4840,40 @@ function normalizeTeacherAccount(rawEntry) {
   }
 }
 
+function normalizeClassroomLearner(rawEntry) {
+  if (!rawEntry || typeof rawEntry !== "object") return null
+  const name = String(rawEntry.name ?? "").trim()
+  const learnerCode = normalizeLearnerCode(rawEntry.learnerCode)
+  if (!name || !isValidLearnerCode(learnerCode)) return null
+  return {
+    id: String(rawEntry.id ?? generateEntityId("class-learner")),
+    name,
+    learnerCode,
+    createdAt: String(rawEntry.createdAt ?? new Date().toISOString()),
+    updatedAt: String(rawEntry.updatedAt ?? new Date().toISOString()),
+  }
+}
+
+function normalizeClassroomEntry(rawEntry) {
+  if (!rawEntry || typeof rawEntry !== "object") return null
+  const name = String(rawEntry.name ?? "").trim()
+  if (!name) return null
+  const learners = Array.isArray(rawEntry.learners)
+    ? rawEntry.learners.map(normalizeClassroomLearner).filter(Boolean)
+    : []
+  return {
+    id: String(rawEntry.id ?? generateEntityId("classroom")),
+    name,
+    sectionName: String(rawEntry.sectionName ?? "").trim() || "Algemene sectie",
+    audience: String(rawEntry.audience ?? "vmbo").trim() || "vmbo",
+    ownerUsername: normalizeTeacherUsername(rawEntry.ownerUsername),
+    ownerDisplayName: String(rawEntry.ownerDisplayName ?? rawEntry.ownerUsername ?? "Docent").trim() || "Docent",
+    learners,
+    createdAt: String(rawEntry.createdAt ?? new Date().toISOString()),
+    updatedAt: String(rawEntry.updatedAt ?? new Date().toISOString()),
+  }
+}
+
 function loadTeacherAccounts() {
   try {
     ensureSharedDataDir()
@@ -4783,6 +4896,258 @@ function persistTeacherAccounts() {
   } catch (error) {
     console.error("Kon docentaccounts niet opslaan:", error instanceof Error ? error.message : error)
     throw new Error("Opslaan van docentaccounts is mislukt.")
+  }
+}
+
+function loadClassrooms() {
+  try {
+    ensureSharedDataDir()
+    if (!fs.existsSync(classroomsPath)) return []
+    const parsed = JSON.parse(fs.readFileSync(classroomsPath, "utf8"))
+    if (!Array.isArray(parsed)) return []
+    return parsed.map(normalizeClassroomEntry).filter(Boolean)
+  } catch (error) {
+    console.error("Kon klassen niet laden:", error instanceof Error ? error.message : error)
+    return []
+  }
+}
+
+let classrooms = loadClassrooms()
+
+if (mathCloudEnabled) {
+  ensureClassroomsHydratedFromCloud().catch((error) => {
+    console.error("Kon klassenbootstrap uit Firestore niet afronden:", error instanceof Error ? error.message : error)
+  })
+}
+
+function persistClassrooms() {
+  try {
+    ensureSharedDataDir()
+    fs.writeFileSync(classroomsPath, JSON.stringify(classrooms, null, 2), "utf8")
+  } catch (error) {
+    console.error("Kon klassen niet opslaan:", error instanceof Error ? error.message : error)
+    throw new Error("Opslaan van klassen is mislukt.")
+  }
+}
+
+function buildClassroomCloudDocument(classroom) {
+  return {
+    fields: {
+      name: firestoreStringField(classroom?.name || ""),
+      sectionName: firestoreStringField(classroom?.sectionName || ""),
+      audience: firestoreStringField(classroom?.audience || ""),
+      ownerUsername: firestoreStringField(classroom?.ownerUsername || ""),
+      ownerDisplayName: firestoreStringField(classroom?.ownerDisplayName || ""),
+      updatedAt: firestoreStringField(classroom?.updatedAt || new Date().toISOString()),
+      snapshotJson: firestoreStringField(JSON.stringify(classroom)),
+    },
+  }
+}
+
+async function writeClassroomToCloud(classroom) {
+  if (!mathCloudEnabled || !classroom?.id) return
+  await firestoreRequest(firestoreDocUrl(CLASSROOM_CLOUD_COLLECTION, classroom.id), {
+    method: "PATCH",
+    body: buildClassroomCloudDocument(classroom),
+  })
+}
+
+async function removeClassroomFromCloud(classroomId = "") {
+  if (!mathCloudEnabled || !classroomId) return
+  try {
+    await firestoreRequest(firestoreDocUrl(CLASSROOM_CLOUD_COLLECTION, classroomId), {
+      method: "DELETE",
+    })
+  } catch (error) {
+    if (!String(error instanceof Error ? error.message : error).includes("404")) {
+      console.error("Kon klas niet uit Firestore verwijderen:", error instanceof Error ? error.message : error)
+    }
+  }
+}
+
+async function loadClassroomsFromCloud() {
+  if (!mathCloudEnabled) return []
+  try {
+    const payload = await firestoreRequest(`${firestoreCollectionUrl(CLASSROOM_CLOUD_COLLECTION)}?pageSize=200`)
+    const documents = Array.isArray(payload?.documents) ? payload.documents : []
+    return documents
+      .map((document) => {
+        const snapshotJson = readFirestoreString(document, "snapshotJson", "")
+        if (!snapshotJson) return null
+        try {
+          return normalizeClassroomEntry(JSON.parse(snapshotJson))
+        } catch (error) {
+          console.error("Kon klas uit Firestore niet parsen:", error instanceof Error ? error.message : error)
+          return null
+        }
+      })
+      .filter(Boolean)
+  } catch (error) {
+    console.error("Kon klassen niet uit Firestore laden:", error instanceof Error ? error.message : error)
+    return []
+  }
+}
+
+async function ensureClassroomsHydratedFromCloud() {
+  if (!mathCloudEnabled) return classrooms
+  if (classroomsCloudHydrationPromise) return classroomsCloudHydrationPromise
+
+  classroomsCloudHydrationPromise = (async () => {
+    const cloudClassrooms = await loadClassroomsFromCloud()
+    if (cloudClassrooms.length) {
+      classrooms = cloudClassrooms
+      persistClassrooms()
+      emitClassroomsToHosts()
+      return classrooms
+    }
+
+    if (classrooms.length) {
+      await Promise.all(
+        classrooms.map((classroom) =>
+          writeClassroomToCloud(classroom).catch((error) => {
+            console.error("Kon bestaande klas niet naar Firestore schrijven:", error instanceof Error ? error.message : error)
+          })
+        )
+      )
+    }
+    return classrooms
+  })().finally(() => {
+    classroomsCloudHydrationPromise = null
+  })
+
+  return classroomsCloudHydrationPromise
+}
+
+function classroomSummaries() {
+  return [...classrooms]
+    .sort((left, right) => left.name.localeCompare(right.name))
+    .map((entry) => ({
+      id: entry.id,
+      name: entry.name,
+      sectionName: entry.sectionName,
+      audience: entry.audience,
+      ownerUsername: entry.ownerUsername,
+      ownerDisplayName: entry.ownerDisplayName,
+      learnerCount: entry.learners.length,
+      learners: entry.learners.map((learner) => ({
+        id: learner.id,
+        name: learner.name,
+        learnerCode: learner.learnerCode,
+        createdAt: learner.createdAt,
+        updatedAt: learner.updatedAt,
+      })),
+      createdAt: entry.createdAt,
+      updatedAt: entry.updatedAt,
+    }))
+}
+
+function emitClassroomsToSocket(socket) {
+  socket.emit("host:classes:update", { classrooms: classroomSummaries() })
+}
+
+function emitClassroomsToHosts() {
+  for (const socketId of hostSocketIds) {
+    io.to(socketId).emit("host:classes:update", { classrooms: classroomSummaries() })
+  }
+}
+
+function findClassroomById(classId = "") {
+  return classrooms.find((entry) => entry.id === String(classId ?? "").trim()) || null
+}
+
+function updateClassroomInMemory(classroomId, updater) {
+  const index = classrooms.findIndex((entry) => entry.id === String(classroomId ?? "").trim())
+  if (index === -1) return null
+  const nextClassroom = normalizeClassroomEntry(
+    typeof updater === "function" ? updater(classrooms[index]) : updater
+  )
+  if (!nextClassroom) return null
+  classrooms[index] = nextClassroom
+  persistClassrooms()
+  emitClassroomsToHosts()
+  if (mathCloudEnabled) {
+    writeClassroomToCloud(nextClassroom).catch((error) => {
+      console.error("Kon klas niet naar Firestore schrijven:", error instanceof Error ? error.message : error)
+    })
+  }
+  return nextClassroom
+}
+
+async function syncClassroomLearnerAcrossMathRooms(classroom, learner, previousName = "", previousLearnerCode = "") {
+  if (!classroom?.id || !learner?.id) return
+  for (const room of rooms.values()) {
+    if (room.game.mode !== "math" || room.math?.classId !== classroom.id) continue
+    const matchingPlayer = room.players.find((player) => player.classLearnerId === learner.id)
+    if (!matchingPlayer) continue
+    matchingPlayer.name = learner.name
+    matchingPlayer.learnerCode = learner.learnerCode
+    matchingPlayer.classId = classroom.id
+    matchingPlayer.className = classroom.name
+    if (room.math) {
+      room.math.classId = classroom.id
+      room.math.className = classroom.name
+    }
+    if (previousName || previousLearnerCode) {
+      await removeMathResumeIndex(previousName || matchingPlayer.name, previousLearnerCode || matchingPlayer.learnerCode)
+      await renameMathGrowthRecord(previousName, previousLearnerCode, learner.name, learner.learnerCode)
+    } else {
+      await ensureMathGrowthRecordLoaded(learner.name, learner.learnerCode)
+    }
+    const progress = ensureMathProgress(room, matchingPlayer.id)
+    syncMathGrowthForPlayer(room, matchingPlayer, progress)
+    await syncMathResumeIndexForPlayer(room, matchingPlayer)
+    if (matchingPlayer.socketId) {
+      io.to(matchingPlayer.socketId).emit("player:profile:update", {
+        playerId: matchingPlayer.id,
+        learnerCode: matchingPlayer.learnerCode,
+      })
+    }
+    schedulePersistActiveRooms()
+    schedulePersistMathRoomToCloud(room)
+    emitStateToRoom(room)
+  }
+}
+
+function syncClassroomMetaAcrossMathRooms(classroom) {
+  if (!classroom?.id) return
+  for (const room of rooms.values()) {
+    if (room.game.mode !== "math" || room.math?.classId !== classroom.id) continue
+    room.math.className = classroom.name
+    room.game.topic = `${classroom.name} · Rekenen ${formatMathLevel(room.math?.selectedBand || MATH_LEVELS[1])}`
+    room.players = room.players.map((player) =>
+      player.classId === classroom.id
+        ? {
+            ...player,
+            className: classroom.name,
+          }
+        : player
+    )
+    schedulePersistActiveRooms()
+    schedulePersistMathRoomToCloud(room)
+    emitStateToRoom(room)
+  }
+}
+
+function detachClassroomFromMathRooms(classroom) {
+  if (!classroom?.id) return
+  for (const room of rooms.values()) {
+    if (room.game.mode !== "math" || room.math?.classId !== classroom.id) continue
+    room.math.classId = ""
+    room.math.className = ""
+    room.game.topic = `Rekenen ${formatMathLevel(room.math?.selectedBand || MATH_LEVELS[1])}`
+    room.players = room.players.map((player) =>
+      player.classId === classroom.id
+        ? {
+            ...player,
+            classId: "",
+            className: "",
+            classLearnerId: "",
+          }
+        : player
+    )
+    schedulePersistActiveRooms()
+    schedulePersistMathRoomToCloud(room)
+    emitStateToRoom(room)
   }
 }
 
@@ -5152,6 +5517,9 @@ function sanitizePersistedPlayer(rawPlayer) {
     learnerCode: rawPlayer?.learnerCode,
     name: rawPlayer?.name,
     teamId: rawPlayer?.teamId,
+    classId: rawPlayer?.classId,
+    className: rawPlayer?.className,
+    classLearnerId: rawPlayer?.classLearnerId,
     score: rawPlayer?.score,
     connected: false,
   })
@@ -5160,6 +5528,8 @@ function sanitizePersistedPlayer(rawPlayer) {
 function serializeRoomSnapshot(room) {
   return {
     code: room.code,
+    ownerUsername: room.ownerUsername || "",
+    ownerDisplayName: room.ownerDisplayName || "",
     hostOnline: false,
     createdAt: room.createdAt || new Date().toISOString(),
     updatedAt: room.updatedAt || new Date().toISOString(),
@@ -5168,6 +5538,9 @@ function serializeRoomSnapshot(room) {
       learnerCode: player.learnerCode,
       name: player.name,
       teamId: player.teamId,
+      classId: player.classId,
+      className: player.className,
+      classLearnerId: player.classLearnerId,
       score: player.score,
       connected: false,
     })),
@@ -5195,6 +5568,8 @@ function deserializeRoomSnapshot(snapshot) {
   const room = {
     code,
     hostSocketId: null,
+    ownerUsername: normalizeTeacherUsername(snapshot.ownerUsername),
+    ownerDisplayName: String(snapshot.ownerDisplayName ?? snapshot.ownerUsername ?? "").trim(),
     hostOnline: false,
     createdAt: String(snapshot.createdAt ?? new Date().toISOString()),
     updatedAt: String(snapshot.updatedAt ?? new Date().toISOString()),
@@ -7560,10 +7935,13 @@ io.on("connection", (socket) => {
     }
     const room = reclaimableRoom ?? getRoomBySocketId(socket.id) ?? createRoom(socket.id)
     claimRoomForHost(room, socket.id)
+    room.ownerUsername = normalizeTeacherUsername(account.username)
+    room.ownerDisplayName = String(account.displayName || account.username || "Docent").trim() || "Docent"
     clearHostSession(socket.id, { invalidateToken: true })
     const session = createHostSession(account, room.code)
     rememberHostRoomForSession(session, room.code)
     hostSessions.set(socket.id, session)
+    await ensureClassroomsHydratedFromCloud()
     socket.emit("host:login:success", buildHostSessionPayload(session))
     socket.emit("host:room:update", { roomCode: room.code })
     if (room.game.mode === "lesson" && room.lesson?.phases?.length) {
@@ -7582,6 +7960,7 @@ io.on("connection", (socket) => {
         providerLabel: room.game.providerLabel || null,
       })
     }
+    emitClassroomsToSocket(socket)
     emitLessonLibraryToSocket(socket)
     emitSessionHistoryToSocket(socket)
     emitTeacherAccountsToSocket(socket)
@@ -7612,9 +7991,12 @@ io.on("connection", (socket) => {
     })
     detachHostSessionTokenFromOtherSockets(session.token, socket.id)
     claimRoomForHost(room, socket.id)
+    room.ownerUsername = normalizeTeacherUsername(session.username)
+    room.ownerDisplayName = String(session.displayName || session.username || "Docent").trim() || "Docent"
     rememberHostRoomForSession(session, room.code)
     hostSessions.set(socket.id, session)
 
+    await ensureClassroomsHydratedFromCloud()
     socket.emit("host:login:success", buildHostSessionPayload(session))
     socket.emit("host:room:update", { roomCode: room.code })
     if (room.game.mode === "lesson" && room.lesson?.phases?.length) {
@@ -7633,6 +8015,7 @@ io.on("connection", (socket) => {
         providerLabel: room.game.providerLabel || null,
       })
     }
+    emitClassroomsToSocket(socket)
     emitLessonLibraryToSocket(socket)
     emitSessionHistoryToSocket(socket)
     emitTeacherAccountsToSocket(socket)
@@ -7668,6 +8051,8 @@ io.on("connection", (socket) => {
 
     restoredRoom.code = targetCode
     claimRoomForHost(restoredRoom, socket.id)
+    restoredRoom.ownerUsername = normalizeTeacherUsername(session.username)
+    restoredRoom.ownerDisplayName = String(session.displayName || session.username || "Docent").trim() || "Docent"
     rememberHostRoomForSession(session, restoredRoom.code)
     rooms.set(restoredRoom.code, restoredRoom)
     scheduleRoomClosure(restoredRoom)
@@ -7690,6 +8075,13 @@ io.on("connection", (socket) => {
     emitLessonLibraryToSocket(socket)
   })
 
+  socket.on("host:classes:list", async () => {
+    const room = requireHostRoom(socket)
+    if (!room) return
+    await ensureClassroomsHydratedFromCloud()
+    emitClassroomsToSocket(socket)
+  })
+
   socket.on("host:history:list", () => {
     const room = requireHostRoom(socket)
     if (!room) return
@@ -7704,6 +8096,234 @@ io.on("connection", (socket) => {
       return
     }
     emitTeacherAccountsToSocket(socket)
+  })
+
+  socket.on("host:classes:create", async ({ name, sectionName, audience }) => {
+    const room = requireHostRoom(socket)
+    if (!room) return
+    await ensureClassroomsHydratedFromCloud()
+
+    const trimmedName = String(name ?? "").trim()
+    if (trimmedName.length < 2) {
+      socket.emit("host:error", { message: "Geef de klas een naam van minimaal 2 tekens." })
+      return
+    }
+    if (classrooms.some((entry) => normalizeParticipantName(entry.name) === normalizeParticipantName(trimmedName))) {
+      socket.emit("host:error", { message: "Er bestaat al een klas met deze naam." })
+      return
+    }
+
+    const now = new Date().toISOString()
+    const nextClassroom = normalizeClassroomEntry({
+      id: generateEntityId("classroom"),
+      name: trimmedName,
+      sectionName: String(sectionName ?? "").trim() || "Algemene sectie",
+      audience: String(audience ?? "vmbo").trim() || "vmbo",
+      ownerUsername: getRoomOwnerUsername(room),
+      ownerDisplayName: room.ownerDisplayName || room.ownerUsername || "Docent",
+      learners: [],
+      createdAt: now,
+      updatedAt: now,
+    })
+    classrooms = [nextClassroom, ...classrooms]
+    persistClassrooms()
+    emitClassroomsToHosts()
+    if (mathCloudEnabled) {
+      await writeClassroomToCloud(nextClassroom).catch((error) => {
+        console.error("Kon nieuwe klas niet naar Firestore schrijven:", error instanceof Error ? error.message : error)
+      })
+    }
+    socket.emit("host:classes:success", {
+      message: `Klas ${nextClassroom.name} is toegevoegd.`,
+    })
+  })
+
+  socket.on("host:classes:update", async ({ classId, name, sectionName, audience }) => {
+    const room = requireHostRoom(socket)
+    if (!room) return
+    await ensureClassroomsHydratedFromCloud()
+
+    const currentClassroom = findClassroomById(classId)
+    if (!currentClassroom) {
+      socket.emit("host:error", { message: "Deze klas bestaat niet meer." })
+      return
+    }
+
+    const trimmedName = String(name ?? currentClassroom.name).trim()
+    if (trimmedName.length < 2) {
+      socket.emit("host:error", { message: "Geef de klas een naam van minimaal 2 tekens." })
+      return
+    }
+    if (
+      classrooms.some(
+        (entry) => entry.id !== currentClassroom.id && normalizeParticipantName(entry.name) === normalizeParticipantName(trimmedName)
+      )
+    ) {
+      socket.emit("host:error", { message: "Er bestaat al een andere klas met deze naam." })
+      return
+    }
+
+    const nextClassroom = updateClassroomInMemory(currentClassroom.id, (entry) => ({
+      ...entry,
+      name: trimmedName,
+      sectionName: String(sectionName ?? entry.sectionName).trim() || "Algemene sectie",
+      audience: String(audience ?? entry.audience).trim() || "vmbo",
+      updatedAt: new Date().toISOString(),
+    }))
+    if (!nextClassroom) {
+      socket.emit("host:error", { message: "Deze klas kon niet worden bijgewerkt." })
+      return
+    }
+    syncClassroomMetaAcrossMathRooms(nextClassroom)
+    socket.emit("host:classes:success", {
+      message: `Klas ${nextClassroom.name} is bijgewerkt.`,
+    })
+  })
+
+  socket.on("host:classes:delete", async ({ classId }) => {
+    const room = requireHostRoom(socket)
+    if (!room) return
+    await ensureClassroomsHydratedFromCloud()
+
+    const currentClassroom = findClassroomById(classId)
+    if (!currentClassroom) {
+      socket.emit("host:error", { message: "Deze klas bestaat niet meer." })
+      return
+    }
+    classrooms = classrooms.filter((entry) => entry.id !== currentClassroom.id)
+    detachClassroomFromMathRooms(currentClassroom)
+    persistClassrooms()
+    emitClassroomsToHosts()
+    await removeClassroomFromCloud(currentClassroom.id)
+    socket.emit("host:classes:success", {
+      message: `Klas ${currentClassroom.name} is verwijderd.`,
+    })
+  })
+
+  socket.on("host:classes:learner:add", async ({ classId, name, learnerCode }) => {
+    const room = requireHostRoom(socket)
+    if (!room) return
+    await ensureClassroomsHydratedFromCloud()
+
+    const classroom = findClassroomById(classId)
+    if (!classroom) {
+      socket.emit("host:error", { message: "Deze klas bestaat niet meer." })
+      return
+    }
+    const trimmedName = String(name ?? "").trim()
+    const normalizedCode = normalizeLearnerCode(learnerCode)
+    if (!trimmedName) {
+      socket.emit("host:error", { message: "Vul eerst de naam van de leerling in." })
+      return
+    }
+    if (!isValidLearnerCode(normalizedCode)) {
+      socket.emit("host:error", { message: "Gebruik een leerlingcode van precies 4 cijfers." })
+      return
+    }
+    if (classroom.learners.some((entry) => entry.learnerCode === normalizedCode)) {
+      socket.emit("host:error", { message: "Deze leerlingcode is al in gebruik binnen deze klas." })
+      return
+    }
+
+    const now = new Date().toISOString()
+    const nextLearner = normalizeClassroomLearner({
+      id: generateEntityId("class-learner"),
+      name: trimmedName,
+      learnerCode: normalizedCode,
+      createdAt: now,
+      updatedAt: now,
+    })
+    const nextClassroom = updateClassroomInMemory(classroom.id, (entry) => ({
+      ...entry,
+      learners: [...entry.learners, nextLearner],
+      updatedAt: now,
+    }))
+    await ensureMathGrowthRecordLoaded(nextLearner.name, nextLearner.learnerCode)
+    socket.emit("host:classes:success", {
+      message: `Leerling ${nextLearner.name} is toegevoegd aan ${nextClassroom?.name || classroom.name}.`,
+    })
+  })
+
+  socket.on("host:classes:learner:update", async ({ classId, learnerId, name, learnerCode }) => {
+    const room = requireHostRoom(socket)
+    if (!room) return
+    await ensureClassroomsHydratedFromCloud()
+
+    const classroom = findClassroomById(classId)
+    if (!classroom) {
+      socket.emit("host:error", { message: "Deze klas bestaat niet meer." })
+      return
+    }
+    const currentLearner = classroom.learners.find((entry) => entry.id === String(learnerId ?? "").trim())
+    if (!currentLearner) {
+      socket.emit("host:error", { message: "Deze leerling staat niet meer in de klas." })
+      return
+    }
+
+    const trimmedName = String(name ?? currentLearner.name).trim()
+    const normalizedCode = normalizeLearnerCode(learnerCode)
+    if (!trimmedName) {
+      socket.emit("host:error", { message: "Vul eerst de naam van de leerling in." })
+      return
+    }
+    if (!isValidLearnerCode(normalizedCode)) {
+      socket.emit("host:error", { message: "Gebruik een leerlingcode van precies 4 cijfers." })
+      return
+    }
+    if (classroom.learners.some((entry) => entry.id !== currentLearner.id && entry.learnerCode === normalizedCode)) {
+      socket.emit("host:error", { message: "Deze leerlingcode is al in gebruik binnen deze klas." })
+      return
+    }
+
+    const now = new Date().toISOString()
+    const nextClassroom = updateClassroomInMemory(classroom.id, (entry) => ({
+      ...entry,
+      learners: entry.learners.map((learnerEntry) =>
+        learnerEntry.id === currentLearner.id
+          ? {
+              ...learnerEntry,
+              name: trimmedName,
+              learnerCode: normalizedCode,
+              updatedAt: now,
+            }
+          : learnerEntry
+      ),
+      updatedAt: now,
+    }))
+    const nextLearner = nextClassroom?.learners.find((entry) => entry.id === currentLearner.id) || null
+    if (nextLearner) {
+      await renameMathGrowthRecord(currentLearner.name, currentLearner.learnerCode, nextLearner.name, nextLearner.learnerCode)
+      await syncClassroomLearnerAcrossMathRooms(nextClassroom, nextLearner, currentLearner.name, currentLearner.learnerCode)
+    }
+    socket.emit("host:classes:success", {
+      message: `Gegevens van ${trimmedName} zijn bijgewerkt.`,
+    })
+  })
+
+  socket.on("host:classes:learner:delete", async ({ classId, learnerId }) => {
+    const room = requireHostRoom(socket)
+    if (!room) return
+    await ensureClassroomsHydratedFromCloud()
+
+    const classroom = findClassroomById(classId)
+    if (!classroom) {
+      socket.emit("host:error", { message: "Deze klas bestaat niet meer." })
+      return
+    }
+    const currentLearner = classroom.learners.find((entry) => entry.id === String(learnerId ?? "").trim())
+    if (!currentLearner) {
+      socket.emit("host:error", { message: "Deze leerling staat niet meer in de klas." })
+      return
+    }
+
+    updateClassroomInMemory(classroom.id, (entry) => ({
+      ...entry,
+      learners: entry.learners.filter((learnerEntry) => learnerEntry.id !== currentLearner.id),
+      updatedAt: new Date().toISOString(),
+    }))
+    socket.emit("host:classes:success", {
+      message: `Leerling ${currentLearner.name} is uit ${classroom.name} verwijderd.`,
+    })
   })
 
   socket.on("host:teacher-accounts:create", ({ username, password, displayName, role }) => {
@@ -7992,12 +8612,22 @@ io.on("connection", (socket) => {
     })
   })
 
-  socket.on("host:start-math", async ({ band, assignmentTitle, dueAt }) => {
+  socket.on("host:start-math", async ({ band, assignmentTitle, dueAt, classId, targetPracticeQuestionCount }) => {
     const room = requireHostRoom(socket)
     if (!room) return
+    await ensureClassroomsHydratedFromCloud()
     const previousMathPlayers = room.game.mode === "math" ? room.players.map((player) => ({ name: player.name, learnerCode: player.learnerCode })) : []
 
     const selectedBand = normalizeMathLevel(band)
+    const selectedClassroom = classId ? findClassroomById(classId) : null
+    if (classId && !selectedClassroom) {
+      socket.emit("host:error", { message: "De gekozen klas bestaat niet meer." })
+      return
+    }
+    if (selectedClassroom && !selectedClassroom.learners.length) {
+      socket.emit("host:error", { message: "Deze klas heeft nog geen leerlingen met leerlingcode." })
+      return
+    }
     room.questions = []
     room.currentQuestionIndex = -1
     room.answeredPlayers = new Set()
@@ -8007,23 +8637,44 @@ io.on("connection", (socket) => {
     room.math = buildMathSession(selectedBand, {
       assignmentTitle,
       dueAt,
+      classId: selectedClassroom?.id || "",
+      className: selectedClassroom?.name || "",
+      targetPracticeQuestionCount,
       title: String(assignmentTitle || "").trim() || `Rekenroute ${formatMathLevel(selectedBand)}`,
     })
     const usedMathCodes = new Set()
-    room.players = room.players.map((player) => {
-      let nextLearnerCode = isValidLearnerCode(player.learnerCode) ? player.learnerCode : ""
-      if (!nextLearnerCode || usedMathCodes.has(nextLearnerCode)) {
-        do {
-          nextLearnerCode = String(randomInt(1000, 9999))
-        } while (usedMathCodes.has(nextLearnerCode))
-      }
-      usedMathCodes.add(nextLearnerCode)
-      return {
-        ...player,
-        score: 0,
-        learnerCode: nextLearnerCode,
-      }
-    })
+    room.players = selectedClassroom
+      ? selectedClassroom.learners.map((learner) => {
+          usedMathCodes.add(learner.learnerCode)
+          return createPlayerRecord({
+            id: learner.id,
+            learnerCode: learner.learnerCode,
+            name: learner.name,
+            teamId: room.teams[0]?.id || "team-1",
+            classId: selectedClassroom.id,
+            className: selectedClassroom.name,
+            classLearnerId: learner.id,
+            score: 0,
+            connected: false,
+          })
+        })
+      : room.players.map((player) => {
+          let nextLearnerCode = isValidLearnerCode(player.learnerCode) ? player.learnerCode : ""
+          if (!nextLearnerCode || usedMathCodes.has(nextLearnerCode)) {
+            do {
+              nextLearnerCode = String(randomInt(1000, 9999))
+            } while (usedMathCodes.has(nextLearnerCode))
+          }
+          usedMathCodes.add(nextLearnerCode)
+          return {
+            ...player,
+            score: 0,
+            learnerCode: nextLearnerCode,
+            classId: player.classId || "",
+            className: player.className || "",
+            classLearnerId: player.classLearnerId || "",
+          }
+        })
     room.teams = createTeams(["Rekenroute"])
     reassignPlayersToExistingTeams(room)
 
@@ -8034,7 +8685,7 @@ io.on("connection", (socket) => {
 
     room.game = {
       ...createIdleGameState(false),
-      topic: `Rekenen ${formatMathLevel(selectedBand)}`,
+      topic: selectedClassroom ? `${selectedClassroom.name} · Rekenen ${formatMathLevel(selectedBand)}` : `Rekenen ${formatMathLevel(selectedBand)}`,
       audience: "vmbo",
       status: "live",
       source: "math",
@@ -8938,6 +9589,10 @@ io.on("connection", (socket) => {
   socket.on("host:math:learner:create", async ({ name, learnerCode }) => {
     const room = requireHostRoom(socket)
     if (!room || room.game.mode !== "math") return
+    if (room.math?.classId) {
+      socket.emit("host:error", { message: "Deze rekenroute gebruikt al een vaste klas. Voeg leerlingen toe via Beheer > Klassen." })
+      return
+    }
 
     const trimmedName = String(name ?? "").trim()
     const normalizedCode = normalizeLearnerCode(learnerCode) || generateUniqueLearnerCode(room)
@@ -8994,6 +9649,25 @@ io.on("connection", (socket) => {
     const previousName = player.name
     const previousLearnerCode = player.learnerCode
     player.learnerCode = normalizedCode
+    if (player.classId && player.classLearnerId) {
+      const linkedClassroom = findClassroomById(player.classId)
+      const linkedLearner = linkedClassroom?.learners.find((entry) => entry.id === player.classLearnerId) || null
+      if (linkedClassroom && linkedLearner) {
+        updateClassroomInMemory(linkedClassroom.id, (entry) => ({
+          ...entry,
+          learners: entry.learners.map((learnerEntry) =>
+            learnerEntry.id === linkedLearner.id
+              ? {
+                  ...learnerEntry,
+                  learnerCode: normalizedCode,
+                  updatedAt: new Date().toISOString(),
+                }
+              : learnerEntry
+          ),
+          updatedAt: new Date().toISOString(),
+        }))
+      }
+    }
     if (room.game.mode === "math") {
       await renameMathGrowthRecord(previousName, previousLearnerCode, player.name, player.learnerCode)
       const progress = ensureMathProgress(room, player.id)

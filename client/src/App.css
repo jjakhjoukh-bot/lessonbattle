@@ -2970,6 +2970,27 @@ body::after {
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
 }
 
+.classes-toolbar {
+  align-items: end;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.classroom-card {
+  display: grid;
+  gap: 16px;
+}
+
+.classroom-learner-list {
+  display: grid;
+  gap: 10px;
+}
+
+.classroom-learner-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(120px, 0.8fr) auto auto;
+  gap: 10px;
+}
+
 .lesson-library-meta span {
   display: inline-flex;
   padding: 7px 10px;
@@ -3437,7 +3458,8 @@ body::after {
   .learner-code-grid,
   .math-create-row,
   .math-code-row,
-  .math-answer-row {
+  .math-answer-row,
+  .classroom-learner-row {
     grid-template-columns: 1fr;
   }
 
