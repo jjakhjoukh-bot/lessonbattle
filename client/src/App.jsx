@@ -600,6 +600,17 @@ function HostPage() {
       ),
     []
   )
+  const liveWorkspaceId =
+    game.mode === "battle"
+      ? "battle"
+      : game.mode === "math"
+        ? "math"
+        : game.mode === "lesson"
+          ? "lesson"
+          : ""
+  const liveWorkspaceLabel = liveWorkspaceId
+    ? HOST_WORKSPACE_OPTIONS.find((option) => option.id === liveWorkspaceId)?.label || "live sessie"
+    : ""
   const liveGroupModeEnabled = Boolean(game.groupModeEnabled)
   const canGoToPreviousLessonStep =
     game.mode === "lesson" &&
@@ -1502,6 +1513,8 @@ function HostPage() {
           game={game}
           hostSession={hostSession}
           imageUrl={hostStartImageUrl}
+          liveWorkspaceId={liveWorkspaceId}
+          liveWorkspaceLabel={liveWorkspaceLabel}
           liveGroupModeEnabled={liveGroupModeEnabled}
           onMailClick={openSupportMail}
           onOpenWorkspace={openHostWorkspace}
@@ -1514,35 +1527,17 @@ function HostPage() {
       {hostSession.authenticated && !isManagementWorkspace && !isHomeWorkspace ? (
         <>
       <section className="host-grid">
-        <div className="glass control-card">
+        <div className="glass control-card teacher-panel teacher-prep-card">
           <div className="section-head">
-            <h2>{activeWorkspaceMeta.label}</h2>
-            <span className="pill">{status}</span>
+            <div className="host-panel-heading">
+              <span className="host-panel-kicker">Voorbereiden</span>
+              <h2>{activeWorkspaceMeta.label}</h2>
+            </div>
+            <span className="pill">Werkruimte</span>
           </div>
-
-          <div className="host-meta-bar">
-            <div className="meta-card">
-              <span>Account</span>
-              <strong>{hostSession.displayName || hostSession.username || "Niet verbonden"}</strong>
-              {hostSession.role ? <small className="meta-role">{hostSession.role === "owner" ? "Hoofdbeheer" : hostSession.role === "manager" ? "Beheerder" : "Docent"}</small> : null}
-            </div>
-            <div className="meta-card">
-              <span>Sessiecode</span>
-              <strong>{hostSession.roomCode || "-----"}</strong>
-            </div>
-            <div className="meta-actions">
-              <button className="button-ghost" onClick={() => socket.emit("host:room:refresh")} type="button">
-                Nieuwe code
-              </button>
-              <button className="button-ghost subtle-danger" onClick={logout} type="button">
-                Uitloggen
-              </button>
-            </div>
-          </div>
-
-          <div className="lobby-banner">
-            <span>Deelnemers openen /join en gebruiken code</span>
-            <strong>{hostSession.roomCode || "-----"}</strong>
+          <div className="host-status-banner">
+            <span>Status</span>
+            <strong>{status}</strong>
           </div>
 
           <div className="workspace-callout">
@@ -1827,9 +1822,12 @@ function HostPage() {
           </div>
         </div>
 
-        <div className="glass question-stage">
+        <div className="glass question-stage teacher-panel teacher-live-card">
           <div className="section-head">
-            <h2>{game.mode === "lesson" ? "Live les" : game.mode === "math" ? "Live rekenen" : "Live vraag"}</h2>
+            <div className="host-panel-heading">
+              <span className="host-panel-kicker">Live in de klas</span>
+              <h2>{game.mode === "lesson" ? "Live les" : game.mode === "math" ? "Live rekenen" : "Live vraag"}</h2>
+            </div>
             <div className="pill-row">
               <span className="pill timer-pill">
                 {game.mode === "lesson"
@@ -1976,9 +1974,12 @@ function HostPage() {
         </>
       ) : hostSession.authenticated && isManagementWorkspace ? (
         <section className="management-workspace">
-          <section className="glass board-card management-header-card">
+          <section className="glass board-card management-header-card teacher-panel">
             <div className="section-head">
-              <h2>Beheer</h2>
+              <div className="host-panel-heading">
+                <span className="host-panel-kicker">Beheer</span>
+                <h2>Beheer</h2>
+              </div>
               <span className="pill">{activeManagementMeta?.label || "Beheer"}</span>
             </div>
             <p className="muted">
@@ -4735,6 +4736,8 @@ function HostStartPanel({
   teamCount,
   game,
   hostSession,
+  liveWorkspaceId,
+  liveWorkspaceLabel,
 }) {
   const liveSummary =
     game.mode === "lesson"
@@ -4759,9 +4762,15 @@ function HostStartPanel({
             <button className="button-primary" onClick={() => onOpenWorkspace("lesson")} type="button">
               Start met lesmodus
             </button>
-            <button className="button-secondary" onClick={() => onOpenWorkspace("presentation")} type="button">
-              Maak een presentatie
-            </button>
+            {liveWorkspaceId ? (
+              <button className="button-secondary" onClick={() => onOpenWorkspace(liveWorkspaceId)} type="button">
+                Open {liveWorkspaceLabel}
+              </button>
+            ) : (
+              <button className="button-secondary" onClick={() => onOpenWorkspace("presentation")} type="button">
+                Maak een presentatie
+              </button>
+            )}
             <a className="button-ghost support-link-button" href={SUPPORT_MAILTO_LINK} onClick={onMailClick}>
               Stuur een mail of vraag
             </a>
@@ -4794,6 +4803,10 @@ function HostStartPanel({
             <div className="host-overview-item">
               <span>Huidige activiteit</span>
               <strong>{liveSummary}</strong>
+            </div>
+            <div className="host-overview-item">
+              <span>Docentaccount</span>
+              <strong>{hostSession.displayName || hostSession.username || "Docent"}</strong>
             </div>
           </div>
         </article>
