@@ -639,6 +639,8 @@ function hydrateSnapshot(rawSnapshot) {
     learnerCode: normalizeLearnerCode(rawSnapshot.learnerCode),
     roomCode: String(rawSnapshot.roomCode || "").trim().toUpperCase(),
     savedAt: rawSnapshot.savedAt || new Date().toISOString(),
+    assignmentTitle: String(rawSnapshot.assignmentTitle || rawSnapshot.title || "").trim(),
+    dueAt: String(rawSnapshot.dueAt || "").trim(),
     selectedBand: normalizeMathLevel(rawSnapshot.selectedBand),
     phase: rawSnapshot.phase === "practice" ? "practice" : "intake",
     intakeIndex: Number(rawSnapshot.intakeIndex) || 0,
@@ -672,6 +674,7 @@ function hydrateSnapshot(rawSnapshot) {
     awaitingNext: Boolean(rawSnapshot.awaitingNext),
     lastResult: rawSnapshot.lastResult || null,
     intakeRetryTaskId: String(rawSnapshot.intakeRetryTaskId || ""),
+    growthSummary: rawSnapshot.growthSummary || null,
     source: "local-home",
   }
 
@@ -709,6 +712,8 @@ export function writeHomeMathSnapshotFromServer({ name = "", learnerCode = "", r
     name: String(name || "").trim(),
     learnerCode: normalizeLearnerCode(learnerCode),
     roomCode: String(roomCode || "").trim().toUpperCase(),
+    assignmentTitle: String(math.assignmentTitle || math.title || "").trim(),
+    dueAt: String(math.dueAt || "").trim(),
     selectedBand: normalizeMathLevel(math.selectedBand),
     phase: math.phase === "practice" ? "practice" : "intake",
     intakeIndex: Number(math.intakeIndex) || 0,
@@ -733,6 +738,7 @@ export function writeHomeMathSnapshotFromServer({ name = "", learnerCode = "", r
           targetLevel: math.lastResult.targetLevel ? normalizeMathLevel(math.lastResult.targetLevel) : "",
         }
       : null,
+    growthSummary: math.growthSummary || null,
     intakeRetryTaskId: "",
   })
 }
@@ -751,7 +757,9 @@ function buildUiState(snapshot) {
     : null
 
   return {
-    title: `Thuisroute ${snapshot.selectedBand.toUpperCase()}`,
+    title: snapshot.assignmentTitle || `Thuisroute ${snapshot.selectedBand.toUpperCase()}`,
+    assignmentTitle: snapshot.assignmentTitle || "",
+    dueAt: snapshot.dueAt || "",
     selectedBand: snapshot.selectedBand.toUpperCase(),
     learnerCode: snapshot.learnerCode,
     phase: snapshot.phase,
@@ -778,6 +786,7 @@ function buildUiState(snapshot) {
           targetLevel: snapshot.lastResult.targetLevel ? snapshot.lastResult.targetLevel.toUpperCase() : "",
         }
       : null,
+    growthSummary: snapshot.growthSummary || null,
     source: "local-home",
   }
 }

@@ -157,6 +157,14 @@ function formatHistoryDate(value) {
   }).format(date)
 }
 
+function formatDateTimeLocalInput(value) {
+  if (!value) return ""
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ""
+  const offsetMs = date.getTimezoneOffset() * 60 * 1000
+  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16)
+}
+
 function normalizeSearchText(value = "") {
   return String(value || "")
     .toLowerCase()
@@ -594,6 +602,8 @@ function HostPage() {
   const [lessonModel, setLessonModel] = useState("edi")
   const [lessonPackage, setLessonPackage] = useState("lesson")
   const [mathBand, setMathBand] = useState("1f")
+  const [mathAssignmentTitle, setMathAssignmentTitle] = useState("")
+  const [mathAssignmentDueAt, setMathAssignmentDueAt] = useState("")
   const [lessonDurationMinutes, setLessonDurationMinutes] = useState(45)
   const [presentationSlideCount, setPresentationSlideCount] = useState(6)
   const [practiceQuestionCount, setPracticeQuestionCount] = useState(8)
@@ -609,6 +619,7 @@ function HostPage() {
   const [sessionHistory, setSessionHistory] = useState([])
   const [librarySearch, setLibrarySearch] = useState("")
   const [libraryAudienceFilter, setLibraryAudienceFilter] = useState("all")
+  const [librarySectionFilter, setLibrarySectionFilter] = useState("all")
   const [libraryFolderFilter, setLibraryFolderFilter] = useState("all")
   const [libraryMetaDrafts, setLibraryMetaDrafts] = useState({})
   const [historySearch, setHistorySearch] = useState("")
@@ -711,6 +722,10 @@ function HostPage() {
     () => [...new Set(lessonLibrary.map((lesson) => String(lesson.audience || "").trim()).filter(Boolean))].sort(),
     [lessonLibrary]
   )
+  const lessonLibrarySections = useMemo(
+    () => [...new Set(lessonLibrary.map((lesson) => String(lesson.sectionName || "").trim()).filter(Boolean))].sort(),
+    [lessonLibrary]
+  )
   const lessonLibraryFolders = useMemo(
     () => [...new Set(lessonLibrary.map((lesson) => String(lesson.folderName || "").trim()).filter(Boolean))].sort(),
     [lessonLibrary]
@@ -719,15 +734,26 @@ function HostPage() {
     () =>
       lessonLibrary.filter((lesson) => {
         if (libraryAudienceFilter !== "all" && String(lesson.audience || "").trim() !== libraryAudienceFilter) return false
+        if (librarySectionFilter !== "all" && String(lesson.sectionName || "").trim() !== librarySectionFilter) return false
         if (libraryFolderFilter !== "all" && String(lesson.folderName || "").trim() !== libraryFolderFilter) return false
         return matchesSearchTokens(
-          [lesson.title, lesson.topic, lesson.lessonGoal, lesson.model, lesson.audience, lesson.folderName, ...(lesson.tags || [])]
+          [
+            lesson.title,
+            lesson.topic,
+            lesson.lessonGoal,
+            lesson.model,
+            lesson.audience,
+            lesson.sectionName,
+            lesson.ownerDisplayName,
+            lesson.folderName,
+            ...(lesson.tags || []),
+          ]
             .filter(Boolean)
             .join(" "),
           librarySearch
         )
       }),
-    [lessonLibrary, libraryAudienceFilter, libraryFolderFilter, librarySearch]
+    [lessonLibrary, libraryAudienceFilter, librarySectionFilter, libraryFolderFilter, librarySearch]
   )
   const historyCategories = useMemo(
     () => [...new Set(sessionHistory.map((entry) => String(entry.category || "").trim()).filter(Boolean))].sort(),
@@ -805,6 +831,12 @@ function HostPage() {
   }, [game.math?.selectedBand, game.mode, sessionMode])
 
   useEffect(() => {
+    if (game.mode !== "math") return
+    setMathAssignmentTitle(game.math?.assignmentTitle || game.math?.title || "")
+    setMathAssignmentDueAt(formatDateTimeLocalInput(game.math?.dueAt))
+  }, [game.math?.assignmentTitle, game.math?.dueAt, game.math?.title, game.mode])
+
+  useEffect(() => {
     if (game.mode !== "lesson") return
     setLessonPackage(
       lessonPackageFromFlags({
@@ -830,11 +862,10 @@ function HostPage() {
     setLibraryMetaDrafts((current) => {
       const nextDrafts = { ...current }
       for (const lesson of lessonLibrary) {
-        if (!nextDrafts[lesson.id]) {
-          nextDrafts[lesson.id] = {
-            folderName: lesson.folderName || "",
-            tags: Array.isArray(lesson.tags) ? lesson.tags.join(", ") : "",
-          }
+        nextDrafts[lesson.id] = {
+          folderName: nextDrafts[lesson.id]?.folderName ?? lesson.folderName ?? "",
+          sectionName: nextDrafts[lesson.id]?.sectionName ?? lesson.sectionName ?? "",
+          tags: nextDrafts[lesson.id]?.tags ?? (Array.isArray(lesson.tags) ? lesson.tags.join(", ") : ""),
         }
       }
       return nextDrafts
@@ -1303,7 +1334,11 @@ function HostPage() {
 
   const generateMathSession = () => {
     setStatus("Adaptieve rekenroute wordt klaargezet...")
-    socket.emit("host:start-math", { band: mathBand })
+    socket.emit("host:start-math", {
+      band: mathBand,
+      assignmentTitle: mathAssignmentTitle,
+      dueAt: mathAssignmentDueAt ? new Date(mathAssignmentDueAt).toISOString() : "",
+    })
   }
 
   const startBattleQuestion = () => {
@@ -1372,11 +1407,12 @@ function HostPage() {
   }
 
   const updateLessonLibraryMeta = (lessonId) => {
-    const draft = libraryMetaDrafts[lessonId] || { folderName: "", tags: "" }
-    setStatus("Map en tags worden opgeslagen...")
+    const draft = libraryMetaDrafts[lessonId] || { folderName: "", sectionName: "", tags: "" }
+    setStatus("Sectie, map en tags worden opgeslagen...")
     socket.emit("host:lesson-library:update-meta", {
       lessonId,
       folderName: draft.folderName,
+      sectionName: draft.sectionName,
       tags: draft.tags
         .split(",")
         .map((item) => item.trim())
@@ -1448,10 +1484,12 @@ function HostPage() {
     }
     downloadCsvFile(
       `lessonbattle-bibliotheek-${slugifyFilePart(hostSession.roomCode || "sessie") || "export"}.csv`,
-      ["Titel", "Onderwerp", "Map", "Tags", "Doelgroep", "Model", "Duur (min)", "Fasen", "Oefenvragen", "Dia's", "Favoriet", "Laatst bijgewerkt"],
+      ["Titel", "Onderwerp", "Sectie", "Eigenaar", "Map", "Tags", "Doelgroep", "Model", "Duur (min)", "Fasen", "Oefenvragen", "Dia's", "Favoriet", "Laatst bijgewerkt"],
       filteredLessonLibrary.map((lesson) => [
         lesson.title,
         lesson.topic,
+        lesson.sectionName || "",
+        lesson.ownerDisplayName || "",
         lesson.folderName || "",
         (lesson.tags || []).join(", "),
         lesson.audience,
@@ -1496,6 +1534,8 @@ function HostPage() {
     const rows =
       game.mode === "math"
         ? mathLearnerRows.map((player) => [
+            game.math?.assignmentTitle || game.math?.title || "",
+            game.math?.dueAt ? formatHistoryDate(game.math.dueAt) : "",
             player.name || "",
             player.learnerCode || "",
             player.connected ? "online" : "offline",
@@ -1508,6 +1548,9 @@ function HostPage() {
             formatAccuracy(player.accuracyRate || 0),
             (player.focusDomains || []).map(formatMathDomainLabel).join(", "),
             player.workLabel || "",
+            player.growthSummary?.sessionCount || 0,
+            player.growthSummary?.averageAccuracy ? `${player.growthSummary.averageAccuracy}%` : "",
+            player.growthSummary?.lastPracticedAt ? formatHistoryDate(player.growthSummary.lastPracticedAt) : "",
             player.lastAnsweredAt ? formatHistoryDate(player.lastAnsweredAt) : "",
           ])
         : players.map((player) => [
@@ -1526,7 +1569,7 @@ function HostPage() {
 
     const headers =
       game.mode === "math"
-        ? ["Naam", "Leerlingcode", "Status", "Fase", "Plaatsing", "Oefenniveau", "Gemaakt", "Goed", "Fout", "Nauwkeurigheid", "Focusdomeinen", "Werkhouding", "Laatste actief"]
+        ? ["Opdracht", "Deadline", "Naam", "Leerlingcode", "Status", "Fase", "Plaatsing", "Oefenniveau", "Gemaakt", "Goed", "Fout", "Nauwkeurigheid", "Focusdomeinen", "Werkhouding", "Geoefende routes", "Gemiddelde groei", "Laatst geoefend", "Laatste actief"]
         : ["Naam", "Leerlingcode", "Status", "Groep", "Score", "Modus"]
 
     downloadCsvFile(
@@ -1869,14 +1912,34 @@ function HostPage() {
           )}
 
           {controlMode === "math" ? (
-            <div className="field math-config-card">
-              <span>Rekenroute</span>
-              <p>
-                Leerlingen krijgen eerst een instaptoets. Daarna plaatst de site hen op een F-niveau en biedt
-                automatisch sommen aan op het volgende niveau. Hun leercode blijft zichtbaar zodat ze later weer
-                verder kunnen.
-              </p>
-            </div>
+            <>
+              <div className="field-row">
+                <label className="field">
+                  <span>Opdrachtnaam</span>
+                  <input
+                    onChange={(event) => setMathAssignmentTitle(event.target.value)}
+                    placeholder="Bijv. Weektaak rekenen verhoudingen"
+                    value={mathAssignmentTitle}
+                  />
+                </label>
+                <label className="field">
+                  <span>Deadline</span>
+                  <input
+                    type="datetime-local"
+                    onChange={(event) => setMathAssignmentDueAt(event.target.value)}
+                    value={mathAssignmentDueAt}
+                  />
+                </label>
+              </div>
+              <div className="field math-config-card">
+                <span>Rekenroute</span>
+                <p>
+                  Leerlingen krijgen eerst een instaptoets. Daarna plaatst de site hen op een F-niveau en biedt
+                  automatisch sommen aan op het volgende niveau. Hun leercode blijft zichtbaar zodat ze later weer
+                  verder kunnen.
+                </p>
+              </div>
+            </>
           ) : (
             <div className="teacher-advanced-toggle">
               <button className="button-ghost" onClick={() => setShowAdvancedOptions((current) => !current)} type="button">
@@ -2337,6 +2400,7 @@ function HostPage() {
               audienceFilter={libraryAudienceFilter}
               availableAudiences={lessonLibraryAudiences}
               availableFolders={lessonLibraryFolders}
+              availableSections={lessonLibrarySections}
               folderFilter={libraryFolderFilter}
               metaDrafts={libraryMetaDrafts}
               lessons={filteredLessonLibrary}
@@ -2348,12 +2412,17 @@ function HostPage() {
               onMetaDraftChange={(lessonId, updater) =>
                 setLibraryMetaDrafts((current) => ({
                   ...current,
-                  [lessonId]: typeof updater === "function" ? updater(current[lessonId] || { folderName: "", tags: "" }) : updater,
+                  [lessonId]:
+                    typeof updater === "function"
+                      ? updater(current[lessonId] || { folderName: "", sectionName: "", tags: "" })
+                      : updater,
                 }))
               }
               onMetaSave={updateLessonLibraryMeta}
               onAudienceFilterChange={setLibraryAudienceFilter}
+              onSectionFilterChange={setLibrarySectionFilter}
               onSearchChange={setLibrarySearch}
+              sectionFilter={librarySectionFilter}
               searchValue={librarySearch}
               totalCount={lessonLibrary.length}
             />
@@ -3249,13 +3318,19 @@ function MathHostSummary({ math, players }) {
   return (
     <div className="math-summary-row">
       <div className="player-score-pill">
-        <span>Route</span>
-        <strong>{math.selectedBand || "-"}</strong>
+        <span>Opdracht</span>
+        <strong>{math.assignmentTitle || math.title || `Route ${math.selectedBand || "-"}`}</strong>
       </div>
       <div className="player-score-pill">
         <span>Instapvragen</span>
         <strong>{math.intakeTotal || 0}</strong>
       </div>
+      {math.dueAt ? (
+        <div className="player-score-pill">
+          <span>Deadline</span>
+          <strong>{formatHistoryDate(math.dueAt)}</strong>
+        </div>
+      ) : null}
       <div className="player-score-pill">
         <span>Actieve leerlingen</span>
         <strong>{players.length}</strong>
@@ -3301,25 +3376,30 @@ function MathHostPanel({
     },
     { independent: 0, support: 0, follow: 0 }
   )
+  const growthAwareCount = visiblePlayerRows.filter((player) => Number(player.growthSummary?.sessionCount) > 0).length
+  const deadlineLabel = math.dueAt ? formatHistoryDate(math.dueAt) : ""
 
   return (
     <section className="math-host-panel">
       <div className="math-host-hero">
         <div>
           <span className="eyebrow">Adaptief rekenen</span>
-          <h3>{math.title || `Rekenroute ${math.selectedBand}`}</h3>
+          <h3>{math.assignmentTitle || math.title || `Rekenroute ${math.selectedBand}`}</h3>
           <p>
             Leerlingen maken eerst precies {math.intakeTotal || 0} instapvragen. Daarna krijgen ze automatisch sommen op het volgende niveau,
-            met oplopende moeilijkheid als het goed gaat.
+            met oplopende moeilijkheid als het goed gaat.{deadlineLabel ? ` Deadline: ${deadlineLabel}.` : ""}
           </p>
         </div>
         <div className="math-host-actions">
           <div className="math-summary-stack">
+            {math.assignmentTitle ? <span className="score-chip">Opdracht {math.assignmentTitle}</span> : null}
+            {deadlineLabel ? <span className="score-chip">Deadline {deadlineLabel}</span> : null}
             <span className="score-chip">Instap {math.intakeTotal || 0} vragen</span>
             <span className="score-chip">{math.intakeCount || 0} in intake</span>
             <span className="score-chip">{math.practiceCount || 0} aan het oefenen</span>
             <span className="score-chip">{supportCounts.support} extra hulp</span>
             <span className="score-chip">{supportCounts.independent} zelfstandig</span>
+            <span className="score-chip">{growthAwareCount} met eerdere groei</span>
             {localBackup?.savedAt ? <span className="score-chip">Lokale backup {formatHistoryDate(localBackup.savedAt)}</span> : null}
           </div>
           <div className="math-host-actions-row">
@@ -3376,6 +3456,9 @@ function MathHostPanel({
               <small>Ondersteuning: {getMathSupportLabel(player)}</small>
               <small>Focus: {(player.focusDomains || []).map(formatMathDomainLabel).join(", ") || "nog bepalen"}</small>
               <small>
+                Groei: {player.growthSummary?.sessionCount ? `${player.growthSummary.sessionCount} routes · ${player.growthSummary.averageAccuracy || 0}% gemiddeld` : "eerste route"}
+              </small>
+              <small>
                 Goed {player.correctCount || 0} · Fout {player.wrongCount || 0} · {formatAccuracy(player.accuracyRate || 0)}
               </small>
             </article>
@@ -3424,6 +3507,8 @@ function MathHostPanel({
               <span className="pill">{player.phase === "practice" ? "Adaptief" : "Instaptoets"}</span>
             </div>
             <div className="math-host-meta">
+              <span>Opdracht: {math.assignmentTitle || math.title || `Rekenroute ${math.selectedBand}`}</span>
+              {deadlineLabel ? <span>Deadline: {deadlineLabel}</span> : null}
               <span>Werkhouding: {player.workLabel || "Nog niet gestart"}</span>
               <span>Gemaakt: {player.answeredCount || 0}</span>
               <span>Goed: {player.correctCount || 0}</span>
@@ -3440,6 +3525,17 @@ function MathHostPanel({
               </span>
               <span>Trend: {getMathTrendLabel(player.answerHistory || [])}</span>
               <span>Huidige streak: {getMathRecentStreak(player.answerHistory || [])}</span>
+              <span>
+                Groei over tijd: {player.growthSummary?.sessionCount ? `${player.growthSummary.sessionCount} routes` : "eerste route"}
+              </span>
+              <span>
+                Gemiddeld eerder: {player.growthSummary?.sessionCount ? `${player.growthSummary.averageAccuracy || 0}% goed` : "nog geen historie"}
+              </span>
+              <span>
+                Laatst geoefend: {player.growthSummary?.lastPracticedAt ? formatHistoryDate(player.growthSummary.lastPracticedAt) : "nog niet eerder"}
+              </span>
+              {player.growthSummary?.lastPlacementLevel ? <span>Vorige plaatsing: {player.growthSummary.lastPlacementLevel}</span> : null}
+              {player.growthSummary?.lastTargetLevel ? <span>Vorige oefenroute: {player.growthSummary.lastTargetLevel}</span> : null}
             </div>
             <div className="math-code-row">
               <input
@@ -3482,11 +3578,14 @@ function MathHostPanel({
 
 function MathStudentPanel({ math, answer, onAnswerChange, onSubmit, onNext, onRetry, canSubmit, showNextButton, showRetryButton }) {
   if (!math) return null
+  const deadlineLabel = math.dueAt ? formatHistoryDate(math.dueAt) : ""
 
   return (
     <section className="math-student-panel">
       <div className="math-student-strip">
         <span className="score-chip">Route {math.selectedBand || "-"}</span>
+        {math.assignmentTitle ? <span className="score-chip">{math.assignmentTitle}</span> : null}
+        {deadlineLabel ? <span className="score-chip">Deadline {deadlineLabel}</span> : null}
         <span className="score-chip">Instap {Math.min((math.intakeIndex || 0) + (math.currentTask ? 1 : 0), math.intakeTotal || 0)} / {math.intakeTotal || 0}</span>
         {math.placementLevel ? <span className="score-chip">Jij zit op {math.placementLevel}</span> : null}
         {math.targetLevel ? <span className="score-chip">Je oefent op {math.targetLevel}</span> : null}
@@ -3502,6 +3601,18 @@ function MathStudentPanel({ math, answer, onAnswerChange, onSubmit, onNext, onRe
         <div className="math-task-card">
           <strong>Instaptoets</strong>
           <p>Je maakt eerst precies {math.intakeTotal || 0} vragen. Daarna bepaalt de site op welk niveau jij verder oefent.</p>
+        </div>
+      ) : null}
+
+      {math.assignmentTitle || math.growthSummary?.sessionCount ? (
+        <div className="math-task-card">
+          <strong>{math.assignmentTitle || "Jouw rekenroute"}</strong>
+          <p>
+            {deadlineLabel ? `Werk aan deze route voor ${deadlineLabel}. ` : ""}
+            {math.growthSummary?.sessionCount
+              ? `Je hebt al ${math.growthSummary.sessionCount} eerdere routes gedaan met gemiddeld ${math.growthSummary.averageAccuracy || 0}% goed.`
+              : "Dit is je eerste opgeslagen route op deze leerlingcode."}
+          </p>
         </div>
       ) : null}
 
@@ -4242,6 +4353,9 @@ function LessonLibrarySection({
   audienceFilter,
   onAudienceFilterChange,
   availableAudiences,
+  sectionFilter,
+  onSectionFilterChange,
+  availableSections,
   folderFilter,
   onFolderFilterChange,
   availableFolders,
@@ -4288,6 +4402,25 @@ function LessonLibrarySection({
         </div>
         <div className="management-filter-group">
           <button
+            className={`management-filter-chip ${sectionFilter === "all" ? "is-active" : ""}`}
+            onClick={() => onSectionFilterChange("all")}
+            type="button"
+          >
+            Alle secties
+          </button>
+          {availableSections.map((section) => (
+            <button
+              className={`management-filter-chip ${sectionFilter === section ? "is-active" : ""}`}
+              key={section}
+              onClick={() => onSectionFilterChange(section)}
+              type="button"
+            >
+              {section}
+            </button>
+          ))}
+        </div>
+        <div className="management-filter-group">
+          <button
             className={`management-filter-chip ${folderFilter === "all" ? "is-active" : ""}`}
             onClick={() => onFolderFilterChange("all")}
             type="button"
@@ -4320,7 +4453,11 @@ function LessonLibrarySection({
               key={lesson.id}
             >
               {(() => {
-                const draft = metaDrafts?.[lesson.id] || { folderName: lesson.folderName || "", tags: Array.isArray(lesson.tags) ? lesson.tags.join(", ") : "" }
+                const draft = metaDrafts?.[lesson.id] || {
+                  folderName: lesson.folderName || "",
+                  sectionName: lesson.sectionName || "",
+                  tags: Array.isArray(lesson.tags) ? lesson.tags.join(", ") : "",
+                }
                 return (
                   <>
               <div className="lesson-library-head">
@@ -4333,6 +4470,8 @@ function LessonLibrarySection({
               <p>{lesson.lessonGoal}</p>
               <div className="lesson-library-meta">
                 {lesson.isFavorite ? <span>Favoriet</span> : null}
+                {lesson.sectionName ? <span>{lesson.sectionName}</span> : null}
+                {lesson.ownerDisplayName ? <span>Door {lesson.ownerDisplayName}</span> : null}
                 {lesson.folderName ? <span>{lesson.folderName}</span> : null}
                 <span>{lesson.topic || "Algemeen thema"}</span>
                 <span>{lesson.audience}</span>
@@ -4344,6 +4483,16 @@ function LessonLibrarySection({
                 ))}
               </div>
               <div className="lesson-library-edit-grid">
+                <label className="field inline-field">
+                  <span>Sectie</span>
+                  <input
+                    onChange={(event) =>
+                      onMetaDraftChange(lesson.id, (current) => ({ ...current, sectionName: event.target.value }))
+                    }
+                    placeholder="Bijv. Rekenen of Mens & maatschappij"
+                    value={draft.sectionName}
+                  />
+                </label>
                 <label className="field inline-field">
                   <span>Map</span>
                   <input
@@ -4370,7 +4519,7 @@ function LessonLibrarySection({
                   {lesson.isFavorite ? "Favoriet verwijderen" : "Markeer als favoriet"}
                 </button>
                 <button className="button-ghost" onClick={() => onMetaSave(lesson.id)} type="button">
-                  Sla map en tags op
+                  Sla sectie, map en tags op
                 </button>
                 <button className="button-secondary" onClick={() => onLoad(lesson.id)} type="button">
                   Open les

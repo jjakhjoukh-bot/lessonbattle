@@ -1743,6 +1743,8 @@ body::after {
   display: block;
   margin-top: 6px;
   font-size: 1.4rem;
+  line-height: 1.2;
+  word-break: break-word;
 }
 
 .answer-grid {
@@ -2965,6 +2967,7 @@ body::after {
 .lesson-library-edit-grid {
   display: grid;
   gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
 }
 
 .lesson-library-meta span {
