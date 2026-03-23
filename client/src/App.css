@@ -1281,6 +1281,17 @@ body::after {
 .host-inline-actions {
   display: flex;
   justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.host-home-note {
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(176, 197, 230, 0.08);
+  color: rgba(223, 233, 255, 0.76);
+  line-height: 1.55;
 }
 
 .host-overview-list {
@@ -2849,6 +2860,16 @@ body::after {
   gap: 8px;
 }
 
+.management-toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.management-inline-actions {
+  margin-top: 14px;
+}
+
 .management-filter-chip {
   border: 1px solid rgba(176, 197, 230, 0.12);
   border-radius: 999px;
@@ -2891,6 +2912,13 @@ body::after {
 .lesson-library-card.is-active {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
   background: linear-gradient(145deg, rgba(255, 157, 67, 0.12), rgba(69, 104, 255, 0.1));
+}
+
+.lesson-library-card.is-favorite {
+  box-shadow: inset 0 0 0 1px rgba(255, 213, 99, 0.22);
+  background:
+    linear-gradient(160deg, rgba(255, 212, 97, 0.08), rgba(255, 255, 255, 0.03)),
+    rgba(255, 255, 255, 0.04);
 }
 
 .session-history-card {

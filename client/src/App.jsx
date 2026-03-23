@@ -175,6 +175,37 @@ function matchesSearchTokens(value = "", query = "") {
   return needles.every((token) => haystack.includes(token))
 }
 
+function csvEscape(value) {
+  const text = String(value ?? "")
+  if (/[",\n;]/.test(text)) {
+    return `"${text.replace(/"/g, '""')}"`
+  }
+  return text
+}
+
+function slugifyFilePart(value = "") {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48)
+}
+
+function downloadCsvFile(filename, headers, rows) {
+  const lines = [headers.map(csvEscape).join(";"), ...rows.map((row) => row.map(csvEscape).join(";"))]
+  const blob = new Blob([`\uFEFF${lines.join("\n")}`], { type: "text/csv;charset=utf-8;" })
+  const blobUrl = window.URL.createObjectURL(blob)
+  const link = document.createElement("a")
+  link.href = blobUrl
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  window.URL.revokeObjectURL(blobUrl)
+}
+
 function sortTeamsByScore(teams = []) {
   return [...teams].sort((left, right) => right.score - left.score || left.name.localeCompare(right.name))
 }
@@ -675,6 +706,10 @@ function HostPage() {
       }),
     [historyCategoryFilter, historySearch, historyTypeFilter, sessionHistory]
   )
+  const mathLearnerRows = useMemo(
+    () => (hostInsights?.mode === "math" ? hostInsights.players || [] : game.math?.players || []),
+    [game.math?.players, hostInsights]
+  )
   const liveGroupModeEnabled = Boolean(game.groupModeEnabled)
   const canGoToPreviousLessonStep =
     game.mode === "lesson" &&
@@ -865,6 +900,8 @@ function HostPage() {
       setStatus(`Les geladen uit de bibliotheek: ${title}.`)
     }
     const onDeleteLessonSuccess = () => setStatus("Les verwijderd uit de bibliotheek.")
+    const onFavoriteLessonSuccess = ({ title, isFavorite }) =>
+      setStatus(`${title || "Les"} ${isFavorite ? "staat nu als favoriet gemarkeerd." : "is uit de favorieten gehaald."}`)
     const onHistoryLoadSuccess = ({ title, type }) =>
       setStatus(`${type === "lesson" ? "Les" : type === "practice" ? "Oefentoets" : "Quiz"} geladen uit geschiedenis: ${title}.`)
     const onHistoryDeleteSuccess = () => setStatus("Geschiedenis-item verwijderd.")
@@ -918,6 +955,7 @@ function HostPage() {
     socket.on("host:save-lesson:success", onSaveLessonSuccess)
     socket.on("host:load-lesson:success", onLoadLessonSuccess)
     socket.on("host:delete-lesson:success", onDeleteLessonSuccess)
+    socket.on("host:lesson-library:favorite:success", onFavoriteLessonSuccess)
     socket.on("host:history:load:success", onHistoryLoadSuccess)
     socket.on("host:history:delete:success", onHistoryDeleteSuccess)
     socket.on("host:teacher-accounts:success", onTeacherAccountsSuccess)
@@ -943,6 +981,7 @@ function HostPage() {
       socket.off("host:save-lesson:success", onSaveLessonSuccess)
       socket.off("host:load-lesson:success", onLoadLessonSuccess)
       socket.off("host:delete-lesson:success", onDeleteLessonSuccess)
+      socket.off("host:lesson-library:favorite:success", onFavoriteLessonSuccess)
       socket.off("host:history:load:success", onHistoryLoadSuccess)
       socket.off("host:history:delete:success", onHistoryDeleteSuccess)
       socket.off("host:teacher-accounts:success", onTeacherAccountsSuccess)
@@ -1270,6 +1309,11 @@ function HostPage() {
     socket.emit("host:delete-lesson", { lessonId })
   }
 
+  const toggleLessonFavorite = (lessonId, isFavorite) => {
+    setStatus(isFavorite ? "Les wordt als favoriet gemarkeerd..." : "Les wordt uit favorieten gehaald...")
+    socket.emit("host:lesson-library:favorite", { lessonId, isFavorite })
+  }
+
   const loadSessionFromHistory = (entryId) => {
     setStatus("Sessie wordt geladen uit geschiedenis...")
     socket.emit("host:history:load", { entryId })
@@ -1325,6 +1369,100 @@ function HostPage() {
     clearHostRoomBackup(username)
     setLocalRoomBackup(null)
     setStatus("Lokale backup verwijderd van dit apparaat.")
+  }
+
+  const exportLessonLibraryCsv = () => {
+    if (!filteredLessonLibrary.length) {
+      setStatus("Er zijn geen lessen zichtbaar om te exporteren.")
+      return
+    }
+    downloadCsvFile(
+      `lessonbattle-bibliotheek-${slugifyFilePart(hostSession.roomCode || "sessie") || "export"}.csv`,
+      ["Titel", "Onderwerp", "Doelgroep", "Model", "Duur (min)", "Fasen", "Oefenvragen", "Dia's", "Favoriet", "Laatst bijgewerkt"],
+      filteredLessonLibrary.map((lesson) => [
+        lesson.title,
+        lesson.topic,
+        lesson.audience,
+        lesson.model,
+        lesson.durationMinutes,
+        lesson.phaseCount,
+        lesson.practiceQuestionCount || 0,
+        lesson.slideCount || 0,
+        lesson.isFavorite ? "ja" : "nee",
+        formatHistoryDate(lesson.updatedAt),
+      ])
+    )
+    setStatus("Bibliotheek geëxporteerd als CSV.")
+  }
+
+  const exportSessionHistoryCsv = () => {
+    if (!filteredSessionHistory.length) {
+      setStatus("Er zijn geen sessies zichtbaar om te exporteren.")
+      return
+    }
+    downloadCsvFile(
+      `lessonbattle-geschiedenis-${slugifyFilePart(hostSession.roomCode || "sessie") || "export"}.csv`,
+      ["Titel", "Type", "Categorie", "Onderwerp", "Doelgroep", "Vragen", "Fasen", "Oefenvragen", "Dia's", "Bron", "Laatst bijgewerkt"],
+      filteredSessionHistory.map((entry) => [
+        entry.title,
+        entry.type === "lesson" ? "Les" : entry.type === "practice" ? "Oefentoets" : "Battle",
+        entry.category,
+        entry.topic,
+        entry.audience,
+        entry.questionCount || 0,
+        entry.phaseCount || 0,
+        entry.practiceQuestionCount || 0,
+        entry.slideCount || 0,
+        entry.providerLabel,
+        formatHistoryDate(entry.updatedAt),
+      ])
+    )
+    setStatus("Sessiegeschiedenis geëxporteerd als CSV.")
+  }
+
+  const exportLearnersCsv = () => {
+    const rows =
+      game.mode === "math"
+        ? mathLearnerRows.map((player) => [
+            player.name || "",
+            player.learnerCode || "",
+            player.connected ? "online" : "offline",
+            player.phase === "practice" ? "Adaptief oefenen" : "Instaptoets",
+            player.placementLevel || "",
+            player.targetLevel || "",
+            player.answeredCount || 0,
+            player.correctCount || 0,
+            player.wrongCount || 0,
+            formatAccuracy(player.accuracyRate || 0),
+            (player.focusDomains || []).map(formatMathDomainLabel).join(", "),
+            player.workLabel || "",
+            player.lastAnsweredAt ? formatHistoryDate(player.lastAnsweredAt) : "",
+          ])
+        : players.map((player) => [
+            player.name || "",
+            player.learnerCode || "",
+            player.connected ? "online" : "offline",
+            liveGroupModeEnabled ? teams.find((team) => team.id === player.teamId)?.name || "Geen groep" : "Individueel",
+            player.score || 0,
+            game.mode === "lesson" ? "Les" : game.mode === "battle" ? "Battle/Oefentoets" : "Sessie",
+          ])
+
+    if (!rows.length) {
+      setStatus("Er zijn nog geen leerlingen zichtbaar om te exporteren.")
+      return
+    }
+
+    const headers =
+      game.mode === "math"
+        ? ["Naam", "Leerlingcode", "Status", "Fase", "Plaatsing", "Oefenniveau", "Gemaakt", "Goed", "Fout", "Nauwkeurigheid", "Focusdomeinen", "Werkhouding", "Laatste actief"]
+        : ["Naam", "Leerlingcode", "Status", "Groep", "Score", "Modus"]
+
+    downloadCsvFile(
+      `lessonbattle-leerlingen-${slugifyFilePart(hostSession.roomCode || "sessie") || "export"}.csv`,
+      headers,
+      rows
+    )
+    setStatus("Leerlingoverzicht geëxporteerd als CSV.")
   }
 
   const updateLessonPrompt = () => {
@@ -1608,8 +1746,10 @@ function HostPage() {
           liveWorkspaceLabel={liveWorkspaceLabel}
           liveStatusText={liveStatusText}
           liveGroupModeEnabled={liveGroupModeEnabled}
+          localBackup={localRoomBackup}
           onMailClick={openSupportMail}
           onOpenWorkspace={openHostWorkspace}
+          onRestoreLocalBackup={restoreLocalRoomBackup}
           onlinePlayerCount={onlinePlayerCount}
           recentEntries={recentSessionEntries}
           roomCode={hostSession.roomCode}
@@ -2082,6 +2222,7 @@ function HostPage() {
             <>
               {game.mode === "math" && game.math ? (
                 <MathHostPanel
+                  onExportCsv={exportLearnersCsv}
                   learnerCodeDrafts={learnerCodeDrafts}
                   localBackup={localRoomBackup}
                   math={game.math}
@@ -2096,6 +2237,13 @@ function HostPage() {
                   onRestoreLocalBackup={restoreLocalRoomBackup}
                   insights={hostInsights}
                 />
+              ) : null}
+              {game.mode !== "math" ? (
+                <div className="management-toolbar-actions management-inline-actions">
+                  <button className="button-ghost" onClick={exportLearnersCsv} type="button">
+                    Exporteer leerlingen CSV
+                  </button>
+                </div>
               ) : null}
               <section className="dashboard-grid management-dashboard-grid">
                 <ScoreBoard teams={teams} leaderboard={leaderboard} showGroups={liveGroupModeEnabled} />
@@ -2117,6 +2265,8 @@ function HostPage() {
               availableAudiences={lessonLibraryAudiences}
               lessons={filteredLessonLibrary}
               onDelete={deleteLessonFromLibrary}
+              onExportCsv={exportLessonLibraryCsv}
+              onFavoriteToggle={toggleLessonFavorite}
               onLoad={loadLessonFromLibrary}
               onAudienceFilterChange={setLibraryAudienceFilter}
               onSearchChange={setLibrarySearch}
@@ -2131,6 +2281,7 @@ function HostPage() {
               entries={filteredSessionHistory}
               historyCategories={historyCategories}
               onDelete={deleteSessionFromHistory}
+              onExportCsv={exportSessionHistoryCsv}
               onLoad={loadSessionFromHistory}
               onCategoryFilterChange={setHistoryCategoryFilter}
               onSearchChange={setHistorySearch}
@@ -3036,6 +3187,7 @@ function MathHostSummary({ math, players }) {
 function MathHostPanel({
   math,
   insights,
+  onExportCsv,
   learnerCodeDrafts,
   localBackup,
   newMathLearner,
@@ -3077,6 +3229,9 @@ function MathHostPanel({
           <div className="math-host-actions-row">
             <button className="button-ghost" onClick={() => setShowOverview((current) => !current)} type="button">
               {showOverview ? "Verberg voortgang" : "Toon voortgang"}
+            </button>
+            <button className="button-ghost" onClick={onExportCsv} type="button">
+              Exporteer CSV
             </button>
             {localBackup?.snapshot ? (
               <button className="button-secondary" onClick={onRestoreLocalBackup} type="button">
@@ -3980,6 +4135,8 @@ function LessonLibrarySection({
   activeLessonId,
   onLoad,
   onDelete,
+  onFavoriteToggle,
+  onExportCsv,
   searchValue,
   onSearchChange,
   audienceFilter,
@@ -4023,12 +4180,20 @@ function LessonLibrarySection({
             </button>
           ))}
         </div>
+        <div className="management-toolbar-actions">
+          <button className="button-ghost" onClick={onExportCsv} type="button">
+            Exporteer bibliotheek CSV
+          </button>
+        </div>
       </div>
 
       {lessons.length ? (
         <div className="lesson-library-grid">
           {lessons.map((lesson) => (
-            <article className={`lesson-library-card ${lesson.id === activeLessonId ? "is-active" : ""}`} key={lesson.id}>
+            <article
+              className={`lesson-library-card ${lesson.id === activeLessonId ? "is-active" : ""} ${lesson.isFavorite ? "is-favorite" : ""}`}
+              key={lesson.id}
+            >
               <div className="lesson-library-head">
                 <div>
                   <span className="eyebrow">{lesson.model}</span>
@@ -4038,6 +4203,7 @@ function LessonLibrarySection({
               </div>
               <p>{lesson.lessonGoal}</p>
               <div className="lesson-library-meta">
+                {lesson.isFavorite ? <span>Favoriet</span> : null}
                 <span>{lesson.topic || "Algemeen thema"}</span>
                 <span>{lesson.audience}</span>
                 <span>{lesson.phaseCount} fasen</span>
@@ -4045,6 +4211,9 @@ function LessonLibrarySection({
                 {lesson.slideCount ? <span>{lesson.slideCount} dia's</span> : null}
               </div>
               <div className="lesson-library-actions">
+                <button className="button-ghost" onClick={() => onFavoriteToggle(lesson.id, !lesson.isFavorite)} type="button">
+                  {lesson.isFavorite ? "Favoriet verwijderen" : "Markeer als favoriet"}
+                </button>
                 <button className="button-secondary" onClick={() => onLoad(lesson.id)} type="button">
                   Open les
                 </button>
@@ -4074,6 +4243,7 @@ function SessionHistorySection({
   entries,
   onLoad,
   onDelete,
+  onExportCsv,
   searchValue,
   onSearchChange,
   typeFilter,
@@ -4148,6 +4318,11 @@ function SessionHistorySection({
               {category}
             </button>
           ))}
+        </div>
+        <div className="management-toolbar-actions">
+          <button className="button-ghost" onClick={onExportCsv} type="button">
+            Exporteer geschiedenis CSV
+          </button>
         </div>
       </div>
 
@@ -4959,6 +5134,7 @@ function buildQuestionImageUrl(prompt, category, options = {}) {
 function HostStartPanel({
   onMailClick,
   onOpenWorkspace,
+  onRestoreLocalBackup,
   roomCode,
   onlinePlayerCount,
   liveGroupModeEnabled,
@@ -4968,6 +5144,7 @@ function HostStartPanel({
   liveWorkspaceId,
   liveWorkspaceLabel,
   liveStatusText,
+  localBackup,
   recentEntries,
 }) {
   const liveSummary =
@@ -5076,7 +5253,18 @@ function HostStartPanel({
                 Open eerste werkruimte
               </button>
             )}
+            {localBackup?.snapshot ? (
+              <button className="button-ghost" onClick={onRestoreLocalBackup} type="button">
+                Herstel backup
+              </button>
+            ) : null}
           </div>
+          {localBackup?.savedAt ? (
+            <div className="host-home-note">
+              Lokale backup beschikbaar van {formatHistoryDate(localBackup.savedAt)}. Daarmee kun je op dit apparaat
+              terug naar je laatste sessie.
+            </div>
+          ) : null}
         </article>
 
         <article className="glass board-card host-overview-card host-support-card">

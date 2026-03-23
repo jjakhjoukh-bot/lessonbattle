@@ -4444,6 +4444,7 @@ function normalizeLessonLibraryEntry(rawEntry) {
     id: entryId,
     topic: String(rawEntry.topic ?? "").trim(),
     title: String(rawEntry.title ?? normalizedLesson.title).trim() || normalizedLesson.title,
+    isFavorite: Boolean(rawEntry.isFavorite),
     audience: String(rawEntry.audience ?? normalizedLesson.audience).trim() || normalizedLesson.audience,
     model: String(rawEntry.model ?? normalizedLesson.model).trim() || normalizedLesson.model,
     durationMinutes: Number(rawEntry.durationMinutes) || normalizedLesson.durationMinutes,
@@ -4589,11 +4590,15 @@ function persistLessonLibrary() {
 
 function lessonLibrarySummaries() {
   return [...lessonLibrary]
-    .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime())
+    .sort((left, right) => {
+      if (Boolean(right.isFavorite) !== Boolean(left.isFavorite)) return Number(Boolean(right.isFavorite)) - Number(Boolean(left.isFavorite))
+      return new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime()
+    })
     .map((entry) => ({
       id: entry.id,
       topic: entry.topic,
       title: entry.title,
+      isFavorite: Boolean(entry.isFavorite),
       audience: entry.audience,
       model: entry.model,
       durationMinutes: entry.durationMinutes,
@@ -7961,6 +7966,7 @@ io.on("connection", (socket) => {
       id: entryId,
       topic: room.game.topic,
       title: room.lesson.title,
+      isFavorite: Boolean(existing?.isFavorite),
       audience: room.lesson.audience || room.game.audience,
       model: room.lesson.model,
       durationMinutes: room.lesson.durationMinutes,
@@ -8016,6 +8022,32 @@ io.on("connection", (socket) => {
 
     socket.emit("host:load-lesson:success", { title: entry.title })
     emitStateToRoom(room)
+  })
+
+  socket.on("host:lesson-library:favorite", ({ lessonId, isFavorite }) => {
+    const room = requireHostRoom(socket)
+    if (!room) return
+
+    const targetIndex = lessonLibrary.findIndex((item) => item.id === lessonId)
+    if (targetIndex === -1) {
+      socket.emit("host:error", { message: "Deze les staat niet meer in de bibliotheek." })
+      return
+    }
+
+    const currentEntry = lessonLibrary[targetIndex]
+    const nextFavorite = typeof isFavorite === "boolean" ? isFavorite : !Boolean(currentEntry.isFavorite)
+    lessonLibrary[targetIndex] = {
+      ...currentEntry,
+      isFavorite: nextFavorite,
+      updatedAt: currentEntry.updatedAt,
+    }
+    persistLessonLibrary()
+    emitLessonLibraryToHosts()
+    socket.emit("host:lesson-library:favorite:success", {
+      lessonId,
+      isFavorite: nextFavorite,
+      title: currentEntry.title,
+    })
   })
 
   socket.on("host:lesson-prompt:update", ({ prompt, expectedAnswer }) => {
