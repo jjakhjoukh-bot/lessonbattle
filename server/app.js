@@ -4439,14 +4439,38 @@ function normalizeLessonLibraryEntry(rawEntry) {
     includePresentation: Boolean(rawEntry.lesson?.presentation || rawEntry.slideCount),
     includeVideoPlan: Boolean(rawEntry.lesson?.presentation?.video),
   })
+  const normalizedTopic = String(rawEntry.topic ?? "").trim()
+  const normalizedAudience = String(rawEntry.audience ?? normalizedLesson.audience).trim() || normalizedLesson.audience
+  const normalizedModel = String(rawEntry.model ?? normalizedLesson.model).trim() || normalizedLesson.model
+  const normalizedFolderName =
+    String(rawEntry.folderName ?? "").trim() ||
+    `${normalizedAudience.toUpperCase()} ${normalizedModel === "edi" ? "lessen" : normalizedModel === "formatief handelen" ? "formatieve lessen" : "lesmateriaal"}`
+  const normalizedTags = Array.from(
+    new Set(
+      [
+        ...(Array.isArray(rawEntry.tags) ? rawEntry.tags : []),
+        normalizedAudience,
+        normalizedModel,
+        ...normalizedTopic
+          .split(/[,/]| en | met /i)
+          .map((part) => String(part || "").trim())
+          .filter(Boolean)
+          .slice(0, 4),
+      ]
+        .map((item) => String(item || "").trim())
+        .filter(Boolean)
+    )
+  ).slice(0, 8)
 
   return {
     id: entryId,
-    topic: String(rawEntry.topic ?? "").trim(),
+    topic: normalizedTopic,
     title: String(rawEntry.title ?? normalizedLesson.title).trim() || normalizedLesson.title,
     isFavorite: Boolean(rawEntry.isFavorite),
-    audience: String(rawEntry.audience ?? normalizedLesson.audience).trim() || normalizedLesson.audience,
-    model: String(rawEntry.model ?? normalizedLesson.model).trim() || normalizedLesson.model,
+    folderName: normalizedFolderName,
+    tags: normalizedTags,
+    audience: normalizedAudience,
+    model: normalizedModel,
     durationMinutes: Number(rawEntry.durationMinutes) || normalizedLesson.durationMinutes,
     lessonGoal: String(rawEntry.lessonGoal ?? normalizedLesson.lessonGoal).trim() || normalizedLesson.lessonGoal,
     successCriteria: normalizedLesson.successCriteria,
@@ -4599,6 +4623,8 @@ function lessonLibrarySummaries() {
       topic: entry.topic,
       title: entry.title,
       isFavorite: Boolean(entry.isFavorite),
+      folderName: entry.folderName || "",
+      tags: [...(entry.tags || [])],
       audience: entry.audience,
       model: entry.model,
       durationMinutes: entry.durationMinutes,
@@ -7967,6 +7993,18 @@ io.on("connection", (socket) => {
       topic: room.game.topic,
       title: room.lesson.title,
       isFavorite: Boolean(existing?.isFavorite),
+      folderName: String(existing?.folderName || "").trim() || `${String(room.lesson.audience || room.game.audience || "vmbo").toUpperCase()} lessen`,
+      tags: Array.isArray(existing?.tags)
+        ? existing.tags
+        : Array.from(
+            new Set(
+              [room.game.topic, room.lesson.audience || room.game.audience, room.lesson.model]
+                .join(",")
+                .split(/[,/]| en | met /i)
+                .map((item) => String(item || "").trim())
+                .filter(Boolean)
+            )
+          ).slice(0, 8),
       audience: room.lesson.audience || room.game.audience,
       model: room.lesson.model,
       durationMinutes: room.lesson.durationMinutes,
@@ -8046,6 +8084,39 @@ io.on("connection", (socket) => {
     socket.emit("host:lesson-library:favorite:success", {
       lessonId,
       isFavorite: nextFavorite,
+      title: currentEntry.title,
+    })
+  })
+
+  socket.on("host:lesson-library:update-meta", ({ lessonId, folderName, tags }) => {
+    const room = requireHostRoom(socket)
+    if (!room) return
+
+    const targetIndex = lessonLibrary.findIndex((item) => item.id === lessonId)
+    if (targetIndex === -1) {
+      socket.emit("host:error", { message: "Deze les staat niet meer in de bibliotheek." })
+      return
+    }
+
+    const currentEntry = lessonLibrary[targetIndex]
+    const nextFolderName = String(folderName ?? currentEntry.folderName ?? "").trim() || currentEntry.folderName || "Algemene map"
+    const nextTags = Array.from(
+      new Set(
+        (Array.isArray(tags) ? tags : String(tags ?? "").split(","))
+          .map((item) => String(item || "").trim())
+          .filter(Boolean)
+      )
+    ).slice(0, 8)
+
+    lessonLibrary[targetIndex] = {
+      ...currentEntry,
+      folderName: nextFolderName,
+      tags: nextTags,
+    }
+    persistLessonLibrary()
+    emitLessonLibraryToHosts()
+    socket.emit("host:lesson-library:update-meta:success", {
+      lessonId,
       title: currentEntry.title,
     })
   })

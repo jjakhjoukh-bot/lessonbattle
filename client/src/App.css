@@ -2962,6 +2962,11 @@ body::after {
   color: var(--muted);
 }
 
+.lesson-library-edit-grid {
+  display: grid;
+  gap: 12px;
+}
+
 .lesson-library-meta span {
   display: inline-flex;
   padding: 7px 10px;
