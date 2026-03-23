@@ -818,6 +818,42 @@ body::after {
   justify-content: flex-end;
 }
 
+.host-profile-shell {
+  position: relative;
+}
+
+.host-profile-button {
+  min-height: 42px;
+  padding-inline: 14px;
+}
+
+.host-profile-menu {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  width: min(260px, 76vw);
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(15, 23, 42, 0.98), rgba(17, 24, 39, 0.98)),
+    rgba(15, 23, 42, 0.98);
+  border: 1px solid rgba(176, 197, 230, 0.12);
+  box-shadow: 0 16px 34px rgba(7, 12, 24, 0.24);
+}
+
+.host-profile-action {
+  width: 100%;
+  text-align: left;
+  border: 0;
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.04);
+  color: #e6eefc;
+  cursor: pointer;
+}
+
 .host-menu-button {
   display: inline-grid;
   gap: 5px;
@@ -1006,62 +1042,80 @@ body::after {
   font-weight: 600;
 }
 
+.teacher-advanced-toggle {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.teacher-advanced-panel {
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(176, 197, 230, 0.08);
+}
+
 .host-start-shell,
 .host-start-grid,
 .host-overview-list,
-.host-quick-links,
 .host-support-actions {
   display: grid;
-  gap: 18px;
+  gap: 16px;
 }
 
 .host-start-hero {
   display: grid;
-  grid-template-columns: minmax(0, 1.05fr) minmax(300px, 0.95fr);
-  gap: 20px;
-  align-items: stretch;
+  grid-template-columns: minmax(0, 1.25fr) minmax(280px, 0.75fr);
+  gap: 18px;
+  align-items: start;
 }
 
 .host-start-copy {
   display: grid;
-  gap: 12px;
+  gap: 10px;
 }
 
 .host-start-copy h1 {
   margin: 0;
-  max-width: 10ch;
+  max-width: 8ch;
   font-family: "Avenir Next Condensed", "Trebuchet MS", sans-serif;
-  font-size: clamp(2.2rem, 4vw, 3.9rem);
-  line-height: 0.96;
+  font-size: clamp(2rem, 3.2vw, 3rem);
+  line-height: 0.98;
   letter-spacing: -0.05em;
 }
 
 .host-start-copy p {
   margin: 0;
-  max-width: 48ch;
+  max-width: 38ch;
   color: var(--muted);
-  line-height: 1.65;
+  line-height: 1.6;
+}
+
+.host-start-sidecard {
+  display: grid;
+  gap: 12px;
+  align-content: start;
 }
 
 .host-start-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
-  margin-top: 4px;
+  gap: 10px;
+  margin-top: 6px;
 }
 
 .host-start-summary {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-  margin-top: 6px;
+  grid-template-columns: 1fr;
+  gap: 8px;
 }
 
 .host-start-summary-item {
   display: grid;
   gap: 4px;
-  padding: 12px 14px;
-  border-radius: 16px;
+  padding: 11px 12px;
+  border-radius: 14px;
   background: rgba(255, 255, 255, 0.035);
   border: 1px solid rgba(176, 197, 230, 0.1);
 }
@@ -1074,19 +1128,24 @@ body::after {
 }
 
 .host-start-summary-item strong {
-  font-size: 1rem;
+  font-size: 0.96rem;
   line-height: 1.35;
 }
 
 .host-start-visual {
   position: relative;
-  min-height: 300px;
+  min-height: 220px;
   overflow: hidden;
-  border-radius: 24px;
+  border-radius: 20px;
   background:
     linear-gradient(160deg, rgba(37, 99, 235, 0.12), rgba(15, 23, 42, 0.3)),
     rgba(255, 255, 255, 0.03);
   border: 1px solid rgba(176, 197, 230, 0.1);
+}
+
+.host-start-visual-compact .host-start-visual-scene {
+  inset: 14px 14px 72px 14px;
+  border-radius: 18px;
 }
 
 .host-start-visual img {
@@ -1107,7 +1166,7 @@ body::after {
   inset: 0;
   display: grid;
   align-content: end;
-  padding: 20px;
+  padding: 16px;
   background:
     radial-gradient(circle at 20% 22%, rgba(96, 165, 250, 0.18), transparent 24%),
     radial-gradient(circle at 78% 20%, rgba(14, 165, 233, 0.16), transparent 22%),
@@ -1195,8 +1254,8 @@ body::after {
   position: relative;
   display: grid;
   gap: 4px;
-  padding: 14px 16px;
-  border-radius: 16px;
+  padding: 12px 14px;
+  border-radius: 14px;
   background: rgba(15, 23, 42, 0.56);
   border: 1px solid rgba(176, 197, 230, 0.12);
 }
@@ -1211,12 +1270,17 @@ body::after {
 }
 
 .host-start-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1.08fr) minmax(0, 0.92fr);
 }
 
 .host-overview-card {
   display: grid;
-  gap: 18px;
+  gap: 16px;
+}
+
+.host-inline-actions {
+  display: flex;
+  justify-content: flex-start;
 }
 
 .host-overview-list {
@@ -1228,8 +1292,8 @@ body::after {
   justify-content: space-between;
   align-items: center;
   gap: 16px;
-  padding: 14px 16px;
-  border-radius: 18px;
+  padding: 12px 14px;
+  border-radius: 16px;
   background: rgba(255, 255, 255, 0.05);
 }
 
@@ -1242,13 +1306,32 @@ body::after {
   text-align: right;
 }
 
+.host-recent-list {
+  display: grid;
+  gap: 10px;
+}
+
+.host-recent-item {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(176, 197, 230, 0.08);
+}
+
+.host-recent-item span,
+.host-recent-item small {
+  color: rgba(223, 233, 255, 0.7);
+}
+
 .host-support-card .muted {
   max-width: none;
   margin: 0;
 }
 
 .host-support-actions {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: 1fr;
 }
 
 .host-support-meta {

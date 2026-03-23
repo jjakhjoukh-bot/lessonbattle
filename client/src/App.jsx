@@ -506,6 +506,8 @@ function HostPage() {
   const [hostWorkspace, setHostWorkspace] = useState("home")
   const [managementPanel, setManagementPanel] = useState("learners")
   const [hostMenuOpen, setHostMenuOpen] = useState(false)
+  const [hostProfileOpen, setHostProfileOpen] = useState(false)
+  const [showAdvancedOptions, setShowAdvancedOptions] = useState(false)
   const [topic, setTopic] = useState("")
   const [audience, setAudience] = useState("vmbo")
   const [questionCount, setQuestionCount] = useState(12)
@@ -591,15 +593,6 @@ function HostPage() {
           ? "Oefentoets opbouwen"
           : "Les opbouwen"
   const currentPresentationSlide = game.lesson?.presentation?.currentSlide || null
-  const hostStartImageUrl = useMemo(
-    () =>
-      buildQuestionImageUrl(
-        "calm secondary classroom teacher guiding students with tablets bright school learning environment",
-        "onderwijs",
-        { kind: "slide" }
-      ),
-    []
-  )
   const liveWorkspaceId =
     game.mode === "battle"
       ? "battle"
@@ -611,6 +604,23 @@ function HostPage() {
   const liveWorkspaceLabel = liveWorkspaceId
     ? HOST_WORKSPACE_OPTIONS.find((option) => option.id === liveWorkspaceId)?.label || "live sessie"
     : ""
+  const liveStatusText =
+    game.mode === "lesson"
+      ? game.status === "finished"
+        ? "Les afgerond"
+        : game.totalPhases
+          ? `${game.totalPhases} lesstappen klaar`
+          : "Les nog niet gestart"
+      : game.mode === "math"
+        ? `${game.math?.players?.length || 0} leerlingen oefenen`
+        : game.mode === "battle"
+          ? game.status === "finished"
+            ? "Battle afgerond"
+            : game.totalQuestions
+              ? `${game.totalQuestions} vragen klaar`
+              : "Battle nog niet gestart"
+        : "Nog geen live sessie"
+  const recentSessionEntries = useMemo(() => sessionHistory.slice(0, 3), [sessionHistory])
   const liveGroupModeEnabled = Boolean(game.groupModeEnabled)
   const canGoToPreviousLessonStep =
     game.mode === "lesson" &&
@@ -636,19 +646,21 @@ function HostPage() {
   useEffect(() => {
     if (!hostSession.authenticated) {
       setHostMenuOpen(false)
+      setHostProfileOpen(false)
     }
   }, [hostSession.authenticated])
 
   useEffect(() => {
-    if (!hostMenuOpen) return undefined
+    if (!hostMenuOpen && !hostProfileOpen) return undefined
     const handleKeyDown = (event) => {
       if (event.key === "Escape") {
         setHostMenuOpen(false)
+        setHostProfileOpen(false)
       }
     }
     window.addEventListener("keydown", handleKeyDown)
     return () => window.removeEventListener("keydown", handleKeyDown)
-  }, [hostMenuOpen])
+  }, [hostMenuOpen, hostProfileOpen])
 
   useEffect(() => {
     if (game.lessonModel) setLessonModel(game.lessonModel)
@@ -1097,6 +1109,7 @@ function HostPage() {
   const openHostWorkspace = (nextWorkspace) => {
     setHostWorkspace(nextWorkspace)
     setHostMenuOpen(false)
+    setHostProfileOpen(false)
     if (nextWorkspace === "home") return
     if (nextWorkspace === "management") return
     selectSessionMode(nextWorkspace)
@@ -1435,13 +1448,38 @@ function HostPage() {
             </div>
             <div className="host-header-status">
               <span className="pill">Sessiecode {hostSession.roomCode || "-----"}</span>
+              <span className="pill">{liveStatusText}</span>
               <span className="pill">{onlinePlayerCount} online</span>
-              <button className="button-ghost" onClick={togglePresenterMode} type="button">
-                {presenterMode ? presenterFullscreen ? "Sluit digibordmodus" : "Sluit presentatie" : "Digibordmodus"}
-              </button>
-              <button className="button-ghost subtle-danger" onClick={logout} type="button">
-                Uitloggen
-              </button>
+              <div className="host-profile-shell">
+                <button
+                  aria-expanded={hostProfileOpen}
+                  className={`button-ghost host-profile-button ${hostProfileOpen ? "is-open" : ""}`}
+                  onClick={() => setHostProfileOpen((current) => !current)}
+                  type="button"
+                >
+                  {hostSession.displayName || hostSession.username || "Docent"}
+                </button>
+                {hostProfileOpen ? (
+                  <div className="host-profile-menu">
+                    <button className="host-profile-action" onClick={togglePresenterMode} type="button">
+                      {presenterMode ? presenterFullscreen ? "Sluit digibordmodus" : "Sluit presentatie" : "Open digibordmodus"}
+                    </button>
+                    <button
+                      className="host-profile-action"
+                      onClick={() => {
+                        socket.emit("host:room:refresh")
+                        setHostProfileOpen(false)
+                      }}
+                      type="button"
+                    >
+                      Vernieuw sessiecode
+                    </button>
+                    <button className="host-profile-action subtle-danger" onClick={logout} type="button">
+                      Uitloggen
+                    </button>
+                  </div>
+                ) : null}
+              </div>
             </div>
           </header>
 
@@ -1512,13 +1550,14 @@ function HostPage() {
         <HostStartPanel
           game={game}
           hostSession={hostSession}
-          imageUrl={hostStartImageUrl}
           liveWorkspaceId={liveWorkspaceId}
           liveWorkspaceLabel={liveWorkspaceLabel}
+          liveStatusText={liveStatusText}
           liveGroupModeEnabled={liveGroupModeEnabled}
           onMailClick={openSupportMail}
           onOpenWorkspace={openHostWorkspace}
           onlinePlayerCount={onlinePlayerCount}
+          recentEntries={recentSessionEntries}
           roomCode={hostSession.roomCode}
           teamCount={teams.length}
         />
@@ -1563,131 +1602,129 @@ function HostPage() {
             </label>
           )}
 
-          <div className="field-row">
-            {controlMode === "math" ? (
-              <div className="field math-config-card">
-                <span>Rekenroute</span>
-                <p>
-                  Leerlingen krijgen eerst een instaptoets. Daarna plaatst de site hen op een F-niveau en biedt
-                  automatisch sommen aan op het volgende niveau. Hun leercode blijft zichtbaar zodat ze later weer
-                  verder kunnen.
-                </p>
-              </div>
-            ) : (
-              <label className="field">
-                <span>Doelgroep</span>
-                <select value={audience} onChange={(event) => setAudience(event.target.value)}>
-                  <option value="vmbo">VMBO</option>
-                  <option value="brugklas">Brugklas</option>
-                  <option value="mavo/havo">Mavo/Havo</option>
-                  <option value="mbo">MBO</option>
-                  <option value="algemeen">Algemeen</option>
-                </select>
-              </label>
-            )}
+          {controlMode === "math" ? (
+            <div className="field math-config-card">
+              <span>Rekenroute</span>
+              <p>
+                Leerlingen krijgen eerst een instaptoets. Daarna plaatst de site hen op een F-niveau en biedt
+                automatisch sommen aan op het volgende niveau. Hun leercode blijft zichtbaar zodat ze later weer
+                verder kunnen.
+              </p>
+            </div>
+          ) : (
+            <div className="teacher-advanced-toggle">
+              <button className="button-ghost" onClick={() => setShowAdvancedOptions((current) => !current)} type="button">
+                {showAdvancedOptions ? "Minder opties" : "Meer opties"}
+              </button>
+            </div>
+          )}
 
-            {controlMode === "lesson" ? (
-              selectedSuiteMode === "lesson" ? (
-                <>
-                  <label className="field">
-                    <span>Lesmodus</span>
-                    <select value={lessonModel} onChange={(event) => setLessonModel(event.target.value)}>
-                      <option value="edi">EDI (Directe instructie)</option>
-                      <option value="formatief handelen">Formatief handelen</option>
-                      <option value="activerende didactiek">Activerende didactiek</option>
-                      <option value="directe instructie">Directe instructie</option>
-                    </select>
-                  </label>
-                  <label className="field">
-                    <span>Lesduur (min)</span>
-                    <input
-                      type="number"
-                      min="20"
-                      max="90"
-                      value={lessonDurationMinutes}
-                      onChange={(event) => setLessonDurationMinutes(Number(event.target.value))}
-                    />
-                  </label>
-                </>
-              ) : selectedSuiteMode === "presentation" ? (
-                <>
-                  <label className="field">
-                    <span>Aantal dia's</span>
-                    <input
-                      type="number"
-                      min="4"
-                      max="7"
-                      value={presentationSlideCount}
-                      onChange={(event) => setPresentationSlideCount(Number(event.target.value))}
-                    />
-                  </label>
-                  <label className="field">
-                    <span>Video-opzet</span>
-                    <select
-                      value={includeVideoPlan ? "ja" : "nee"}
-                      onChange={(event) => setIncludeVideoPlan(event.target.value === "ja")}
-                    >
-                      <option value="nee">Nee</option>
-                      <option value="ja">Ja</option>
-                    </select>
-                  </label>
-                </>
-              ) : (
-                <>
-                  <label className="field">
-                    <span>Aantal vragen</span>
-                    <input
-                      type="number"
-                      min="6"
-                      max="24"
-                      value={practiceQuestionCount}
-                      onChange={(event) => setPracticeQuestionCount(Number(event.target.value))}
-                    />
-                  </label>
-                  <label className="field">
-                    <span>Vorm</span>
-                    <select value="oefentoets" disabled>
-                      <option value="oefentoets">Oefentoets</option>
-                    </select>
-                  </label>
-                </>
-              )
-            ) : controlMode === "math" ? (
-              <div className="field math-config-card">
-                <span>Doel</span>
-                <p>
-                  De intake bepaalt het instapniveau. Bij een uitkomst op 1F gaat de leerling bijvoorbeeld verder met
-                  2F-opgaven. Bij goede antwoorden loopt de moeilijkheid binnen dat niveau op.
-                </p>
-              </div>
-            ) : (
-              <>
+          {controlMode !== "math" && showAdvancedOptions ? (
+            <div className="teacher-advanced-panel">
+              <div className="field-row">
                 <label className="field">
-                  <span>Aantal vragen</span>
-                  <input
-                    type="number"
-                    min="6"
-                    max="24"
-                    value={questionCount}
-                    onChange={(event) => setQuestionCount(Number(event.target.value))}
-                  />
+                  <span>Doelgroep</span>
+                  <select value={audience} onChange={(event) => setAudience(event.target.value)}>
+                    <option value="vmbo">VMBO</option>
+                    <option value="brugklas">Brugklas</option>
+                    <option value="mavo/havo">Mavo/Havo</option>
+                    <option value="mbo">MBO</option>
+                    <option value="algemeen">Algemeen</option>
+                  </select>
                 </label>
-                <label className="field">
-                  <span>Tijd per vraag (sec)</span>
-                  <input
-                    type="number"
-                    min="8"
-                    max="60"
-                    value={questionDurationSec}
-                    onChange={(event) => setQuestionDurationSec(Number(event.target.value))}
-                  />
-                </label>
-              </>
-            )}
-          </div>
 
-          {controlMode !== "math" ? (
-            <>
+                {controlMode === "lesson" ? (
+                  selectedSuiteMode === "lesson" ? (
+                    <>
+                      <label className="field">
+                        <span>Lesmodus</span>
+                        <select value={lessonModel} onChange={(event) => setLessonModel(event.target.value)}>
+                          <option value="edi">EDI (Directe instructie)</option>
+                          <option value="formatief handelen">Formatief handelen</option>
+                          <option value="activerende didactiek">Activerende didactiek</option>
+                          <option value="directe instructie">Directe instructie</option>
+                        </select>
+                      </label>
+                      <label className="field">
+                        <span>Lesduur (min)</span>
+                        <input
+                          type="number"
+                          min="20"
+                          max="90"
+                          value={lessonDurationMinutes}
+                          onChange={(event) => setLessonDurationMinutes(Number(event.target.value))}
+                        />
+                      </label>
+                    </>
+                  ) : selectedSuiteMode === "presentation" ? (
+                    <>
+                      <label className="field">
+                        <span>Aantal dia's</span>
+                        <input
+                          type="number"
+                          min="4"
+                          max="7"
+                          value={presentationSlideCount}
+                          onChange={(event) => setPresentationSlideCount(Number(event.target.value))}
+                        />
+                      </label>
+                      <label className="field">
+                        <span>Video-opzet</span>
+                        <select
+                          value={includeVideoPlan ? "ja" : "nee"}
+                          onChange={(event) => setIncludeVideoPlan(event.target.value === "ja")}
+                        >
+                          <option value="nee">Nee</option>
+                          <option value="ja">Ja</option>
+                        </select>
+                      </label>
+                    </>
+                  ) : (
+                    <>
+                      <label className="field">
+                        <span>Aantal vragen</span>
+                        <input
+                          type="number"
+                          min="6"
+                          max="24"
+                          value={practiceQuestionCount}
+                          onChange={(event) => setPracticeQuestionCount(Number(event.target.value))}
+                        />
+                      </label>
+                      <label className="field">
+                        <span>Vorm</span>
+                        <select value="oefentoets" disabled>
+                          <option value="oefentoets">Oefentoets</option>
+                        </select>
+                      </label>
+                    </>
+                  )
+                ) : (
+                  <>
+                    <label className="field">
+                      <span>Aantal vragen</span>
+                      <input
+                        type="number"
+                        min="6"
+                        max="24"
+                        value={questionCount}
+                        onChange={(event) => setQuestionCount(Number(event.target.value))}
+                      />
+                    </label>
+                    <label className="field">
+                      <span>Tijd per vraag (sec)</span>
+                      <input
+                        type="number"
+                        min="8"
+                        max="60"
+                        value={questionDurationSec}
+                        onChange={(event) => setQuestionDurationSec(Number(event.target.value))}
+                      />
+                    </label>
+                  </>
+                )}
+              </div>
+
               <div className="toggle-grid">
                 <button
                   className={`toggle-card ${!groupModeEnabledDraft ? "is-active" : ""}`}
@@ -1728,7 +1765,7 @@ function HostPage() {
                   <p>Deze sessie werkt individueel. Zet groepsopdracht aan als je leerlingen aan groepen wilt koppelen.</p>
                 </div>
               )}
-            </>
+            </div>
           ) : null}
 
           {controlMode === "lesson" ? (
@@ -4727,7 +4764,6 @@ function buildQuestionImageUrl(prompt, category, options = {}) {
 }
 
 function HostStartPanel({
-  imageUrl,
   onMailClick,
   onOpenWorkspace,
   roomCode,
@@ -4738,9 +4774,9 @@ function HostStartPanel({
   hostSession,
   liveWorkspaceId,
   liveWorkspaceLabel,
+  liveStatusText,
+  recentEntries,
 }) {
-  const [visualFailed, setVisualFailed] = useState(false)
-  const [visualLoaded, setVisualLoaded] = useState(false)
   const liveSummary =
     game.mode === "lesson"
       ? `${game.totalPhases || 0} lesstappen klaar`
@@ -4755,25 +4791,11 @@ function HostStartPanel({
       <section className="glass board-card host-start-hero">
         <div className="host-start-copy">
           <span className="eyebrow">Docentenomgeving</span>
-          <h1>Rustig starten als docent.</h1>
+          <h1>Rustig starten.</h1>
           <p>
-            Open het menu linksboven en kies alleen de werkruimte die je op dat moment nodig hebt. Zo blijft het scherm
-            overzichtelijk en werk je zonder overvol dashboard.
+            Kies linksboven alleen de werkruimte die je nu nodig hebt. Zo blijft het scherm rustig en houd je overzicht
+            tijdens de les.
           </p>
-          <div className="host-start-summary">
-            <div className="host-start-summary-item">
-              <span>Sessiecode</span>
-              <strong>{roomCode || "-----"}</strong>
-            </div>
-            <div className="host-start-summary-item">
-              <span>Online</span>
-              <strong>{onlinePlayerCount}</strong>
-            </div>
-            <div className="host-start-summary-item">
-              <span>Nu live</span>
-              <strong>{liveSummary}</strong>
-            </div>
-          </div>
           <div className="host-start-actions">
             <button className="button-primary" onClick={() => onOpenWorkspace("lesson")} type="button">
               Start met lesmodus
@@ -4787,45 +4809,46 @@ function HostStartPanel({
                 Maak een presentatie
               </button>
             )}
-            <a className="button-ghost support-link-button" href={SUPPORT_MAILTO_LINK} onClick={onMailClick}>
-              Stuur een mail of vraag
-            </a>
           </div>
         </div>
-        <div className="host-start-visual">
-          {!visualFailed ? (
-            <img
-              alt="Onderwijsbeeld voor de docentenomgeving"
-              className={visualLoaded ? "is-ready" : ""}
-              onError={() => {
-                setVisualFailed(true)
-                setVisualLoaded(false)
-              }}
-              onLoad={() => setVisualLoaded(true)}
-              src={imageUrl}
-            />
-          ) : null}
-          <div className={`host-start-visual-fallback ${!visualLoaded || visualFailed ? "is-visible" : ""}`} aria-hidden={visualLoaded && !visualFailed}>
-            <div className="host-start-visual-scene">
-              <div className="host-start-screen" />
-              <div className="host-start-desk" />
-              <div className="host-start-figure teacher" />
-              <div className="host-start-figure student-a" />
-              <div className="host-start-figure student-b" />
-              <div className="host-start-figure student-c" />
+        <aside className="host-start-sidecard">
+          <div className="host-start-summary">
+            <div className="host-start-summary-item">
+              <span>Sessiecode</span>
+              <strong>{roomCode || "-----"}</strong>
             </div>
-            <div className="host-start-visual-copy">
-              <strong>Onderwijsbeeld</strong>
-              <span>Rustige fallback voor de docentstartpagina</span>
+            <div className="host-start-summary-item">
+              <span>Online</span>
+              <strong>{onlinePlayerCount}</strong>
+            </div>
+            <div className="host-start-summary-item">
+              <span>Nu live</span>
+              <strong>{liveStatusText || liveSummary}</strong>
             </div>
           </div>
-        </div>
+          <div className="host-start-visual host-start-visual-compact">
+            <div className="host-start-visual-fallback is-visible" aria-hidden="false">
+              <div className="host-start-visual-scene">
+                <div className="host-start-screen" />
+                <div className="host-start-desk" />
+                <div className="host-start-figure teacher" />
+                <div className="host-start-figure student-a" />
+                <div className="host-start-figure student-b" />
+                <div className="host-start-figure student-c" />
+              </div>
+              <div className="host-start-visual-copy">
+                <strong>Onderwijsbeeld</strong>
+                <span>Vaste illustratie voor een rustige docentstart</span>
+              </div>
+            </div>
+          </div>
+        </aside>
       </section>
 
       <section className="host-start-grid">
         <article className="glass board-card host-overview-card">
           <div className="section-head">
-            <h2>Snel overzicht</h2>
+            <h2>Ga verder</h2>
             <span className="pill">Live</span>
           </div>
           <div className="host-overview-list">
@@ -4850,17 +4873,37 @@ function HostStartPanel({
               <strong>{hostSession.displayName || hostSession.username || "Docent"}</strong>
             </div>
           </div>
+          <div className="host-inline-actions">
+            {liveWorkspaceId ? (
+              <button className="button-secondary" onClick={() => onOpenWorkspace(liveWorkspaceId)} type="button">
+                Ga verder in {liveWorkspaceLabel}
+              </button>
+            ) : (
+              <button className="button-secondary" onClick={() => onOpenWorkspace("lesson")} type="button">
+                Open eerste werkruimte
+              </button>
+            )}
+          </div>
         </article>
 
         <article className="glass board-card host-overview-card host-support-card">
           <div className="section-head">
-            <h2>Ondersteuning</h2>
-            <span className="pill">Direct hulp</span>
+            <h2>Recent en hulp</h2>
+            <span className="pill">Vandaag</span>
           </div>
-          <p className="muted">
-            Gebruik deze knop om snel een mail te openen met een voorgestelde onderwerpregel. Wil je straks je eigen mailadres
-            koppelen, dan kunnen we dat later ook netjes vast instellen.
-          </p>
+          {recentEntries?.length ? (
+            <div className="host-recent-list">
+              {recentEntries.map((entry) => (
+                <div className="host-recent-item" key={entry.id}>
+                  <strong>{entry.title || "Sessie"}</strong>
+                  <span>{entry.type === "lesson" ? "Les" : entry.type === "practice" ? "Oefentoets" : entry.type === "battle" ? "Battle" : "Sessie"}</span>
+                  <small>{formatHistoryDate(entry.createdAt || entry.date)}</small>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="muted">Hier verschijnen je laatst opgebouwde sessies zodra je die hebt gebruikt of opgeslagen.</p>
+          )}
           <div className="host-support-actions">
             <a className="button-primary support-link-button" href={SUPPORT_MAILTO_LINK} onClick={onMailClick}>
               Open mailapp
