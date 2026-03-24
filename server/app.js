@@ -22,6 +22,7 @@ const activeRoomsPath = path.join(sharedDataPath, "active-rooms.json")
 const teacherAccountsPath = path.join(sharedDataPath, "teacher-accounts.json")
 const classroomsPath = path.join(sharedDataPath, "classrooms.json")
 const mathGrowthHistoryPath = path.join(sharedDataPath, "math-growth-history.json")
+const selfPracticeHistoryPath = path.join(sharedDataPath, "self-practice-history.json")
 const generatedImagesPath = path.join(sharedDataPath, "generated-images")
 const manualImagesPath = path.join(sharedDataPath, "manual-images")
 const MAX_SOCKET_PAYLOAD_BYTES = 8 * 1024 * 1024
@@ -133,6 +134,7 @@ const MATH_CLOUD_RESUME_COLLECTION = "lessonBattleMathResume"
 const MATH_CLOUD_HOST_COLLECTION = "lessonBattleMathHosts"
 const MATH_CLOUD_GROWTH_COLLECTION = "lessonBattleMathGrowth"
 const CLASSROOM_CLOUD_COLLECTION = "lessonBattleClassrooms"
+const SELF_PRACTICE_CLOUD_COLLECTION = "lessonBattleSelfPractice"
 const MATH_CLOUD_SCOPE = "https://www.googleapis.com/auth/datastore"
 const MATH_CLOUD_TOKEN_URL = "https://oauth2.googleapis.com/token"
 const MATH_CLOUD_PERSIST_DEBOUNCE_MS = 800
@@ -154,7 +156,9 @@ const mathCloudPersistTimers = new Map()
 let mathCloudTokenCache = null
 let roomPersistenceTimer = null
 let mathGrowthHistory = new Map()
+let selfPracticeHistory = new Map()
 let classroomsCloudHydrationPromise = null
+let selfPracticeCloudHydrationPromise = null
 
 function generateEntityId(prefix = "item") {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
@@ -4965,6 +4969,324 @@ async function renameMathGrowthRecord(previousName = "", previousLearnerCode = "
   }
 }
 
+function normalizeSelfPracticeAnswerEntry(rawEntry) {
+  if (!rawEntry || typeof rawEntry !== "object") return null
+  const prompt = String(rawEntry.prompt ?? "").trim()
+  const answeredAt = normalizeIsoDateTime(rawEntry.answeredAt) || new Date().toISOString()
+  if (!prompt) return null
+  return {
+    questionId: String(rawEntry.questionId ?? generateEntityId("self-practice-answer")),
+    prompt,
+    questionType: rawEntry.questionType === "typed" ? "typed" : "multiple-choice",
+    answerText: String(rawEntry.answerText ?? "").trim(),
+    correctAnswer: String(rawEntry.correctAnswer ?? "").trim(),
+    correct: Boolean(rawEntry.correct),
+    explanation: String(rawEntry.explanation ?? "").trim(),
+    answeredAt,
+  }
+}
+
+function normalizeSelfPracticeSessionEntry(rawEntry) {
+  if (!rawEntry || typeof rawEntry !== "object") return null
+  const sessionId = String(rawEntry.sessionId ?? rawEntry.id ?? "").trim()
+  if (!sessionId) return null
+  const answeredCount = Math.max(0, Number(rawEntry.answeredCount) || 0)
+  const correctCount = Math.max(0, Number(rawEntry.correctCount) || 0)
+  const questionTotal = Math.max(answeredCount, Number(rawEntry.questionTotal) || 0)
+  const accuracyRate = answeredCount ? Math.round((correctCount / Math.max(1, answeredCount)) * 100) : 0
+  return {
+    sessionId,
+    title: String(rawEntry.title ?? "Oefentoets").trim() || "Oefentoets",
+    topic: String(rawEntry.topic ?? "").trim(),
+    topicLabel: cleanSelfPracticeTopicLabel(rawEntry.topicLabel ?? rawEntry.topic ?? ""),
+    questionFormat: normalizePracticeQuestionFormat(rawEntry.questionFormat),
+    providerLabel: String(rawEntry.providerLabel ?? "Lesson Battle").trim() || "Lesson Battle",
+    questionTotal,
+    answeredCount,
+    correctCount,
+    accuracyRate,
+    status: rawEntry.status === "finished" ? "finished" : "active",
+    startedAt: normalizeIsoDateTime(rawEntry.startedAt) || new Date().toISOString(),
+    updatedAt: normalizeIsoDateTime(rawEntry.updatedAt) || new Date().toISOString(),
+    finishedAt: normalizeIsoDateTime(rawEntry.finishedAt) || "",
+    recentAnswers: Array.isArray(rawEntry.recentAnswers)
+      ? rawEntry.recentAnswers.map(normalizeSelfPracticeAnswerEntry).filter(Boolean).slice(-12)
+      : [],
+  }
+}
+
+function normalizeSelfPracticeRecord(rawEntry) {
+  if (!rawEntry || typeof rawEntry !== "object") return null
+  const learnerCode = normalizeLearnerCode(rawEntry.learnerCode)
+  const name = String(rawEntry.name ?? "").trim()
+  if (!learnerCode || !name) return null
+  const sessions = Array.isArray(rawEntry.sessions)
+    ? rawEntry.sessions.map(normalizeSelfPracticeSessionEntry).filter(Boolean)
+    : []
+  return {
+    id: String(rawEntry.id ?? buildMathCloudResumeDocId(name, learnerCode)),
+    name,
+    learnerCode,
+    nameKey: normalizeParticipantName(name),
+    classId: String(rawEntry.classId ?? "").trim(),
+    className: String(rawEntry.className ?? "").trim(),
+    audience: String(rawEntry.audience ?? "vmbo").trim() || "vmbo",
+    sessions,
+    createdAt: normalizeIsoDateTime(rawEntry.createdAt) || new Date().toISOString(),
+    updatedAt: normalizeIsoDateTime(rawEntry.updatedAt) || new Date().toISOString(),
+  }
+}
+
+function loadSelfPracticeHistory() {
+  try {
+    ensureSharedDataDir()
+    if (!fs.existsSync(selfPracticeHistoryPath)) return new Map()
+    const parsed = JSON.parse(fs.readFileSync(selfPracticeHistoryPath, "utf8"))
+    if (!Array.isArray(parsed)) return new Map()
+    return new Map(
+      parsed
+        .map((entry) => {
+          const normalized = normalizeSelfPracticeRecord(entry)
+          return normalized ? [normalized.id, normalized] : null
+        })
+        .filter(Boolean)
+    )
+  } catch (error) {
+    console.error("Kon zelfstandige oefentoetsen niet laden:", error instanceof Error ? error.message : error)
+    return new Map()
+  }
+}
+
+function persistSelfPracticeHistory() {
+  try {
+    ensureSharedDataDir()
+    fs.writeFileSync(selfPracticeHistoryPath, JSON.stringify([...selfPracticeHistory.values()], null, 2), "utf8")
+  } catch (error) {
+    console.error("Kon zelfstandige oefentoetsen niet opslaan:", error instanceof Error ? error.message : error)
+  }
+}
+
+function summarizeSelfPracticeRecord(record) {
+  if (!record) return null
+  const sessions = Array.isArray(record.sessions) ? [...record.sessions] : []
+  if (!sessions.length) return null
+  const sortedSessions = sessions.sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime())
+  const latestSession = sortedSessions[0] || null
+  const totalAnswered = sortedSessions.reduce((sum, entry) => sum + (Number(entry.answeredCount) || 0), 0)
+  const totalCorrect = sortedSessions.reduce((sum, entry) => sum + (Number(entry.correctCount) || 0), 0)
+  const averageAccuracy = totalAnswered ? Math.round((totalCorrect / Math.max(1, totalAnswered)) * 100) : 0
+  return {
+    sessionCount: sortedSessions.length,
+    totalAnswered,
+    totalCorrect,
+    averageAccuracy,
+    lastPracticedAt: latestSession?.updatedAt || record.updatedAt || "",
+    latestSession: latestSession
+      ? {
+          sessionId: latestSession.sessionId,
+          title: latestSession.title,
+          topicLabel: latestSession.topicLabel,
+          questionFormat: latestSession.questionFormat,
+          status: latestSession.status,
+          questionTotal: latestSession.questionTotal,
+          answeredCount: latestSession.answeredCount,
+          correctCount: latestSession.correctCount,
+          accuracyRate: latestSession.accuracyRate,
+          updatedAt: latestSession.updatedAt,
+          finishedAt: latestSession.finishedAt,
+          recentAnswers: latestSession.recentAnswers || [],
+        }
+      : null,
+    recentSessions: sortedSessions.slice(0, 3).map((session) => ({
+      sessionId: session.sessionId,
+      title: session.title,
+      topicLabel: session.topicLabel,
+      questionFormat: session.questionFormat,
+      status: session.status,
+      questionTotal: session.questionTotal,
+      answeredCount: session.answeredCount,
+      correctCount: session.correctCount,
+      accuracyRate: session.accuracyRate,
+      updatedAt: session.updatedAt,
+      finishedAt: session.finishedAt,
+    })),
+  }
+}
+
+function getSelfPracticeSummary(name = "", learnerCode = "") {
+  const id = buildMathCloudResumeDocId(name, learnerCode)
+  return summarizeSelfPracticeRecord(selfPracticeHistory.get(id) || null)
+}
+
+function buildSelfPracticeCloudDocument(record) {
+  return {
+    fields: {
+      name: firestoreStringField(record.name || ""),
+      learnerCode: firestoreStringField(record.learnerCode || ""),
+      nameKey: firestoreStringField(record.nameKey || ""),
+      updatedAt: firestoreStringField(record.updatedAt || new Date().toISOString()),
+      snapshotJson: firestoreStringField(JSON.stringify(record)),
+    },
+  }
+}
+
+async function writeSelfPracticeRecordToCloud(record) {
+  if (!mathCloudEnabled || !record?.id) return
+  await firestoreRequest(firestoreDocUrl(SELF_PRACTICE_CLOUD_COLLECTION, record.id), {
+    method: "PATCH",
+    body: buildSelfPracticeCloudDocument(record),
+  })
+}
+
+async function loadSelfPracticeHistoryFromCloud() {
+  if (!mathCloudEnabled) return new Map()
+  try {
+    const payload = await firestoreRequest(`${firestoreCollectionUrl(SELF_PRACTICE_CLOUD_COLLECTION)}?pageSize=400`)
+    const documents = Array.isArray(payload?.documents) ? payload.documents : []
+    return new Map(
+      documents
+        .map((document) => {
+          const snapshotJson = readFirestoreString(document, "snapshotJson", "")
+          if (!snapshotJson) return null
+          try {
+            const normalized = normalizeSelfPracticeRecord(JSON.parse(snapshotJson))
+            return normalized ? [normalized.id, normalized] : null
+          } catch (error) {
+            console.error("Kon zelfstandige oefentoets uit Firestore niet parsen:", error instanceof Error ? error.message : error)
+            return null
+          }
+        })
+        .filter(Boolean)
+    )
+  } catch (error) {
+    console.error("Kon zelfstandige oefentoetsen niet uit Firestore laden:", error instanceof Error ? error.message : error)
+    return new Map()
+  }
+}
+
+async function ensureSelfPracticeHistoryHydratedFromCloud() {
+  if (!mathCloudEnabled) return selfPracticeHistory
+  if (selfPracticeCloudHydrationPromise) return selfPracticeCloudHydrationPromise
+
+  selfPracticeCloudHydrationPromise = (async () => {
+    const cloudRecords = await loadSelfPracticeHistoryFromCloud()
+    if (cloudRecords.size) {
+      const mergedRecords = new Map(selfPracticeHistory)
+      for (const [id, record] of cloudRecords.entries()) {
+        const localRecord = mergedRecords.get(id) || null
+        if (!localRecord || new Date(record.updatedAt).getTime() >= new Date(localRecord.updatedAt).getTime()) {
+          mergedRecords.set(id, record)
+        }
+      }
+      selfPracticeHistory = mergedRecords
+      persistSelfPracticeHistory()
+      return selfPracticeHistory
+    }
+
+    if (selfPracticeHistory.size) {
+      await Promise.all(
+        [...selfPracticeHistory.values()].map((record) =>
+          writeSelfPracticeRecordToCloud(record).catch((error) => {
+            console.error("Kon bestaande oefentoetsrecord niet naar Firestore schrijven:", error instanceof Error ? error.message : error)
+          })
+        )
+      )
+    }
+    return selfPracticeHistory
+  })().finally(() => {
+    selfPracticeCloudHydrationPromise = null
+  })
+
+  return selfPracticeCloudHydrationPromise
+}
+
+function upsertSelfPracticeSession(profile = {}, sessionEntry = {}) {
+  const normalizedLearnerCode = normalizeLearnerCode(profile.learnerCode)
+  const trimmedName = String(profile.name ?? "").trim()
+  const normalizedSession = normalizeSelfPracticeSessionEntry(sessionEntry)
+  if (!trimmedName || !isValidLearnerCode(normalizedLearnerCode) || !normalizedSession) return null
+
+  const id = buildMathCloudResumeDocId(trimmedName, normalizedLearnerCode)
+  const existing =
+    selfPracticeHistory.get(id) ||
+    normalizeSelfPracticeRecord({
+      id,
+      name: trimmedName,
+      learnerCode: normalizedLearnerCode,
+      classId: profile.classId || "",
+      className: profile.className || "",
+      audience: profile.audience || "vmbo",
+      sessions: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    })
+  const nextSessions = [
+    normalizedSession,
+    ...((existing?.sessions || []).filter((entry) => entry.sessionId !== normalizedSession.sessionId)),
+  ]
+    .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime())
+    .slice(0, 20)
+  const nextRecord = {
+    ...existing,
+    id,
+    name: trimmedName,
+    learnerCode: normalizedLearnerCode,
+    nameKey: normalizeParticipantName(trimmedName),
+    classId: String(profile.classId || existing?.classId || "").trim(),
+    className: String(profile.className || existing?.className || "").trim(),
+    audience: String(profile.audience || existing?.audience || "vmbo").trim() || "vmbo",
+    sessions: nextSessions,
+    updatedAt: normalizedSession.updatedAt,
+  }
+
+  selfPracticeHistory.set(id, nextRecord)
+  persistSelfPracticeHistory()
+  if (mathCloudEnabled) {
+    writeSelfPracticeRecordToCloud(nextRecord).catch((error) => {
+      console.error("Kon zelfstandige oefentoets niet naar Firestore schrijven:", error instanceof Error ? error.message : error)
+    })
+  }
+  emitClassroomsToHosts()
+  return nextRecord
+}
+
+async function renameSelfPracticeRecord(previousName = "", previousLearnerCode = "", nextName = "", nextLearnerCode = "") {
+  const normalizedNextName = String(nextName ?? "").trim()
+  const normalizedNextLearnerCode = normalizeLearnerCode(nextLearnerCode)
+  if (!normalizedNextName || !isValidLearnerCode(normalizedNextLearnerCode)) return
+
+  const previousId = buildMathCloudResumeDocId(previousName, previousLearnerCode)
+  const nextId = buildMathCloudResumeDocId(normalizedNextName, normalizedNextLearnerCode)
+  if (!previousId || !nextId || previousId === nextId) return
+
+  const existing = selfPracticeHistory.get(previousId) || null
+  if (!existing) return
+
+  const migratedRecord = normalizeSelfPracticeRecord({
+    ...existing,
+    id: nextId,
+    name: normalizedNextName,
+    learnerCode: normalizedNextLearnerCode,
+    nameKey: normalizeParticipantName(normalizedNextName),
+    updatedAt: normalizeIsoDateTime(existing.updatedAt) || new Date().toISOString(),
+  })
+  if (!migratedRecord) return
+
+  selfPracticeHistory.delete(previousId)
+  selfPracticeHistory.set(nextId, migratedRecord)
+  persistSelfPracticeHistory()
+
+  if (!mathCloudEnabled) return
+  await writeSelfPracticeRecordToCloud(migratedRecord)
+  try {
+    await firestoreRequest(firestoreDocUrl(SELF_PRACTICE_CLOUD_COLLECTION, previousId), {
+      method: "DELETE",
+    })
+  } catch (error) {
+    console.error("Kon oud oefentoetsrecord niet uit Firestore verwijderen:", error instanceof Error ? error.message : error)
+  }
+}
+
 function normalizeTeacherAccount(rawEntry) {
   if (!rawEntry || typeof rawEntry !== "object") return null
   const username = normalizeTeacherUsername(rawEntry.username)
@@ -5059,6 +5381,9 @@ function loadClassrooms() {
 let classrooms = loadClassrooms()
 
 if (mathCloudEnabled) {
+  ensureSelfPracticeHistoryHydratedFromCloud().catch((error) => {
+    console.error("Kon oefentoetsbootstrap uit Firestore niet afronden:", error instanceof Error ? error.message : error)
+  })
   ensureClassroomsHydratedFromCloud().catch((error) => {
     console.error("Kon klassenbootstrap uit Firestore niet afronden:", error instanceof Error ? error.message : error)
   })
@@ -5137,6 +5462,7 @@ async function ensureClassroomsHydratedFromCloud() {
   if (classroomsCloudHydrationPromise) return classroomsCloudHydrationPromise
 
   classroomsCloudHydrationPromise = (async () => {
+    await ensureSelfPracticeHistoryHydratedFromCloud()
     const cloudClassrooms = await loadClassroomsFromCloud()
     if (cloudClassrooms.length) {
       classrooms = cloudClassrooms
@@ -5178,6 +5504,7 @@ function classroomSummaries() {
         name: learner.name,
         learnerCode: learner.learnerCode,
         studentNumber: learner.studentNumber || "",
+        selfPracticeSummary: getSelfPracticeSummary(learner.name, learner.learnerCode),
         createdAt: learner.createdAt,
         updatedAt: learner.updatedAt,
       })),
@@ -5211,8 +5538,9 @@ function resolveLearnerPortalProfile(name = "", learnerCode = "") {
 
   const { classroom, learner } = findClassroomLearnerByCredentials(trimmedName, normalizedCode)
   const growthSummary = getMathGrowthSummary(trimmedName, normalizedCode)
+  const selfPracticeSummary = getSelfPracticeSummary(trimmedName, normalizedCode)
 
-  if (!learner && !growthSummary) return null
+  if (!learner && !growthSummary && !selfPracticeSummary) return null
 
   return {
     name: learner?.name || trimmedName,
@@ -5223,6 +5551,7 @@ function resolveLearnerPortalProfile(name = "", learnerCode = "") {
     audience: classroom?.audience || "vmbo",
     canResumeMath: Boolean(growthSummary?.sessionCount),
     growthSummary: growthSummary || null,
+    selfPracticeSummary: selfPracticeSummary || null,
   }
 }
 
@@ -5412,6 +5741,7 @@ async function migrateClassroomLearnerIdentity(previousName = "", previousLearne
   if (changedIdentity && trimmedPreviousName && isValidLearnerCode(normalizedPreviousCode)) {
     await removeMathResumeIndex(trimmedPreviousName, normalizedPreviousCode)
     await renameMathGrowthRecord(trimmedPreviousName, normalizedPreviousCode, trimmedNextName, normalizedNextCode)
+    await renameSelfPracticeRecord(trimmedPreviousName, normalizedPreviousCode, trimmedNextName, normalizedNextCode)
   } else {
     await ensureMathGrowthRecordLoaded(trimmedNextName, normalizedNextCode)
   }
@@ -5533,6 +5863,7 @@ function loadLessonLibrary() {
 
 let lessonLibrary = loadLessonLibrary()
 mathGrowthHistory = loadMathGrowthHistory()
+selfPracticeHistory = loadSelfPracticeHistory()
 
 function persistLessonLibrary() {
   try {
@@ -7692,6 +8023,41 @@ function normalizeComparableText(value) {
   return tokenizeText(value).join(" ").trim()
 }
 
+function stripCommonAnswerLeadIn(value = "") {
+  return normalizeComparableText(value)
+    .replace(/^(het antwoord is|antwoord is|ik denk dat|ik denk|ik gok dat|ik gok|dat is|dit is|the answer is|it is)\s+/i, "")
+    .trim()
+}
+
+function cleanSelfPracticeTopicLabel(value = "") {
+  const segments = String(value || "")
+    .split(/[\n.!?]+/)
+    .map((part) => part.trim().replace(/\s+/g, " "))
+    .filter(Boolean)
+
+  const cleanupRules = [
+    /^(maak|genereer)\s+(voor\s+mij\s+)?(een\s+)?(oefentoets|oefenvragen|oefenopgaven|quiz|flashcards?)\s+(over|van|rond|voor)\s+/i,
+    /^(bereid|help)\s+(me|mij)\s+(goed\s+)?voor\s+(op|voor)\s+/i,
+    /^(ik\s+heb\s+(een\s+)?)?(schriftelijke\s+overhoring|overhoring|toets|proefwerk|mondeling|examen)\s+(over|van)\s+/i,
+    /^(het\s+vak|vak|onderwerp)\s+/i,
+    /^(over|van)\s+/i,
+  ]
+
+  for (const segment of segments) {
+    let cleaned = segment
+    for (const rule of cleanupRules) {
+      cleaned = cleaned.replace(rule, "")
+    }
+    cleaned = cleaned.trim().replace(/\s+/g, " ")
+    if (cleaned.length >= 2) {
+      return cleaned.charAt(0).toUpperCase() + cleaned.slice(1)
+    }
+  }
+
+  const fallback = String(value || "").trim().replace(/\s+/g, " ")
+  return fallback ? fallback.charAt(0).toUpperCase() + fallback.slice(1) : "Algemeen onderwerp"
+}
+
 function extractAnswerCandidates(value) {
   const source = String(value || "").trim()
   if (!source) return []
@@ -7707,8 +8073,8 @@ function extractAnswerCandidates(value) {
 }
 
 function matchesExpectedCandidate(response, candidate) {
-  const normalizedResponse = normalizeComparableText(response)
-  const normalizedCandidate = normalizeComparableText(candidate)
+  const normalizedResponse = stripCommonAnswerLeadIn(response)
+  const normalizedCandidate = stripCommonAnswerLeadIn(candidate)
 
   if (!normalizedResponse || !normalizedCandidate) return false
   if (normalizedResponse === normalizedCandidate) return true
@@ -7716,14 +8082,16 @@ function matchesExpectedCandidate(response, candidate) {
   const responseTokens = tokenizeText(normalizedResponse)
   const candidateTokens = tokenizeText(normalizedCandidate)
 
-  if (responseTokens.length === 1 && candidateTokens.includes(responseTokens[0])) return true
-  if (candidateTokens.length === 1 && responseTokens.includes(candidateTokens[0])) return true
+  if (responseTokens.length === 1 && candidateTokens.length === 2) {
+    const [article, core] = candidateTokens
+    if (["de", "het", "een", "the", "a", "an"].includes(article) && responseTokens[0] === core) return true
+  }
+  if (candidateTokens.length === 1 && responseTokens.length === 2) {
+    const [article, core] = responseTokens
+    if (["de", "het", "een", "the", "a", "an"].includes(article) && candidateTokens[0] === core) return true
+  }
 
-  return (
-    normalizedResponse.length >= 5 &&
-    normalizedCandidate.length >= 5 &&
-    (normalizedResponse.includes(normalizedCandidate) || normalizedCandidate.includes(normalizedResponse))
-  )
+  return false
 }
 
 function evaluateLessonResponseHeuristic(lesson, phase, responseText) {
@@ -10541,6 +10909,9 @@ io.on("connection", (socket) => {
 
     const safeQuestionCount = Math.max(6, Math.min(24, Number(questionCount) || 8))
     const safeQuestionFormat = normalizePracticeQuestionFormat(questionFormat)
+    const sessionId = generateEntityId("self-practice")
+    const topicLabel = cleanSelfPracticeTopicLabel(trimmedTopic)
+    const startedAt = new Date().toISOString()
 
     try {
       const practiceResult = await withTimeout(
@@ -10553,31 +10924,77 @@ io.on("connection", (socket) => {
         AI_ROUND_GENERATION_TIMEOUT_MS
       )
 
+      upsertSelfPracticeSession(profile, {
+        sessionId,
+        title: `Oefentoets over ${topicLabel}`,
+        topic: trimmedTopic,
+        topicLabel,
+        questionFormat: safeQuestionFormat,
+        providerLabel: practiceResult.providerLabel || "AI",
+        questionTotal: practiceResult.questions.length,
+        answeredCount: 0,
+        correctCount: 0,
+        status: "active",
+        startedAt,
+        updatedAt: startedAt,
+        finishedAt: "",
+        recentAnswers: [],
+      })
       socket.emit("player:self-practice:started", {
-        title: `Oefentoets over ${trimmedTopic}`,
+        sessionId,
+        title: `Oefentoets over ${topicLabel}`,
         instructions: "Werk zelfstandig, kijk na elke vraag naar de uitleg en ga daarna verder.",
         topic: trimmedTopic,
+        topicLabel,
         questionFormat: safeQuestionFormat,
         questions: cloneQuestionsForStorage(practiceResult.questions),
         providerLabel: practiceResult.providerLabel || "AI",
+        startedAt,
       })
       return
     } catch (error) {
       console.error("Leerling-oefentoets genereren mislukt:", error instanceof Error ? error.message : error)
     }
 
+    const fallbackQuestions = buildFallbackQuestions({
+      topic: trimmedTopic,
+      questionCount: safeQuestionCount,
+      questionFormat: safeQuestionFormat,
+    }).slice(0, safeQuestionCount)
+    upsertSelfPracticeSession(profile, {
+      sessionId,
+      title: `Oefentoets over ${topicLabel}`,
+      topic: trimmedTopic,
+      topicLabel,
+      questionFormat: safeQuestionFormat,
+      providerLabel: "Lokale reserve",
+      questionTotal: fallbackQuestions.length,
+      answeredCount: 0,
+      correctCount: 0,
+      status: "active",
+      startedAt,
+      updatedAt: startedAt,
+      finishedAt: "",
+      recentAnswers: [],
+    })
     socket.emit("player:self-practice:started", {
-      title: `Oefentoets over ${trimmedTopic}`,
+      sessionId,
+      title: `Oefentoets over ${topicLabel}`,
       instructions: "Werk zelfstandig, kijk na elke vraag naar de uitleg en ga daarna verder.",
       topic: trimmedTopic,
+      topicLabel,
       questionFormat: safeQuestionFormat,
-      questions: buildFallbackQuestions({
-        topic: trimmedTopic,
-        questionCount: safeQuestionCount,
-        questionFormat: safeQuestionFormat,
-      }).slice(0, safeQuestionCount),
+      questions: fallbackQuestions,
       providerLabel: "Lokale reserve",
+      startedAt,
     })
+  })
+
+  socket.on("player:self-practice:progress", async ({ name, learnerCode, session }) => {
+    await ensureClassroomsHydratedFromCloud()
+    const profile = resolveLearnerPortalProfile(name, learnerCode)
+    if (!profile) return
+    upsertSelfPracticeSession(profile, session)
   })
 
   socket.on("player:answer", ({ answer, typedAnswer }) => {

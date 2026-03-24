@@ -294,6 +294,49 @@ function getPracticeQuestionFormatLabel(format = "") {
   return PRACTICE_QUESTION_FORMAT_OPTIONS.find((option) => option.id === normalized)?.label || "Meerkeuze"
 }
 
+function cleanSelfPracticeTopicLabel(value = "") {
+  const segments = String(value || "")
+    .split(/[\n.!?]+/)
+    .map((part) => part.trim().replace(/\s+/g, " "))
+    .filter(Boolean)
+
+  const cleanupRules = [
+    /^(maak|genereer)\s+(voor\s+mij\s+)?(een\s+)?(oefentoets|oefenvragen|oefenopgaven|quiz|flashcards?)\s+(over|van|rond|voor)\s+/i,
+    /^(bereid|help)\s+(me|mij)\s+(goed\s+)?voor\s+(op|voor)\s+/i,
+    /^(ik\s+heb\s+(een\s+)?)?(schriftelijke\s+overhoring|overhoring|toets|proefwerk|mondeling|examen)\s+(over|van)\s+/i,
+    /^(het\s+vak|vak|onderwerp)\s+/i,
+    /^(over|van)\s+/i,
+  ]
+
+  for (const segment of segments) {
+    let cleaned = segment
+    for (const rule of cleanupRules) {
+      cleaned = cleaned.replace(rule, "")
+    }
+    cleaned = cleaned.trim().replace(/\s+/g, " ")
+    if (cleaned.length >= 2) {
+      return cleaned.charAt(0).toUpperCase() + cleaned.slice(1)
+    }
+  }
+
+  const fallback = String(value || "").trim().replace(/\s+/g, " ")
+  return fallback ? fallback.charAt(0).toUpperCase() + fallback.slice(1) : "Algemeen onderwerp"
+}
+
+function getSelfPracticeResultHeading(accuracy = 0) {
+  if (accuracy >= 80) return "Sterk gedaan"
+  if (accuracy >= 60) return "Goed op weg"
+  if (accuracy >= 40) return "Nog even oefenen"
+  return "Hier mag nog extra aandacht naartoe"
+}
+
+function getSelfPracticeResultFeedback(accuracy = 0) {
+  if (accuracy >= 80) return "Je beheerst dit onderwerp al behoorlijk goed. Herhaal vooral de lastigste vragen nog één keer."
+  if (accuracy >= 60) return "De basis staat er, maar een paar onderdelen verdienen nog extra oefening."
+  if (accuracy >= 40) return "Je bent gestart, maar dit onderwerp vraagt nog wat extra herhaling en uitleg."
+  return "Deze oefentoets laat zien dat je hier nog duidelijk extra mee moet oefenen voordat je er zeker in bent."
+}
+
 function tokenizeComparableText(value = "") {
   return String(value || "")
     .toLowerCase()
@@ -307,6 +350,12 @@ function tokenizeComparableText(value = "") {
 
 function normalizeComparableText(value = "") {
   return tokenizeComparableText(value).join(" ").trim()
+}
+
+function stripCommonAnswerLeadIn(value = "") {
+  return normalizeComparableText(value)
+    .replace(/^(het antwoord is|antwoord is|ik denk dat|ik denk|ik gok dat|ik gok|dat is|dit is|the answer is|it is)\s+/i, "")
+    .trim()
 }
 
 function extractAcceptedAnswerCandidates(value = "") {
@@ -324,23 +373,24 @@ function extractAcceptedAnswerCandidates(value = "") {
 }
 
 function matchesAcceptedAnswer(response = "", candidate = "") {
-  const normalizedResponse = normalizeComparableText(response)
-  const normalizedCandidate = normalizeComparableText(candidate)
+  const normalizedResponse = stripCommonAnswerLeadIn(response)
+  const normalizedCandidate = stripCommonAnswerLeadIn(candidate)
 
   if (!normalizedResponse || !normalizedCandidate) return false
   if (normalizedResponse === normalizedCandidate) return true
 
   const responseTokens = tokenizeComparableText(normalizedResponse)
   const candidateTokens = tokenizeComparableText(normalizedCandidate)
+  if (responseTokens.length === 1 && candidateTokens.length === 2) {
+    const [article, core] = candidateTokens
+    if (["de", "het", "een", "the", "a", "an"].includes(article) && responseTokens[0] === core) return true
+  }
+  if (candidateTokens.length === 1 && responseTokens.length === 2) {
+    const [article, core] = responseTokens
+    if (["de", "het", "een", "the", "a", "an"].includes(article) && candidateTokens[0] === core) return true
+  }
 
-  if (responseTokens.length === 1 && candidateTokens.includes(responseTokens[0])) return true
-  if (candidateTokens.length === 1 && responseTokens.includes(candidateTokens[0])) return true
-
-  return (
-    normalizedResponse.length >= 5 &&
-    normalizedCandidate.length >= 5 &&
-    (normalizedResponse.includes(normalizedCandidate) || normalizedCandidate.includes(normalizedResponse))
-  )
+  return false
 }
 
 function createSelfPracticeSession(payload = {}) {
@@ -354,20 +404,52 @@ function createSelfPracticeSession(payload = {}) {
     : []
 
   return {
-    id: `self-practice-${Date.now().toString(36)}`,
+    id: String(payload.sessionId || `self-practice-${Date.now().toString(36)}`),
     title: String(payload.title || "Oefentoets").trim() || "Oefentoets",
     instructions:
       String(payload.instructions || "Werk zelfstandig, kijk na elke vraag naar de uitleg en ga daarna verder.").trim() ||
       "Werk zelfstandig, kijk na elke vraag naar de uitleg en ga daarna verder.",
     topic: String(payload.topic || "").trim(),
+    topicLabel: cleanSelfPracticeTopicLabel(payload.topicLabel || payload.topic || ""),
     providerLabel: String(payload.providerLabel || "Lesson Battle").trim() || "Lesson Battle",
     questionFormat: String(payload.questionFormat || "multiple-choice").trim() || "multiple-choice",
     questions,
     currentIndex: 0,
     currentResult: null,
     answers: [],
-    startedAt: new Date().toISOString(),
+    startedAt: String(payload.startedAt || new Date().toISOString()),
     finishedAt: "",
+  }
+}
+
+function buildSelfPracticeProgressPayload(session) {
+  if (!session?.id) return null
+  return {
+    sessionId: session.id,
+    title: String(session.title || "Oefentoets").trim() || "Oefentoets",
+    topic: String(session.topic || "").trim(),
+    topicLabel: cleanSelfPracticeTopicLabel(session.topicLabel || session.topic || ""),
+    questionFormat: String(session.questionFormat || "multiple-choice").trim() || "multiple-choice",
+    providerLabel: String(session.providerLabel || "Lesson Battle").trim() || "Lesson Battle",
+    questionTotal: Array.isArray(session.questions) ? session.questions.length : 0,
+    answeredCount: Array.isArray(session.answers) ? session.answers.length : 0,
+    correctCount: Array.isArray(session.answers) ? session.answers.filter((entry) => entry?.correct).length : 0,
+    status: session.finishedAt ? "finished" : "active",
+    startedAt: String(session.startedAt || new Date().toISOString()),
+    updatedAt: new Date().toISOString(),
+    finishedAt: session.finishedAt || "",
+    recentAnswers: Array.isArray(session.answers)
+      ? session.answers.slice(-10).map((entry) => ({
+          questionId: entry.questionId,
+          prompt: entry.prompt,
+          questionType: entry.questionType || "multiple-choice",
+          answerText: entry.answerText || "",
+          correctAnswer: entry.correctAnswer || "",
+          correct: Boolean(entry.correct),
+          answeredAt: entry.answeredAt,
+          explanation: entry.explanation || "",
+        }))
+      : [],
   }
 }
 
@@ -1063,7 +1145,12 @@ function HostPage() {
             classroom.sectionName,
             classroom.audience,
             classroom.ownerDisplayName,
-            ...(classroom.learners || []).flatMap((learner) => [learner.name, learner.learnerCode, learner.studentNumber]),
+            ...(classroom.learners || []).flatMap((learner) => [
+              learner.name,
+              learner.learnerCode,
+              learner.studentNumber,
+              learner.selfPracticeSummary?.latestSession?.topicLabel,
+            ]),
           ]
             .filter(Boolean)
             .join(" "),
@@ -1991,11 +2078,35 @@ function HostPage() {
     }
     downloadCsvFile(
       `lessonbattle-klassen-${slugifyFilePart(hostSession.roomCode || "school") || "export"}.csv`,
-      ["Klas", "Sectie", "Doelgroep", "Eigenaar", "Leerling", "Leerlingnummer", "Leerlingcode", "Aangemaakt", "Laatst bijgewerkt"],
+      [
+        "Klas",
+        "Sectie",
+        "Doelgroep",
+        "Eigenaar",
+        "Leerling",
+        "Leerlingnummer",
+        "Leerlingcode",
+        "Laatste oefentoets",
+        "Oefentoets status",
+        "Oefentoets score",
+        "Oefentoets laatst actief",
+        "Aangemaakt",
+        "Laatst bijgewerkt",
+      ],
       filteredClassrooms.flatMap((classroom) => {
         const learners = classroom.learners?.length
           ? classroom.learners
-          : [{ id: `${classroom.id}-empty`, name: "", studentNumber: "", learnerCode: "", createdAt: "", updatedAt: "" }]
+          : [
+              {
+                id: `${classroom.id}-empty`,
+                name: "",
+                studentNumber: "",
+                learnerCode: "",
+                selfPracticeSummary: null,
+                createdAt: "",
+                updatedAt: "",
+              },
+            ]
         return learners.map((learner) => [
           classroom.name,
           classroom.sectionName || "",
@@ -2004,6 +2115,10 @@ function HostPage() {
           learner.name || "",
           learner.studentNumber || "",
           learner.learnerCode || "",
+          learner.selfPracticeSummary?.latestSession?.topicLabel || "",
+          learner.selfPracticeSummary?.latestSession?.status === "finished" ? "Afgerond" : learner.selfPracticeSummary?.latestSession ? "Bezig" : "",
+          learner.selfPracticeSummary?.latestSession ? `${learner.selfPracticeSummary.latestSession.correctCount || 0}/${learner.selfPracticeSummary.latestSession.answeredCount || 0}` : "",
+          learner.selfPracticeSummary?.lastPracticedAt ? formatHistoryDate(learner.selfPracticeSummary.lastPracticedAt) : "",
           learner.createdAt ? formatHistoryDate(learner.createdAt) : "",
           learner.updatedAt ? formatHistoryDate(learner.updatedAt) : "",
         ])
@@ -3547,6 +3662,11 @@ function PlayerPage() {
     setChosenAnswer(Number.isInteger(answerIndex) ? answerIndex : null)
     setAnswerLocked(true)
     setStatus(nextSession.currentResult?.correct ? "Goed gedaan. Kijk naar de uitleg en ga daarna verder." : "Kijk naar de uitleg en probeer de volgende vraag daarna opnieuw.")
+    socket.emit("player:self-practice:progress", {
+      name: name.trim(),
+      learnerCode,
+      session: buildSelfPracticeProgressPayload(nextSession),
+    })
   }
 
   const goToNextSelfPracticeQuestion = () => {
@@ -3558,6 +3678,11 @@ function PlayerPage() {
     setAnswerLocked(false)
     if (nextSession.finishedAt) {
       setStatus("Je oefentoets is afgerond. Kies gerust een nieuw onderwerp.")
+      socket.emit("player:self-practice:progress", {
+        name: name.trim(),
+        learnerCode,
+        session: buildSelfPracticeProgressPayload(nextSession),
+      })
       return
     }
     setStatus("Nieuwe vraag klaar. Werk rustig verder.")
@@ -3770,7 +3895,7 @@ function PlayerPage() {
             <h1>{selfPracticeSession.title}</h1>
             <p className="muted">{status}</p>
             <div className="lesson-library-meta">
-              <span>{selfPracticeSession.topic || "Algemeen onderwerp"}</span>
+              <span>{selfPracticeSession.topicLabel || cleanSelfPracticeTopicLabel(selfPracticeSession.topic)}</span>
               <span>{getPracticeQuestionFormatLabel(selfPracticeSession.questionFormat)}</span>
               <span>{selfPracticeSession.providerLabel}</span>
             </div>
@@ -3805,10 +3930,12 @@ function PlayerPage() {
             {selfPracticeIsFinished ? (
               <div className="results-card">
                 <span className="eyebrow">Oefentoets afgerond</span>
-                <h3>Netjes gewerkt</h3>
+                <h3>{getSelfPracticeResultHeading(selfPracticeAccuracy)}</h3>
                 <p>
-                  Je maakte {selfPracticeAnsweredCount} vragen over <strong>{selfPracticeSession.topic}</strong> en had {selfPracticeCorrectCount} goed.
+                  Je maakte {selfPracticeAnsweredCount} vragen over{" "}
+                  <strong>{selfPracticeSession.topicLabel || cleanSelfPracticeTopicLabel(selfPracticeSession.topic)}</strong> en had {selfPracticeCorrectCount} goed.
                 </p>
+                <p>{getSelfPracticeResultFeedback(selfPracticeAccuracy)}</p>
                 <div className="score-breakdown">
                   <span className="score-chip">Score {selfPracticeAccuracy}%</span>
                   <span className="score-chip">{getPracticeQuestionFormatLabel(selfPracticeSession.questionFormat)}</span>
@@ -4016,6 +4143,12 @@ function PlayerPage() {
                     </p>
                     {learnerPortal.growthSummary?.lastPracticedAt ? (
                       <span className="pill">Laatst geoefend: {formatHistoryDate(learnerPortal.growthSummary.lastPracticedAt)}</span>
+                    ) : null}
+                    {learnerPortal.selfPracticeSummary?.latestSession ? (
+                      <span className="pill">
+                        Laatste oefentoets: {learnerPortal.selfPracticeSummary.latestSession.topicLabel} ·{" "}
+                        {learnerPortal.selfPracticeSummary.latestSession.accuracyRate || 0}%
+                      </span>
                     ) : null}
                   </div>
                   <div className="lesson-box accent-box practice-box">
@@ -6261,45 +6394,85 @@ function ClassesSection({
                         learnerCode: learner.learnerCode,
                         studentNumber: learner.studentNumber,
                       }
+                      const latestSelfPractice = learner.selfPracticeSummary?.latestSession || null
                       return (
-                        <div className="classroom-learner-row" key={learner.id}>
-                          <input
-                            className="math-code-input"
-                            onChange={(event) =>
-                              onClassroomLearnerEditChange(learner.id, (current) => ({ ...current, name: event.target.value }))
-                            }
-                            value={learnerEditDraft.name}
-                          />
-                          <input
-                            className="math-code-input"
-                            inputMode="numeric"
-                            maxLength={4}
-                            onChange={(event) =>
-                              onClassroomLearnerEditChange(learner.id, (current) => ({
-                                ...current,
-                                learnerCode: event.target.value.replace(/\D/g, "").slice(0, 4),
-                              }))
-                            }
-                            value={learnerEditDraft.learnerCode}
-                          />
-                          <input
-                            className="math-code-input"
-                            onChange={(event) =>
-                              onClassroomLearnerEditChange(learner.id, (current) => ({
-                                ...current,
-                                studentNumber: event.target.value.replace(/\s+/g, "").slice(0, 12),
-                              }))
-                            }
-                            placeholder="Leerlingnummer"
-                            value={learnerEditDraft.studentNumber}
-                          />
-                          <button className="button-ghost" onClick={() => onClassroomLearnerSave(classroom.id, learner.id)} type="button">
-                            Bewaar
-                          </button>
-                          <button className="button-ghost" onClick={() => onClassroomLearnerDelete(classroom.id, learner.id)} type="button">
-                            Verwijder
-                          </button>
-                        </div>
+                        <article className="classroom-learner-card" key={learner.id}>
+                          <div className="classroom-learner-row">
+                            <input
+                              className="math-code-input"
+                              onChange={(event) =>
+                                onClassroomLearnerEditChange(learner.id, (current) => ({ ...current, name: event.target.value }))
+                              }
+                              value={learnerEditDraft.name}
+                            />
+                            <input
+                              className="math-code-input"
+                              inputMode="numeric"
+                              maxLength={4}
+                              onChange={(event) =>
+                                onClassroomLearnerEditChange(learner.id, (current) => ({
+                                  ...current,
+                                  learnerCode: event.target.value.replace(/\D/g, "").slice(0, 4),
+                                }))
+                              }
+                              value={learnerEditDraft.learnerCode}
+                            />
+                            <input
+                              className="math-code-input"
+                              onChange={(event) =>
+                                onClassroomLearnerEditChange(learner.id, (current) => ({
+                                  ...current,
+                                  studentNumber: event.target.value.replace(/\s+/g, "").slice(0, 12),
+                                }))
+                              }
+                              placeholder="Leerlingnummer"
+                              value={learnerEditDraft.studentNumber}
+                            />
+                            <button className="button-ghost" onClick={() => onClassroomLearnerSave(classroom.id, learner.id)} type="button">
+                              Bewaar
+                            </button>
+                            <button className="button-ghost" onClick={() => onClassroomLearnerDelete(classroom.id, learner.id)} type="button">
+                              Verwijder
+                            </button>
+                          </div>
+                          <div className="classroom-learner-progress">
+                            <strong>Zelfstandige oefentoetsen</strong>
+                            {latestSelfPractice ? (
+                              <>
+                                <div className="classroom-learner-progress-row">
+                                  <span>{latestSelfPractice.topicLabel || "Oefentoets"}</span>
+                                  <span>{latestSelfPractice.status === "finished" ? "Afgerond" : "Bezig"}</span>
+                                  <span>
+                                    {latestSelfPractice.correctCount || 0}/{latestSelfPractice.answeredCount || 0} goed
+                                  </span>
+                                  <span>{latestSelfPractice.accuracyRate || 0}% score</span>
+                                  <span>{learner.selfPracticeSummary?.lastPracticedAt ? formatHistoryDate(learner.selfPracticeSummary.lastPracticedAt) : "Nog geen datum"}</span>
+                                </div>
+                                {(learner.selfPracticeSummary?.recentSessions || []).length > 1 ? (
+                                  <div className="classroom-learner-progress-list">
+                                    {learner.selfPracticeSummary.recentSessions.slice(1).map((session) => (
+                                      <span className="score-chip" key={`${learner.id}-${session.sessionId}`}>
+                                        {session.topicLabel} · {session.accuracyRate || 0}%
+                                      </span>
+                                    ))}
+                                  </div>
+                                ) : null}
+                                {latestSelfPractice.recentAnswers?.length ? (
+                                  <div className="classroom-learner-answer-list">
+                                    {latestSelfPractice.recentAnswers.slice(-3).reverse().map((entry) => (
+                                      <div className={`classroom-learner-answer-row ${entry.correct ? "is-correct" : "is-wrong"}`} key={`${learner.id}-${entry.questionId}-${entry.answeredAt}`}>
+                                        <strong>{entry.correct ? "Goed" : "Fout"}</strong>
+                                        <span>{entry.prompt}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : null}
+                              </>
+                            ) : (
+                              <span className="muted">Nog geen zelfstandige oefentoets geregistreerd.</span>
+                            )}
+                          </div>
+                        </article>
                       )
                     })}
                     {!classroom.learners?.length ? <p className="math-task-preview">Nog geen leerlingen in deze klas.</p> : null}

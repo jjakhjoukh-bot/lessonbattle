@@ -3182,10 +3182,72 @@ body::after {
   gap: 10px;
 }
 
+.classroom-learner-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
 .classroom-learner-row {
   display: grid;
   grid-template-columns: minmax(0, 1.4fr) minmax(120px, 0.8fr) minmax(140px, 1fr) auto auto;
   gap: 10px;
+}
+
+.classroom-learner-progress {
+  display: grid;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.classroom-learner-progress strong {
+  font-size: 0.95rem;
+}
+
+.classroom-learner-progress-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.classroom-learner-progress-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.classroom-learner-answer-list {
+  display: grid;
+  gap: 6px;
+}
+
+.classroom-learner-answer-row {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.classroom-learner-answer-row strong {
+  font-size: 0.82rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.classroom-learner-answer-row.is-correct strong {
+  color: #8ff5b2;
+}
+
+.classroom-learner-answer-row.is-wrong strong {
+  color: #ffb1b1;
 }
 
 .classroom-import-button {
