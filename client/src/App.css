@@ -818,6 +818,12 @@ body::after {
   justify-content: flex-end;
 }
 
+.host-qr-trigger {
+  min-height: 42px;
+  padding-inline: 16px;
+  white-space: nowrap;
+}
+
 .host-profile-shell {
   position: relative;
 }
@@ -1600,6 +1606,7 @@ body::after {
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.05);
   color: #ddedff;
+  transition: background 180ms ease, box-shadow 180ms ease;
 }
 
 .option-list li span {
@@ -1610,6 +1617,16 @@ body::after {
   border-radius: 10px;
   background: rgba(255, 166, 77, 0.18);
   color: #ffd79b;
+}
+
+.option-list li.is-correct {
+  background: rgba(88, 214, 141, 0.18);
+  box-shadow: inset 0 0 0 1px rgba(134, 247, 184, 0.34);
+}
+
+.option-list li.is-correct span {
+  background: rgba(88, 214, 141, 0.22);
+  color: #e7ffef;
 }
 
 .board-card {
@@ -2038,6 +2055,14 @@ body::after {
   color: var(--muted);
 }
 
+.battle-waiting-hint {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--muted);
+}
+
 .practice-next-button {
   margin-top: 4px;
 }
@@ -2439,6 +2464,10 @@ body::after {
   box-shadow: 0 32px 80px rgba(0, 0, 0, 0.42);
 }
 
+.battle-presenter-stage {
+  width: min(1480px, 100%);
+}
+
 .presenter-topbar,
 .presenter-bottombar {
   display: flex;
@@ -2468,6 +2497,10 @@ body::after {
   min-height: 0;
 }
 
+.battle-presenter-main {
+  align-items: stretch;
+}
+
 .presenter-slide-card,
 .presenter-side-card {
   border-radius: 28px;
@@ -2486,6 +2519,10 @@ body::after {
     radial-gradient(circle at top right, rgba(61, 214, 208, 0.22), transparent 28%),
     radial-gradient(circle at bottom left, rgba(255, 157, 67, 0.18), transparent 22%),
     linear-gradient(160deg, rgba(20, 32, 50, 0.96), rgba(9, 13, 24, 0.98));
+}
+
+.battle-question-stage {
+  padding: 28px;
 }
 
 .presenter-slide-copy {
@@ -2554,6 +2591,90 @@ body::after {
 .presenter-hint {
   color: var(--muted);
   font-size: 0.95rem;
+}
+
+.qr-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 61;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.qr-stage-frame {
+  position: relative;
+  z-index: 1;
+  width: min(820px, 100%);
+  display: grid;
+  gap: 18px;
+  padding: 28px;
+  border-radius: 30px;
+  background:
+    linear-gradient(180deg, rgba(20, 32, 53, 0.97), rgba(8, 13, 24, 0.99)),
+    rgba(10, 15, 27, 0.98);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 32px 80px rgba(0, 0, 0, 0.42);
+}
+
+.qr-overlay-head,
+.qr-overlay-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.qr-overlay-head h2,
+.qr-overlay-head p,
+.qr-overlay-link span,
+.qr-overlay-link strong {
+  margin: 0;
+}
+
+.qr-overlay-head h2 {
+  margin-top: 8px;
+  font-family: "Avenir Next Condensed", "Trebuchet MS", sans-serif;
+  font-size: clamp(2rem, 4vw, 3.2rem);
+  line-height: 0.95;
+}
+
+.qr-overlay-head p {
+  margin-top: 10px;
+  color: var(--muted);
+}
+
+.qr-overlay-main {
+  display: grid;
+  place-items: center;
+  padding: 22px;
+  border-radius: 26px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.qr-overlay-image {
+  width: min(70vw, 520px);
+  max-width: 100%;
+  aspect-ratio: 1;
+  padding: 18px;
+  border-radius: 28px;
+  background: white;
+  object-fit: contain;
+}
+
+.qr-overlay-link {
+  display: grid;
+  gap: 6px;
+}
+
+.qr-overlay-link span {
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.qr-overlay-link strong {
+  font-size: 0.96rem;
+  word-break: break-all;
 }
 
 .lesson-stage-head {
@@ -3019,6 +3140,13 @@ body::after {
   gap: 18px;
 }
 
+.lobby-join-strip {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+  gap: 18px;
+  align-items: center;
+}
+
 .lobby-card h3,
 .lobby-card p {
   margin: 0;
@@ -3037,6 +3165,46 @@ body::after {
   font-size: clamp(2rem, 6vw, 4rem);
   letter-spacing: 0.22em;
   font-weight: 800;
+}
+
+.session-qr-card {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 112px 1fr;
+  gap: 16px;
+  align-items: center;
+  padding: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.05);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.session-qr-image {
+  width: 112px;
+  height: 112px;
+  padding: 10px;
+  border-radius: 20px;
+  background: white;
+  object-fit: contain;
+}
+
+.session-qr-copy {
+  display: grid;
+  gap: 6px;
+}
+
+.session-qr-copy strong,
+.session-qr-copy span {
+  margin: 0;
+}
+
+.session-qr-copy span {
+  color: var(--muted);
+  font-size: 0.95rem;
+  line-height: 1.5;
 }
 
 .lobby-stats {
@@ -3348,6 +3516,24 @@ body::after {
   margin: 0;
 }
 
+.prefilled-session-code {
+  display: grid;
+  gap: 6px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.prefilled-session-code strong {
+  font-size: 1.35rem;
+  letter-spacing: 0.16em;
+}
+
+.prefilled-session-code span {
+  color: rgba(237, 241, 255, 0.78);
+}
+
 .join-home-note {
   margin: 0;
   padding: 14px 16px;
@@ -3413,6 +3599,17 @@ body::after {
   .host-start-summary,
   .host-support-actions {
     grid-template-columns: 1fr;
+  }
+
+  .lobby-join-strip,
+  .qr-overlay-head,
+  .qr-overlay-foot {
+    grid-template-columns: 1fr;
+  }
+
+  .qr-overlay-head,
+  .qr-overlay-foot {
+    display: grid;
   }
 
   .host-header {
@@ -3491,8 +3688,15 @@ body::after {
   .presenter-pills,
   .presenter-actions,
   .battle-race-banner,
-  .presentation-panel-actions {
+  .presentation-panel-actions,
+  .lobby-join-strip,
+  .qr-overlay-head,
+  .qr-overlay-foot {
     display: grid;
+  }
+
+  .session-qr-card {
+    grid-template-columns: 1fr;
   }
 
   .battle-race-banner {

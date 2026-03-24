@@ -26,6 +26,7 @@ const MATH_LEVEL_OPTIONS = ["0f", "1f", "2f", "3f", "4f"]
 const PLAYER_JOIN_MODE_CLASSROOM = "classroom"
 const PLAYER_JOIN_MODE_HOME_MATH = "home-math"
 const SUPPORT_MAILTO_LINK = "mailto:?subject=Vraag%20over%20Lesson%20Battle&body=Hallo,%0D%0A%0D%0AIk%20heb%20een%20vraag%20over%20Lesson%20Battle:%0D%0A%0D%0A"
+const QR_IMAGE_SERVICE_BASE = "https://api.qrserver.com/v1/create-qr-code/"
 const DEFAULT_HOST_SESSION = {
   authenticated: false,
   username: "",
@@ -147,6 +148,32 @@ function lessonPackageFromFlags({ includePracticeTest, includePresentation }) {
 function createPlayerSessionId() {
   if (window.crypto?.randomUUID) return window.crypto.randomUUID()
   return `player-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+function readJoinSessionCodeFromUrl() {
+  const params = new URLSearchParams(window.location.search)
+  return String(params.get("sessionCode") || params.get("roomCode") || "")
+    .trim()
+    .toUpperCase()
+}
+
+function buildClassroomJoinUrl(roomCode = "") {
+  const normalizedRoomCode = String(roomCode || "").trim().toUpperCase()
+  if (!normalizedRoomCode) return ""
+  const url = new URL("/join", window.location.origin)
+  url.searchParams.set("sessionCode", normalizedRoomCode)
+  return url.toString()
+}
+
+function buildQrCodeImageUrl(value = "", size = 240) {
+  if (!value) return ""
+  const url = new URL(QR_IMAGE_SERVICE_BASE)
+  url.searchParams.set("data", value)
+  url.searchParams.set("size", `${size}x${size}`)
+  url.searchParams.set("margin", "0")
+  url.searchParams.set("ecc", "M")
+  url.searchParams.set("format", "svg")
+  return url.toString()
 }
 
 function formatHistoryDate(value) {
@@ -599,6 +626,7 @@ function HostPage() {
   const [managementPanel, setManagementPanel] = useState("learners")
   const [hostMenuOpen, setHostMenuOpen] = useState(false)
   const [hostProfileOpen, setHostProfileOpen] = useState(false)
+  const [joinQrOpen, setJoinQrOpen] = useState(false)
   const [showAdvancedOptions, setShowAdvancedOptions] = useState(false)
   const [topic, setTopic] = useState("")
   const [audience, setAudience] = useState("vmbo")
@@ -731,6 +759,38 @@ function HostPage() {
               ? `${game.totalQuestions} vragen klaar`
               : "Battle nog niet gestart"
         : "Nog geen live sessie"
+  const classroomJoinUrl = useMemo(
+    () => buildClassroomJoinUrl(hostSession.roomCode),
+    [hostSession.roomCode]
+  )
+  const classroomJoinQrUrl = useMemo(
+    () => buildQrCodeImageUrl(classroomJoinUrl, 240),
+    [classroomJoinUrl]
+  )
+  const classroomJoinQrLargeUrl = useMemo(
+    () => buildQrCodeImageUrl(classroomJoinUrl, 720),
+    [classroomJoinUrl]
+  )
+  const battleAnswerWindowExpired =
+    game.mode === "battle" &&
+    game.source !== "practice" &&
+    game.question &&
+    game.status === "live" &&
+    (timeLeft === 0 || Boolean(hostInsights?.answerWindowExpired))
+  const canRevealBattleAnswer =
+    game.mode === "battle" &&
+    game.source !== "practice" &&
+    game.question &&
+    game.status === "live" &&
+    (Boolean(hostInsights?.allAnswered) || battleAnswerWindowExpired)
+  const battleRevealHelperText =
+    game.mode !== "battle" || game.source === "practice" || !game.question || game.status !== "live"
+      ? ""
+      : hostInsights?.allAnswered
+        ? "Iedereen heeft geantwoord. Je kunt nu het juiste antwoord tonen."
+        : battleAnswerWindowExpired
+          ? "De tijd is voorbij. Je kunt nu het juiste antwoord tonen."
+          : `${hostInsights?.answeredCount || 0}/${hostInsights?.totalPlayers || 0} leerlingen hebben geantwoord. Het juiste antwoord blijft nog verborgen.`
   const recentSessionEntries = useMemo(() => sessionHistory.slice(0, 3), [sessionHistory])
   const lessonLibraryAudiences = useMemo(
     () => [...new Set(lessonLibrary.map((lesson) => String(lesson.audience || "").trim()).filter(Boolean))].sort(),
@@ -1017,8 +1077,12 @@ function HostPage() {
         setStatus(
           payload.mode === "lesson"
             ? "Alle deelnemers hebben gereageerd. Je kunt naar de volgende lesstap."
-            : "Alle deelnemers hebben geantwoord. Je kunt naar de volgende vraag."
+            : "Alle deelnemers hebben geantwoord. Je kunt nu het juiste antwoord tonen."
         )
+        return
+      }
+      if (payload?.mode === "battle" && payload?.canRevealAnswer && payload?.answerWindowExpired) {
+        setStatus("De tijd is voorbij. Je kunt nu het juiste antwoord tonen.")
       }
     }
     const onError = ({ message }) => {
@@ -1267,12 +1331,17 @@ function HostPage() {
   )
 
   const openPresenterMode = async () => {
-    if (game.mode !== "lesson" || !game.lesson?.presentation?.currentSlide) {
-      setStatus("Bouw eerst een les of presentatieset met dia's voordat je digibordmodus opent.")
+    const hasLessonBoard = game.mode === "lesson" && Boolean(game.lesson?.presentation?.currentSlide)
+    const hasBattleBoard = game.mode === "battle" && Boolean(game.question)
+
+    if (!hasLessonBoard && !hasBattleBoard) {
+      setStatus("Zet eerst een lesdia of battlevraag klaar voordat je digibordmodus opent.")
       return
     }
 
     setPresenterMode(true)
+    setHostProfileOpen(false)
+    setJoinQrOpen(false)
 
     if (document.fullscreenElement) {
       setPresenterFullscreen(true)
@@ -1284,7 +1353,7 @@ function HostPage() {
       setPresenterFullscreen(true)
     } catch (error) {
       console.warn("Fullscreen kon niet worden gestart:", error)
-      setStatus("Presentatie geopend. Schermvullend werd niet gestart, maar de digibordweergave staat wel open.")
+      setStatus("Digibordweergave geopend. Schermvullend werd niet gestart, maar de weergave staat wel open.")
       setPresenterFullscreen(false)
     }
   }
@@ -1332,6 +1401,15 @@ function HostPage() {
     if (game.mode !== "battle" || !game.question) return
     setBattleDurationDraft(game.question.durationSec || game.questionDurationSec || 20)
   }, [game.mode, game.question?.id, game.question?.durationSec, game.questionDurationSec])
+
+  useEffect(() => {
+    if (!presenterMode) return
+    const hasLessonBoard = game.mode === "lesson" && Boolean(game.lesson?.presentation?.currentSlide)
+    const hasBattleBoard = game.mode === "battle" && Boolean(game.question)
+    if (!hasLessonBoard && !hasBattleBoard) {
+      closePresenterMode()
+    }
+  }, [game.lesson?.presentation?.currentSlide?.id, game.mode, game.question?.id, presenterMode])
 
   const preparedTeamNames = useMemo(
     () =>
@@ -1383,6 +1461,7 @@ function HostPage() {
     setHostWorkspace(nextWorkspace)
     setHostMenuOpen(false)
     setHostProfileOpen(false)
+    setJoinQrOpen(false)
     if (nextWorkspace === "home") return
     if (nextWorkspace === "management") return
     selectSessionMode(nextWorkspace)
@@ -1407,6 +1486,9 @@ function HostPage() {
     socket.emit("host:logout")
     window.sessionStorage.removeItem(HOST_SESSION_KEY)
     setHostSession(DEFAULT_HOST_SESSION)
+    setJoinQrOpen(false)
+    setPresenterMode(false)
+    setPresenterFullscreen(false)
     setLoginForm({ username: rememberedUsername || "", password: "" })
     setTeacherAccounts([])
     setStatus("Je bent uitgelogd.")
@@ -1933,6 +2015,19 @@ function HostPage() {
               <span className="pill">Sessiecode {hostSession.roomCode || "-----"}</span>
               <span className="pill">{liveStatusText}</span>
               <span className="pill">{onlinePlayerCount} online</span>
+              {hostSession.roomCode ? (
+                <button
+                  className="button-ghost host-qr-trigger"
+                  onClick={() => {
+                    setJoinQrOpen(true)
+                    setHostProfileOpen(false)
+                    setHostMenuOpen(false)
+                  }}
+                  type="button"
+                >
+                  Toon leerling-QR
+                </button>
+              ) : null}
               <div className="host-profile-shell">
                 <button
                   aria-expanded={hostProfileOpen}
@@ -2346,7 +2441,7 @@ function HostPage() {
             {game.mode === "battle" && game.source !== "practice" && game.question && game.status === "live" ? (
               <button
                 className="button-secondary"
-                disabled={!hostSession.authenticated}
+                disabled={!hostSession.authenticated || !canRevealBattleAnswer}
                 onClick={showBattleAnswer}
                 type="button"
               >
@@ -2505,6 +2600,9 @@ function HostPage() {
               <QuestionCard question={game.question} />
               {game.mode === "battle" && game.source !== "practice" ? (
                 <BattleQuestionControls
+                  answerWindowExpired={Boolean(battleAnswerWindowExpired)}
+                  answeredCount={hostInsights?.answeredCount || 0}
+                  canReveal={canRevealBattleAnswer}
                   duration={battleDurationDraft}
                   finalSprintActive={game.finalSprintActive}
                   onDurationChange={setBattleDurationDraft}
@@ -2512,8 +2610,10 @@ function HostPage() {
                   onStart={startBattleQuestion}
                   questionMultiplier={game.questionMultiplier}
                   status={game.status}
+                  totalPlayers={hostInsights?.totalPlayers || 0}
                 />
               ) : null}
+              {battleRevealHelperText ? <p className="battle-waiting-hint">{battleRevealHelperText}</p> : null}
               <HostInsightsCard insights={hostInsights} />
             </>
           ) : game.status === "finished" ? (
@@ -2521,6 +2621,9 @@ function HostPage() {
           ) : (
             <LobbyCard
               groupModeEnabled={liveGroupModeEnabled}
+              joinQrUrl={classroomJoinQrUrl}
+              joinUrl={classroomJoinUrl}
+              onOpenQr={() => setJoinQrOpen(true)}
               roomCode={hostSession.roomCode}
               teams={teams}
               players={players}
@@ -2730,12 +2833,35 @@ function HostPage() {
           onNext={goToNextStep}
         />
       ) : null}
+
+      {presenterMode && game.mode === "battle" && game.question ? (
+        <BattlePresenterOverlay
+          canReveal={canRevealBattleAnswer}
+          game={game}
+          insights={hostInsights}
+          onClose={closePresenterMode}
+          onNext={goToNextStep}
+          onReveal={showBattleAnswer}
+          onStart={startBattleQuestion}
+          timeLeft={timeLeft}
+        />
+      ) : null}
+
+      {joinQrOpen && hostSession.roomCode ? (
+        <SessionQrOverlay
+          joinUrl={classroomJoinUrl}
+          qrCodeUrl={classroomJoinQrLargeUrl}
+          roomCode={hostSession.roomCode}
+          onClose={() => setJoinQrOpen(false)}
+        />
+      ) : null}
     </main>
   )
 }
 
 function PlayerPage() {
   const { players, teams, leaderboard, game } = useQuizState()
+  const joinSessionCodeFromUrl = useMemo(() => readJoinSessionCodeFromUrl(), [])
   const [playerSession, setPlayerSession] = useState(() => {
     try {
       const stored = window.localStorage.getItem(PLAYER_SESSION_KEY)
@@ -2766,13 +2892,16 @@ function PlayerPage() {
   })
   const [name, setName] = useState(playerSession.name || "")
   const [teamId, setTeamId] = useState(playerSession.teamId || "")
-  const [roomCode, setRoomCode] = useState(playerSession.roomCode || "")
+  const [roomCode, setRoomCode] = useState(joinSessionCodeFromUrl || playerSession.roomCode || "")
   const [playerId, setPlayerId] = useState(playerSession.playerId || "")
   const [playerSessionId, setPlayerSessionId] = useState(playerSession.playerSessionId || createPlayerSessionId())
   const [learnerCode, setLearnerCode] = useState(playerSession.learnerCode || "")
-  const [joinMode, setJoinMode] = useState(playerSession.joinMode || PLAYER_JOIN_MODE_CLASSROOM)
+  const [joinMode, setJoinMode] = useState(
+    joinSessionCodeFromUrl ? PLAYER_JOIN_MODE_CLASSROOM : playerSession.joinMode || PLAYER_JOIN_MODE_CLASSROOM
+  )
+  const [joinCodeLockedFromUrl, setJoinCodeLockedFromUrl] = useState(Boolean(joinSessionCodeFromUrl))
   const [roomPreview, setRoomPreview] = useState({ valid: false, teams: [], intakeTotal: 0, mode: "battle", groupModeEnabled: false })
-  const [joined, setJoined] = useState(Boolean(playerSession.joined))
+  const [joined, setJoined] = useState(Boolean(joinSessionCodeFromUrl ? false : playerSession.joined))
   const [homeMathSession, setHomeMathSession] = useState(null)
   const [result, setResult] = useState(null)
   const [chosenAnswer, setChosenAnswer] = useState(null)
@@ -2781,6 +2910,7 @@ function PlayerPage() {
   const [lessonAnswer, setLessonAnswer] = useState("")
   const [lessonResult, setLessonResult] = useState(null)
   const [status, setStatus] = useState("Vul je gegevens in en sluit aan.")
+  const nameInputRef = useRef(null)
   const timeLeft = useQuestionCountdown(game)
   const liveResult = game.mode === "math" ? game.math?.lastResult || null : result
   const isLocalHomeMath = Boolean(homeMathSession)
@@ -2807,6 +2937,22 @@ function PlayerPage() {
       setTeamId("")
     }
   }, [game.groupModeEnabled, game.mode, joined, roomPreview, teamId, teams])
+
+  useEffect(() => {
+    if (!joinSessionCodeFromUrl) return
+    setJoinMode(PLAYER_JOIN_MODE_CLASSROOM)
+    setJoinCodeLockedFromUrl(true)
+    setRoomCode(joinSessionCodeFromUrl)
+    setJoined(false)
+    setPlayerId("")
+    setTeamId("")
+    setHomeMathSession(null)
+    setResult(null)
+    setChosenAnswer(null)
+    setAnswerLocked(false)
+    setStatus("Sessiecode is al ingevuld via de QR-code. Vul alleen je naam in.")
+    window.requestAnimationFrame(() => nameInputRef.current?.focus())
+  }, [joinSessionCodeFromUrl])
 
   useEffect(() => {
     const onJoined = (nextMode = roomPreview.mode) => {
@@ -2975,9 +3121,11 @@ function PlayerPage() {
     setStatus(
       joinMode === PLAYER_JOIN_MODE_HOME_MATH
         ? "Vul je naam en leerlingcode in om thuis verder te gaan."
-        : "Vul je gegevens in en sluit aan."
+        : joinCodeLockedFromUrl
+          ? "Sessiecode is al ingevuld via de QR-code. Vul alleen je naam in."
+          : "Vul je gegevens in en sluit aan."
     )
-  }, [joinMode, joined])
+  }, [joinCodeLockedFromUrl, joinMode, joined])
 
   useEffect(() => {
     const onConnect = () => {
@@ -3152,12 +3300,18 @@ function PlayerPage() {
 
             <div className="mode-switch join-mode-switch">
               <button
-                className={`mode-chip ${joinMode === PLAYER_JOIN_MODE_CLASSROOM ? "is-active" : ""}`}
-                onClick={() => {
+              className={`mode-chip ${joinMode === PLAYER_JOIN_MODE_CLASSROOM ? "is-active" : ""}`}
+              onClick={() => {
                   setJoinMode(PLAYER_JOIN_MODE_CLASSROOM)
+                  setJoinCodeLockedFromUrl(Boolean(joinSessionCodeFromUrl))
+                  if (joinSessionCodeFromUrl) setRoomCode(joinSessionCodeFromUrl)
                   setHomeMathSession(null)
                   setJoined(false)
-                  setStatus("Vul je gegevens in en sluit aan.")
+                  setStatus(
+                    joinSessionCodeFromUrl
+                      ? "Sessiecode is al ingevuld via de QR-code. Vul alleen je naam in."
+                      : "Vul je gegevens in en sluit aan."
+                  )
                 }}
                 type="button"
               >
@@ -3165,7 +3319,10 @@ function PlayerPage() {
               </button>
               <button
                 className={`mode-chip ${isHomeMathJoin ? "is-active" : ""}`}
-                onClick={() => setJoinMode(PLAYER_JOIN_MODE_HOME_MATH)}
+                onClick={() => {
+                  setJoinMode(PLAYER_JOIN_MODE_HOME_MATH)
+                  setJoinCodeLockedFromUrl(false)
+                }}
                 type="button"
               >
                 Thuis rekenen
@@ -3174,7 +3331,14 @@ function PlayerPage() {
 
             <label className="field">
               <span>Jouw naam</span>
-              <input value={name} onChange={(event) => setName(event.target.value)} placeholder="Bijv. Amina" />
+              <input
+                autoCapitalize="words"
+                autoComplete="nickname"
+                ref={nameInputRef}
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                placeholder="Bijv. Amina"
+              />
             </label>
 
             <label className="field">
@@ -3244,14 +3408,21 @@ function PlayerPage() {
           <div className="mode-switch join-mode-switch">
             <button
               className={`mode-chip ${joinMode === PLAYER_JOIN_MODE_CLASSROOM ? "is-active" : ""}`}
-              onClick={() => setJoinMode(PLAYER_JOIN_MODE_CLASSROOM)}
+              onClick={() => {
+                setJoinMode(PLAYER_JOIN_MODE_CLASSROOM)
+                setJoinCodeLockedFromUrl(Boolean(joinSessionCodeFromUrl))
+                if (joinSessionCodeFromUrl) setRoomCode(joinSessionCodeFromUrl)
+              }}
               type="button"
             >
               In de klas
             </button>
             <button
               className={`mode-chip ${isHomeMathJoin ? "is-active" : ""}`}
-              onClick={() => setJoinMode(PLAYER_JOIN_MODE_HOME_MATH)}
+              onClick={() => {
+                setJoinMode(PLAYER_JOIN_MODE_HOME_MATH)
+                setJoinCodeLockedFromUrl(false)
+              }}
               type="button"
             >
               Thuis rekenen
@@ -3260,7 +3431,14 @@ function PlayerPage() {
 
           <label className="field">
             <span>Jouw naam</span>
-            <input value={name} onChange={(event) => setName(event.target.value)} placeholder="Bijv. Amina" />
+            <input
+              autoCapitalize="words"
+              autoComplete="nickname"
+              ref={nameInputRef}
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder="Bijv. Amina"
+            />
           </label>
 
           {joinGroupModeEnabled ? (
@@ -3280,11 +3458,18 @@ function PlayerPage() {
           {needsRoomCode ? (
             <label className="field">
               <span>Sessiecode</span>
-              <input
-                value={roomCode}
-                onChange={(event) => setRoomCode(event.target.value.toUpperCase())}
-                placeholder="Bijv. AB12C"
-              />
+              {joinCodeLockedFromUrl ? (
+                <div className="prefilled-session-code">
+                  <strong>{roomCode || "-----"}</strong>
+                  <span>Deze sessiecode is al ingevuld via de QR-code.</span>
+                </div>
+              ) : (
+                <input
+                  value={roomCode}
+                  onChange={(event) => setRoomCode(event.target.value.toUpperCase())}
+                  placeholder="Bijv. AB12C"
+                />
+              )}
             </label>
           ) : null}
 
@@ -3315,6 +3500,11 @@ function PlayerPage() {
               {isHomeMathJoin
                 ? "Vul je naam en leerlingcode in. Dan zoeken we jouw rekenroute automatisch op."
                 : "Vul hier de 4-cijferige code in die je van de docent hebt gekregen."}
+            </p>
+          ) : null}
+          {joinCodeLockedFromUrl && !needsLearnerCode ? (
+            <p className="muted learner-code-note">
+              De sessiecode staat al klaar via de QR-code. Je hoeft dus alleen nog je naam in te vullen.
             </p>
           ) : null}
           {!isHomeMathJoin ? (
@@ -3959,7 +4149,55 @@ function LearnerCodeCard({ learnerCode, roomCode }) {
   )
 }
 
-function QuestionCard({ question, compact = false, showOptions = true }) {
+function SessionQrPreviewCard({ roomCode, qrCodeUrl, onOpen }) {
+  if (!roomCode || !qrCodeUrl) return null
+
+  return (
+    <button className="session-qr-card" onClick={onOpen} type="button">
+      <img alt={`QR-code voor sessie ${roomCode}`} className="session-qr-image" src={qrCodeUrl} />
+      <div className="session-qr-copy">
+        <strong>Scan en start direct</strong>
+        <span>Leerlingen komen meteen op de leerlingpagina met de sessiecode al ingevuld.</span>
+      </div>
+    </button>
+  )
+}
+
+function SessionQrOverlay({ roomCode, qrCodeUrl, joinUrl, onClose }) {
+  if (!roomCode || !qrCodeUrl || !joinUrl) return null
+
+  return (
+    <div className="qr-overlay">
+      <button aria-label="Sluit leerling-QR" className="presenter-backdrop" onClick={onClose} type="button" />
+      <section className="qr-stage-frame">
+        <div className="qr-overlay-head">
+          <div>
+            <span className="eyebrow">Leerlingen laten instappen</span>
+            <h2>Scan de QR-code</h2>
+            <p>De sessiecode staat al klaar. Leerlingen hoeven alleen nog hun naam in te vullen.</p>
+          </div>
+          <span className="pill">Sessiecode {roomCode}</span>
+        </div>
+        <div className="qr-overlay-main">
+          <img alt={`QR-code voor sessie ${roomCode}`} className="qr-overlay-image" src={qrCodeUrl} />
+        </div>
+        <div className="qr-overlay-foot">
+          <div className="qr-overlay-link">
+            <span>Directe link</span>
+            <strong>{joinUrl}</strong>
+          </div>
+          <div className="presenter-actions">
+            <button className="button-ghost" onClick={onClose} type="button">
+              Sluit QR
+            </button>
+          </div>
+        </div>
+      </section>
+    </div>
+  )
+}
+
+function QuestionCard({ question, compact = false, showOptions = true, revealCorrect = false }) {
   const prompt = getQuestionPrompt(question)
 
   return (
@@ -3973,7 +4211,14 @@ function QuestionCard({ question, compact = false, showOptions = true }) {
         {showOptions ? (
           <ul className="option-list">
             {question.options.map((option, index) => (
-              <li key={`${question.id}-preview-${index}`}>
+              <li
+                className={
+                  revealCorrect && typeof question.correctIndex === "number" && index === question.correctIndex
+                    ? "is-correct"
+                    : ""
+                }
+                key={`${question.id}-preview-${index}`}
+              >
                 <span>{index + 1}</span>
                 {option}
               </li>
@@ -4431,6 +4676,77 @@ function LessonPresenterOverlay({ lesson, insights, onPrevious, onNext, onClose 
   )
 }
 
+function BattlePresenterOverlay({ game, insights, timeLeft, onClose, onStart, onReveal, onNext, canReveal = false }) {
+  if (!game?.question) return null
+
+  const showCorrectAnswer = game.status === "revealed"
+  const answeredCount = insights?.answeredCount ?? 0
+  const totalPlayers = insights?.totalPlayers ?? 0
+  const answerWindowExpired = game.status === "live" && (timeLeft === 0 || Boolean(insights?.answerWindowExpired))
+  const liveHint = showCorrectAnswer
+    ? "Het juiste antwoord is nu zichtbaar op het digibord."
+    : insights?.allAnswered
+      ? "Iedereen heeft geantwoord. Het juiste antwoord kan nu veilig getoond worden."
+      : answerWindowExpired
+        ? "De tijd is voorbij. Het juiste antwoord mag nu getoond worden."
+        : "Je ziet hier alleen de vraag en antwoordopties. Het juiste antwoord blijft nog verborgen."
+
+  return (
+    <div className="presenter-overlay battle-presenter-overlay">
+      <button aria-label="Sluit digibordweergave" className="presenter-backdrop" onClick={onClose} type="button" />
+      <section className="presenter-stage-frame battle-presenter-stage">
+        <div className="presenter-topbar">
+          <div>
+            <span className="eyebrow">Battle op het digibord</span>
+            <h2>Vraag op het digibord</h2>
+          </div>
+          <div className="presenter-pills">
+            <span className="pill">
+              {game.status === "preview"
+                ? `Preview ${game.currentQuestionIndex + 1} / ${game.totalQuestions}`
+                : game.status === "revealed"
+                  ? `Antwoord ${game.currentQuestionIndex + 1} / ${game.totalQuestions}`
+                  : `Vraag ${game.currentQuestionIndex + 1} / ${game.totalQuestions}`}
+            </span>
+            <span className="pill">{game.status === "live" ? `${timeLeft}s` : game.status === "revealed" ? "Antwoord" : "Klaar"}</span>
+            <span className="pill">{answeredCount}/{totalPlayers} geantwoord</span>
+          </div>
+        </div>
+
+        <div className="presenter-main battle-presenter-main">
+          <article className="presenter-slide-card battle-question-stage">
+            <QuestionCard question={game.question} revealCorrect={showCorrectAnswer} />
+          </article>
+        </div>
+
+        <div className="presenter-bottombar">
+          <span className="presenter-hint">{liveHint}</span>
+          <div className="presenter-actions">
+            {game.status === "preview" ? (
+              <button className="button-secondary" onClick={onStart} type="button">
+                Start vraag
+              </button>
+            ) : null}
+            {game.status === "live" ? (
+              <button className="button-secondary" disabled={!canReveal} onClick={onReveal} type="button">
+                Toon antwoord
+              </button>
+            ) : null}
+            {game.status === "revealed" ? (
+              <button className="button-secondary" onClick={onNext} type="button">
+                Volgende vraag
+              </button>
+            ) : null}
+            <button className="button-ghost" onClick={onClose} type="button">
+              Sluit digibordweergave
+            </button>
+          </div>
+        </div>
+      </section>
+    </div>
+  )
+}
+
 function LessonPromptComposer({
   text,
   expectedAnswer,
@@ -4469,7 +4785,19 @@ function LessonPromptComposer({
   )
 }
 
-function BattleQuestionControls({ status, duration, onDurationChange, onStart, onReveal, questionMultiplier, finalSprintActive }) {
+function BattleQuestionControls({
+  status,
+  duration,
+  onDurationChange,
+  onStart,
+  onReveal,
+  questionMultiplier,
+  finalSprintActive,
+  canReveal = false,
+  answeredCount = 0,
+  totalPlayers = 0,
+  answerWindowExpired = false,
+}) {
   const durationPresets = [10, 20, 30, 45, 60]
 
   return (
@@ -4524,8 +4852,14 @@ function BattleQuestionControls({ status, duration, onDurationChange, onStart, o
         </>
       ) : status === "live" ? (
         <div className="battle-preview-actions">
-          <p>De vraag staat live. Je ziet hieronder direct het juiste antwoord en de antwoordverdeling.</p>
-          <button className="button-secondary" onClick={onReveal} type="button">
+          <p>
+            {canReveal
+              ? answerWindowExpired
+                ? "De tijd is voorbij. Je kunt nu het juiste antwoord tonen."
+                : "Iedereen heeft geantwoord. Je kunt nu het juiste antwoord tonen."
+              : `${answeredCount}/${totalPlayers} leerlingen hebben geantwoord. Het juiste antwoord blijft verborgen tot iedereen klaar is of de tijd voorbij is.`}
+          </p>
+          <button className="button-secondary" disabled={!canReveal} onClick={onReveal} type="button">
             Toon antwoord
           </button>
         </div>
@@ -5832,16 +6166,31 @@ function ProgressBar({ current, total, timeLeft, duration }) {
   )
 }
 
-function LobbyCard({ roomCode, teams, players, onlineCount, groupModeEnabled = false }) {
+function LobbyCard({
+  roomCode,
+  teams,
+  players,
+  onlineCount,
+  groupModeEnabled = false,
+  joinQrUrl = "",
+  joinUrl = "",
+  onOpenQr = null,
+}) {
   return (
     <div className="lobby-card">
       <span className="eyebrow">Wachtruimte</span>
       <h3>Open de site en voer de sessiecode in</h3>
-      <div className="lobby-code">{roomCode || "-----"}</div>
+      <div className="lobby-join-strip">
+        <div className="lobby-code">{roomCode || "-----"}</div>
+        {joinQrUrl && onOpenQr ? (
+          <SessionQrPreviewCard onOpen={onOpenQr} qrCodeUrl={joinQrUrl} roomCode={roomCode} />
+        ) : null}
+      </div>
       <p>
         Open <strong>/join</strong>, voer de code in en vul je naam in.
         {groupModeEnabled ? " Een groep kiezen is mogelijk, maar niet verplicht." : " Deze sessie werkt individueel, dus een groep kiezen hoeft niet."}
         {" "}Zodra de ronde start, verschijnen de vragen hier live.
+        {joinUrl ? " Met de QR-code staat de sessiecode al automatisch klaar." : ""}
       </p>
       <div className="lobby-stats">
         <div className="result-tile">

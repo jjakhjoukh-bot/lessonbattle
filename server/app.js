@@ -4413,6 +4413,27 @@ function buildPlayerAnswerResultPayload(room, player, answerRecord, question) {
   }
 }
 
+function getBattleQuestionDurationSec(room, question = currentQuestion(room)) {
+  return Math.max(5, Number(question?.durationSec) || Number(room?.game?.questionDurationSec) || 20)
+}
+
+function hasBattleAnswerWindowExpired(room, question = currentQuestion(room)) {
+  if (!room || room.game?.mode !== "battle" || !question) return false
+  const startTime = room.game.questionStartedAt ? new Date(room.game.questionStartedAt).getTime() : 0
+  if (!startTime) return false
+  return Date.now() >= startTime + getBattleQuestionDurationSec(room, question) * 1000
+}
+
+function canRevealBattleAnswer(room, question = currentQuestion(room)) {
+  if (!room || room.game?.mode !== "battle" || room.game?.source === "practice" || room.game?.status !== "live" || !question) {
+    return false
+  }
+
+  const totalPlayers = getOnlinePlayers(room).length
+  const allAnswered = totalPlayers > 0 && room.answeredPlayers.size >= totalPlayers
+  return allAnswered || hasBattleAnswerWindowExpired(room, question)
+}
+
 function emitBattleRevealResults(room, question) {
   if (!question) return
 
@@ -5933,6 +5954,7 @@ function buildHostInsights(room) {
   const answeredCount = room.answeredPlayers.size
   const totalPlayers = onlinePlayers.length
   const allAnswered = totalPlayers > 0 && answeredCount >= totalPlayers
+  const answerWindowExpired = hasBattleAnswerWindowExpired(room, question)
   const race = getTeamRaceSnapshot(room)
   const distribution = (question.options || []).map((option, index) => {
     const playersForOption = room.players.filter((player) => room.playerAnswers.get(player.id)?.answerIndex === index)
@@ -5957,6 +5979,8 @@ function buildHostInsights(room) {
     answeredCount,
     totalPlayers,
     allAnswered,
+    answerWindowExpired,
+    canRevealAnswer: canRevealBattleAnswer(room, question),
     canAdvance: Boolean(question) && (allAnswered || room.game.status === "revealed"),
     correctIndex: question ? question.correctIndex : null,
     correctOption: question ? question.options[question.correctIndex] : null,
@@ -9456,6 +9480,12 @@ io.on("connection", (socket) => {
     if (!room || room.game.mode !== "battle" || room.game.source === "practice") return
     const question = currentQuestion(room)
     if (!question) return
+    if (!canRevealBattleAnswer(room, question)) {
+      socket.emit("host:error", {
+        message: "Wacht tot iedereen geantwoord heeft of tot de tijd voorbij is voordat je het juiste antwoord toont.",
+      })
+      return
+    }
 
     room.game = {
       ...room.game,
