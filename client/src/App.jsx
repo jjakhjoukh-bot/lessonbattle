@@ -75,6 +75,12 @@ const HOST_WORKSPACE_OPTIONS = [
   },
 ]
 
+const PRACTICE_QUESTION_FORMAT_OPTIONS = [
+  { id: "multiple-choice", label: "Meerkeuze" },
+  { id: "typed", label: "Flashcards / typen" },
+  { id: "mixed", label: "Gemengd" },
+]
+
 const MANAGEMENT_PANEL_OPTIONS = [
   {
     id: "learners",
@@ -280,6 +286,11 @@ function buildAnswerStatusText(payload) {
     return `Goed! +${payload.awardedPoints || 0} punten.${multiplierText}`
   }
   return "Niet correct. Kijk naar de uitleg en ga daarna verder."
+}
+
+function getPracticeQuestionFormatLabel(format = "") {
+  const normalized = String(format || "").trim().toLowerCase()
+  return PRACTICE_QUESTION_FORMAT_OPTIONS.find((option) => option.id === normalized)?.label || "Meerkeuze"
 }
 
 function formatMathLevelLabel(level) {
@@ -642,6 +653,7 @@ function HostPage() {
   const [lessonDurationMinutes, setLessonDurationMinutes] = useState(45)
   const [presentationSlideCount, setPresentationSlideCount] = useState(6)
   const [practiceQuestionCount, setPracticeQuestionCount] = useState(8)
+  const [practiceQuestionFormat, setPracticeQuestionFormat] = useState("multiple-choice")
   const [includeVideoPlan, setIncludeVideoPlan] = useState(false)
   const [lessonPromptDraft, setLessonPromptDraft] = useState("")
   const [lessonExpectedAnswerDraft, setLessonExpectedAnswerDraft] = useState("")
@@ -1536,6 +1548,7 @@ function HostPage() {
       durationMinutes: lessonDurationMinutes,
       slideCount: presentationSlideCount,
       practiceQuestionCount,
+      practiceQuestionFormat,
       includePracticeTest,
       includePresentation,
       includeVideoPlan: includePresentation && includeVideoPlan,
@@ -2319,8 +2332,12 @@ function HostPage() {
                       </label>
                       <label className="field">
                         <span>Vorm</span>
-                        <select value="oefentoets" disabled>
-                          <option value="oefentoets">Oefentoets</option>
+                        <select value={practiceQuestionFormat} onChange={(event) => setPracticeQuestionFormat(event.target.value)}>
+                          {PRACTICE_QUESTION_FORMAT_OPTIONS.map((option) => (
+                            <option key={option.id} value={option.id}>
+                              {option.label}
+                            </option>
+                          ))}
                         </select>
                       </label>
                     </>
@@ -2906,6 +2923,7 @@ function PlayerPage() {
   const [result, setResult] = useState(null)
   const [chosenAnswer, setChosenAnswer] = useState(null)
   const [answerLocked, setAnswerLocked] = useState(false)
+  const [practiceTextAnswer, setPracticeTextAnswer] = useState("")
   const [mathAnswer, setMathAnswer] = useState("")
   const [lessonAnswer, setLessonAnswer] = useState("")
   const [lessonResult, setLessonResult] = useState(null)
@@ -3007,6 +3025,9 @@ function PlayerPage() {
       if (Number.isInteger(payload?.answerIndex)) {
         setChosenAnswer(payload.answerIndex)
       }
+      if (typeof payload?.answerText === "string") {
+        setPracticeTextAnswer(payload.answerText)
+      }
       setResult(payload)
       setAnswerLocked(true)
       setStatus(buildAnswerStatusText(payload))
@@ -3082,6 +3103,7 @@ function PlayerPage() {
     setResult(null)
     setChosenAnswer(null)
     setAnswerLocked(false)
+    setPracticeTextAnswer("")
     setMathAnswer("")
     setLessonAnswer("")
     setLessonResult(null)
@@ -3259,6 +3281,7 @@ function PlayerPage() {
     game.status === "revealed" &&
     game.question &&
     typeof game.question.correctIndex === "number"
+  const isTypedPracticeQuestion = isPracticeTestLive && game.question?.questionType === "typed"
   const canAnswerLiveQuestion =
     joined &&
     game.mode === "battle" &&
@@ -3266,7 +3289,9 @@ function PlayerPage() {
     game.question &&
     !battleRevealVisible &&
     !result
-  const canSubmitAnswer = joined && game.question && (canAnswerLiveQuestion || isPracticeTestLive) && !answerLocked
+  const canSubmitQuestion = joined && game.question && (canAnswerLiveQuestion || isPracticeTestLive) && !answerLocked
+  const canSubmitChoiceAnswer = canSubmitQuestion && !isTypedPracticeQuestion
+  const canSubmitTypedAnswer = canSubmitQuestion && isTypedPracticeQuestion && Boolean(practiceTextAnswer.trim())
   const canSubmitMathAnswer =
     joined &&
     isMathLive &&
@@ -3611,35 +3636,77 @@ function PlayerPage() {
               <ProgressBar current={game.currentQuestionIndex + 1} total={game.totalQuestions} timeLeft={timeLeft} duration={game.questionDurationSec} />
               <QuestionCard question={game.question} compact={false} showOptions={false} />
               {game.status === "live" || isPracticeTestLive || battleRevealVisible || result ? (
-                <div className="answer-grid">
-                  {game.question.options.map((option, index) => {
-                    const isCorrectChoice =
-                      (result && typeof result.correctIndex === "number" && index === result.correctIndex) ||
-                      (battleRevealVisible && index === game.question.correctIndex)
-                    const isWrongChosen =
-                      Boolean(result && result.correct === false && index === chosenAnswer) ||
-                      Boolean(battleRevealVisible && chosenAnswer === index && index !== game.question.correctIndex)
-
-                    return (
-                      <button
-                        key={`${game.question.id}-${index}`}
-                        className={`answer-button ${chosenAnswer === index ? "is-selected" : ""} ${isCorrectChoice ? "is-correct" : ""} ${isWrongChosen ? "is-wrong" : ""}`}
-                        disabled={!canSubmitAnswer}
-                        onClick={() => {
-                          if (!canSubmitAnswer) return
-                          setChosenAnswer(index)
+                isTypedPracticeQuestion ? (
+                  <div className="typed-practice-panel">
+                    <div className="typed-practice-card">
+                      <span className="visual-label">Flashcard</span>
+                      <strong>Typ het antwoord zelf</strong>
+                      <p>
+                        Deze oefenvraag werkt zonder antwoordknoppen. Typ je antwoord en druk op Enter.
+                      </p>
+                    </div>
+                    <div className="typed-practice-form">
+                      <input
+                        className="typed-practice-input"
+                        disabled={!canSubmitQuestion}
+                        onChange={(event) => setPracticeTextAnswer(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key !== "Enter") return
+                          event.preventDefault()
+                          if (!canSubmitTypedAnswer) return
                           setAnswerLocked(true)
-                          setStatus("Antwoord verstuurd. Wacht heel even op de bevestiging.")
-                          socket.emit("player:answer", { answer: index })
+                          setStatus("Antwoord wordt nagekeken. Wacht heel even.")
+                          socket.emit("player:answer", { typedAnswer: practiceTextAnswer })
+                        }}
+                        placeholder={game.question.answerPlaceholder || "Typ hier je antwoord"}
+                        value={practiceTextAnswer}
+                      />
+                      <button
+                        className="button-primary typed-practice-submit"
+                        disabled={!canSubmitTypedAnswer}
+                        onClick={() => {
+                          if (!canSubmitTypedAnswer) return
+                          setAnswerLocked(true)
+                          setStatus("Antwoord wordt nagekeken. Wacht heel even.")
+                          socket.emit("player:answer", { typedAnswer: practiceTextAnswer })
                         }}
                         type="button"
                       >
-                        <span>{String.fromCharCode(65 + index)}</span>
-                        <strong>{option}</strong>
+                        Check antwoord
                       </button>
-                    )
-                  })}
-                </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="answer-grid">
+                    {game.question.options.map((option, index) => {
+                      const isCorrectChoice =
+                        (result && typeof result.correctIndex === "number" && index === result.correctIndex) ||
+                        (battleRevealVisible && index === game.question.correctIndex)
+                      const isWrongChosen =
+                        Boolean(result && result.correct === false && index === chosenAnswer) ||
+                        Boolean(battleRevealVisible && chosenAnswer === index && index !== game.question.correctIndex)
+
+                      return (
+                        <button
+                          key={`${game.question.id}-${index}`}
+                          className={`answer-button ${chosenAnswer === index ? "is-selected" : ""} ${isCorrectChoice ? "is-correct" : ""} ${isWrongChosen ? "is-wrong" : ""}`}
+                          disabled={!canSubmitChoiceAnswer}
+                          onClick={() => {
+                            if (!canSubmitChoiceAnswer) return
+                            setChosenAnswer(index)
+                            setAnswerLocked(true)
+                            setStatus("Antwoord verstuurd. Wacht heel even op de bevestiging.")
+                            socket.emit("player:answer", { answer: index })
+                          }}
+                          type="button"
+                        >
+                          <span>{String.fromCharCode(65 + index)}</span>
+                          <strong>{option}</strong>
+                        </button>
+                      )
+                    })}
+                  </div>
+                )
               ) : (
                 <div className="answer-result">
                   <strong>De vraag wordt zo gestart</strong>
@@ -3681,6 +3748,12 @@ function PlayerPage() {
                 <div className={`answer-result ${result.correct ? "ok" : "bad"}`}>
                   <strong>{result.correct ? `Correct • +${result.awardedPoints || 0}` : "Niet correct"}</strong>
                   <p>{result.explanation}</p>
+                  {result.questionType === "typed" ? (
+                    <div className="typed-answer-summary">
+                      <span>Jouw antwoord: {result.answerText || "geen antwoord"}</span>
+                      <span>Goed antwoord: {result.correctAnswer || "niet beschikbaar"}</span>
+                    </div>
+                  ) : null}
                   {result.correct ? (
                     <div className="score-breakdown">
                       <span className="score-chip">Basis {result.basePoints || 0}</span>
@@ -4199,6 +4272,8 @@ function SessionQrOverlay({ roomCode, qrCodeUrl, joinUrl, onClose }) {
 
 function QuestionCard({ question, compact = false, showOptions = true, revealCorrect = false }) {
   const prompt = getQuestionPrompt(question)
+  const isTypedQuestion = question?.questionType === "typed"
+  const typedAnswerPreview = question?.displayAnswer || question?.acceptedAnswers?.[0] || ""
 
   return (
     <article className={`question-card ${compact ? "compact" : ""}`}>
@@ -4208,7 +4283,13 @@ function QuestionCard({ question, compact = false, showOptions = true, revealCor
       <div className="question-body">
         <span className="category-badge">{question.category}</span>
         <h3>{prompt}</h3>
-        {showOptions ? (
+        {showOptions && isTypedQuestion ? (
+          <div className="typed-question-preview">
+            <strong>Leerling typt zelf het antwoord</strong>
+            <p>{question.answerPlaceholder || "Typ hier je antwoord"}</p>
+            {revealCorrect && typedAnswerPreview ? <span>Voorbeeldantwoord: {typedAnswerPreview}</span> : null}
+          </div>
+        ) : showOptions ? (
           <ul className="option-list">
             {question.options.map((option, index) => (
               <li
@@ -4263,7 +4344,10 @@ function LessonSummaryCard({ lesson, onSave, onStartPractice }) {
           <div className="lesson-box accent-box practice-box">
             <strong>Oefentoets</strong>
             <p>{lesson.practiceTest.title}</p>
-            <span className="pill">{lesson.practiceTest.questionCount} vragen klaar</span>
+            <div className="lesson-library-meta">
+              <span>{lesson.practiceTest.questions?.length || lesson.practiceTest.questionCount || 0} vragen klaar</span>
+              <span>{getPracticeQuestionFormatLabel(lesson.practiceTest.questionFormat)}</span>
+            </div>
             <div className="lesson-box-actions">
               {onStartPractice ? (
                 <button className="button-secondary" onClick={onStartPractice} type="button">

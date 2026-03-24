@@ -4159,11 +4159,16 @@ function sanitizeQuestion(question, viewer = "host", room = null) {
   if (!question) return null
   const prompt = String(question.prompt || question.question_text || "").trim()
   const imagePrompt = question.imagePrompt || prompt
+  const questionType = normalizePracticeQuestionFormat(question.questionType)
+  const displayAnswer =
+    String(question.displayAnswer || question.options?.[question.correctIndex] || question.acceptedAnswers?.[0] || "").trim()
   const baseQuestion = {
     id: question.id,
     prompt,
     question_text: prompt,
     options: [...(question.options || [])],
+    questionType,
+    answerPlaceholder: String(question.answerPlaceholder || "Typ hier je antwoord").trim() || "Typ hier je antwoord",
     category: question.category,
     imagePrompt,
     imageAlt: question.imageAlt || prompt,
@@ -4185,6 +4190,7 @@ function sanitizeQuestion(question, viewer = "host", room = null) {
       ...baseQuestion,
       explanation: question.explanation,
       correctIndex: question.correctIndex,
+      displayAnswer,
     }
   }
 
@@ -4192,6 +4198,8 @@ function sanitizeQuestion(question, viewer = "host", room = null) {
     ...baseQuestion,
     explanation: question.explanation,
     correctIndex: question.correctIndex,
+    displayAnswer,
+    acceptedAnswers: [...(question.acceptedAnswers || [])],
   }
 }
 
@@ -4399,10 +4407,16 @@ function getBattleAnswerScoring(room, elapsedMs, durationSec) {
 }
 
 function buildPlayerAnswerResultPayload(room, player, answerRecord, question) {
+  const questionType = normalizePracticeQuestionFormat(question?.questionType)
+  const correctAnswer =
+    String(question?.displayAnswer || question?.options?.[question?.correctIndex] || question?.acceptedAnswers?.[0] || "").trim()
   return {
     answerIndex: answerRecord?.answerIndex ?? null,
+    answerText: String(answerRecord?.answerText ?? "").trim(),
+    questionType,
     correct: Boolean(answerRecord?.isCorrect),
     correctIndex: question?.correctIndex,
+    correctAnswer,
     explanation: question?.explanation || "",
     awardedPoints: Number(answerRecord?.awardedPoints) || 0,
     basePoints: Number(answerRecord?.basePoints) || 0,
@@ -5308,6 +5322,7 @@ function cloneLessonForRoom(lesson, libraryId = null) {
           questions: (lesson.practiceTest.questions || []).map((question) => ({
             ...question,
             options: [...(question.options || [])],
+            acceptedAnswers: [...(question.acceptedAnswers || [])],
           })),
         }
       : null,
@@ -5376,6 +5391,7 @@ function cloneQuestionsForStorage(questions = []) {
   return (questions || []).map((question) => ({
     ...question,
     options: [...(question.options || [])],
+    acceptedAnswers: [...(question.acceptedAnswers || [])],
   }))
 }
 
@@ -6267,20 +6283,139 @@ function extractJsonObject(text) {
   return cleaned.slice(start, end + 1)
 }
 
-function normalizeQuestions(rawQuestions) {
+function normalizePracticeQuestionFormat(value = "") {
+  const normalized = String(value || "").trim().toLowerCase()
+  if (["typed", "flashcards", "flashcard", "type", "invul", "invoer"].includes(normalized)) return "typed"
+  if (["mixed", "gemengd", "mix"].includes(normalized)) return "mixed"
+  return "multiple-choice"
+}
+
+function normalizeAcceptedAnswers(question = {}) {
+  const rawAcceptedAnswers = Array.isArray(question?.acceptedAnswers)
+    ? question.acceptedAnswers
+    : [question?.correctAnswer, question?.answer, question?.displayAnswer]
+
+  return [...new Set(
+    rawAcceptedAnswers
+      .map((value) => String(value ?? "").trim())
+      .filter(Boolean)
+  )]
+}
+
+function convertMultipleChoiceQuestionToTyped(question) {
+  const correctAnswer =
+    String(question?.displayAnswer || question?.options?.[question?.correctIndex] || question?.acceptedAnswers?.[0] || "").trim()
+  const acceptedAnswers = [...new Set([correctAnswer, ...normalizeAcceptedAnswers(question)])].filter(Boolean)
+
+  return {
+    ...question,
+    questionType: "typed",
+    options: [],
+    correctIndex: null,
+    acceptedAnswers,
+    displayAnswer: correctAnswer || acceptedAnswers[0] || "",
+    answerPlaceholder: String(question?.answerPlaceholder || "Typ hier je antwoord").trim() || "Typ hier je antwoord",
+  }
+}
+
+function applyRequestedQuestionFormat(questionList, questionFormat = "multiple-choice") {
+  const requestedFormat = normalizePracticeQuestionFormat(questionFormat)
+  const preparedQuestions = (questionList || []).map((question) => ({ ...question }))
+
+  if (requestedFormat === "typed") {
+    return preparedQuestions.map((question) =>
+      question.questionType === "typed" ? question : convertMultipleChoiceQuestionToTyped(question)
+    )
+  }
+
+  if (requestedFormat === "mixed") {
+    return preparedQuestions.map((question, index) => {
+      if (question.questionType === "typed") return question
+      return index % 2 === 1 ? convertMultipleChoiceQuestionToTyped(question) : question
+    })
+  }
+
+  return preparedQuestions
+}
+
+function normalizeQuestions(rawQuestions, { questionFormat = "multiple-choice" } = {}) {
   if (!Array.isArray(rawQuestions) || rawQuestions.length === 0) throw new Error("AI gaf geen bruikbare vragen terug.")
-  return rawQuestions
-    .map((question, index) => ({
-      id: `q-${index + 1}`,
-      prompt: String(question?.prompt ?? "").trim(),
-      options: Array.isArray(question?.options) ? question.options.map((option) => String(option).trim()).slice(0, 4) : [],
-      correctIndex: Number(question?.correctIndex),
-      explanation: String(question?.explanation ?? "").trim(),
-      category: String(question?.category ?? "").trim() || "Quiz",
-      imagePrompt: ensureQuestionImagePrompt(question?.prompt, question?.category, question?.imagePrompt),
-      imageAlt: String(question?.imageAlt ?? "").trim(),
-    }))
-    .filter((question) => question.prompt && question.options.length === 4 && question.options.every(Boolean) && Number.isInteger(question.correctIndex) && question.correctIndex >= 0 && question.correctIndex < 4)
+  const requestedFormat = normalizePracticeQuestionFormat(questionFormat)
+  const normalizedQuestions = rawQuestions
+    .map((question, index) => {
+      const prompt = String(question?.prompt ?? "").trim()
+      const explanation = String(question?.explanation ?? "").trim()
+      const category = String(question?.category ?? "").trim() || "Quiz"
+      const imagePrompt = ensureQuestionImagePrompt(question?.prompt, question?.category, question?.imagePrompt)
+      const imageAlt = String(question?.imageAlt ?? "").trim()
+      const rawOptions = Array.isArray(question?.options)
+        ? question.options.map((option) => String(option).trim()).slice(0, 4)
+        : []
+      const rawCorrectIndex = Number(question?.correctIndex)
+      const explicitType = normalizePracticeQuestionFormat(question?.questionType || question?.format || "")
+      const inferredTyped = normalizeAcceptedAnswers(question).length > 0 && rawOptions.length < 4
+      const questionType = explicitType !== "multiple-choice" ? explicitType : inferredTyped ? "typed" : requestedFormat === "typed" ? "typed" : "multiple-choice"
+
+      if (!prompt) return null
+
+      if (questionType === "typed") {
+        const acceptedAnswers = [...new Set([
+          ...normalizeAcceptedAnswers(question),
+          rawOptions.length === 4 && Number.isInteger(rawCorrectIndex) && rawCorrectIndex >= 0 && rawCorrectIndex < 4
+            ? rawOptions[rawCorrectIndex]
+            : "",
+        ])].filter(Boolean)
+        const displayAnswer =
+          String(question?.displayAnswer ?? question?.correctAnswer ?? question?.answer ?? acceptedAnswers[0] ?? "").trim()
+
+        if (!acceptedAnswers.length && !displayAnswer) return null
+
+        return {
+          id: `q-${index + 1}`,
+          prompt,
+          options: [],
+          correctIndex: null,
+          questionType: "typed",
+          acceptedAnswers: acceptedAnswers.length ? acceptedAnswers : [displayAnswer],
+          displayAnswer: displayAnswer || acceptedAnswers[0] || "",
+          answerPlaceholder: String(question?.answerPlaceholder ?? "Typ hier je antwoord").trim() || "Typ hier je antwoord",
+          explanation,
+          category,
+          imagePrompt,
+          imageAlt,
+        }
+      }
+
+      if (
+        !(
+          rawOptions.length === 4 &&
+          rawOptions.every(Boolean) &&
+          Number.isInteger(rawCorrectIndex) &&
+          rawCorrectIndex >= 0 &&
+          rawCorrectIndex < 4
+        )
+      ) {
+        return null
+      }
+
+      return {
+        id: `q-${index + 1}`,
+        prompt,
+        options: rawOptions,
+        correctIndex: rawCorrectIndex,
+        questionType: "multiple-choice",
+        acceptedAnswers: [],
+        displayAnswer: String(rawOptions[rawCorrectIndex] || "").trim(),
+        answerPlaceholder: "",
+        explanation,
+        category,
+        imagePrompt,
+        imageAlt,
+      }
+    })
+    .filter(Boolean)
+
+  return applyRequestedQuestionFormat(normalizedQuestions, requestedFormat)
 }
 
 function shuffleArray(items) {
@@ -6304,6 +6439,8 @@ function hasRecentPattern(sequence, candidate) {
 }
 
 function rebalanceQuestions(questionList) {
+  const multipleChoiceQuestions = questionList.filter((question) => question?.questionType !== "typed")
+  if (!multipleChoiceQuestions.length) return questionList
   const targetCounts = questionList.reduce((counts, _, index) => {
     counts[index % 4] += 1
     return counts
@@ -6312,7 +6449,7 @@ function rebalanceQuestions(questionList) {
   const usageCounts = [0, 0, 0, 0]
   const chosenSequence = []
 
-  return questionList.map((question) => {
+  const rebalancedMultipleChoiceQuestions = multipleChoiceQuestions.map((question) => {
     const correctAnswer = question.options[question.correctIndex]
     const wrongAnswers = question.options.filter((_, index) => index !== question.correctIndex)
     const candidateIndices = shuffleArray([0, 1, 2, 3]).sort((left, right) => (usageCounts[left] - targetCounts[left]) - (usageCounts[right] - targetCounts[right]))
@@ -6325,6 +6462,14 @@ function rebalanceQuestions(questionList) {
     usageCounts[chosenIndex] += 1
     chosenSequence.push(chosenIndex)
     return { ...question, options: nextOptions, correctIndex: chosenIndex }
+  })
+
+  let multipleChoiceIndex = 0
+  return questionList.map((question) => {
+    if (question?.questionType === "typed") return question
+    const nextQuestion = rebalancedMultipleChoiceQuestions[multipleChoiceIndex]
+    multipleChoiceIndex += 1
+    return nextQuestion || question
   })
 }
 
@@ -6437,7 +6582,7 @@ function sanitizeCategory(rawCategory, topic) {
   return cleaned
 }
 
-function buildFallbackQuestions({ topic, questionCount }) {
+function buildFallbackQuestions({ topic, questionCount, questionFormat = "multiple-choice" }) {
   const normalizedTopic = String(topic || "").toLowerCase()
   const tijdBase = [
     ["Hoe laat is het een kwartier na 3?", ["03:15", "03:30", "03:45", "04:15"], 0, "Een kwartier na 3 is 03:15."],
@@ -6539,7 +6684,7 @@ function buildFallbackQuestions({ topic, questionCount }) {
     }
   })
 
-  return rebalanceQuestions(questions)
+  return applyRequestedQuestionFormat(rebalanceQuestions(questions), questionFormat)
 }
 
 async function withTimeout(promise, ms) {
@@ -6563,7 +6708,64 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-function buildQuestionPrompt({ topic, audience, questionCount, extraRules = "" }) {
+function buildQuestionPrompt({ topic, audience, questionCount, questionFormat = "multiple-choice", extraRules = "" }) {
+  const requestedFormat = normalizePracticeQuestionFormat(questionFormat)
+  const formatExample =
+    requestedFormat === "typed"
+      ? `{
+    "prompt": "Welk gerecht hoort bij Marokko?",
+    "questionType": "typed",
+    "acceptedAnswers": ["couscous"],
+    "displayAnswer": "couscous",
+    "explanation": "Couscous is een bekend gerecht uit Marokko.",
+    "category": "Woordenschat",
+    "imagePrompt": "traditional moroccan couscous dish on a table, realistic classroom-friendly photo",
+    "imageAlt": "Een schaal couscous"
+  }`
+      : requestedFormat === "mixed"
+        ? `{
+    "prompt": "Welke hoofdstad hoort bij Marokko?",
+    "questionType": "multiple-choice",
+    "options": ["Rabat", "Casablanca", "Tanger", "Fes"],
+    "correctIndex": 0,
+    "explanation": "Rabat is de hoofdstad van Marokko.",
+    "category": "Aardrijkskunde",
+    "imagePrompt": "city view of Rabat Morocco, realistic educational travel photo",
+    "imageAlt": "Stadsbeeld van Rabat"
+  }`
+        : `{
+    "prompt": "Welke hoofdstad hoort bij Marokko?",
+    "questionType": "multiple-choice",
+    "options": ["Rabat", "Casablanca", "Tanger", "Fes"],
+    "correctIndex": 0,
+    "explanation": "Rabat is de hoofdstad van Marokko.",
+    "category": "Aardrijkskunde",
+    "imagePrompt": "city view of Rabat Morocco, realistic educational travel photo",
+    "imageAlt": "Stadsbeeld van Rabat"
+  }`
+  const formatRules =
+    requestedFormat === "typed"
+      ? `
+- Maak invulvragen in flashcard-stijl: de leerling ziet de vraag en typt zelf het antwoord.
+- Gebruik géén antwoordopties.
+- Gebruik per vraag de velden: prompt, acceptedAnswers, displayAnswer, explanation, category, imagePrompt, imageAlt, questionType.
+- questionType moet "typed" zijn.
+- acceptedAnswers is een array met 1 tot 4 toegestane korte antwoorden.
+- displayAnswer is het voorbeeldantwoord dat de docent of leerling later mag zien.
+`
+      : requestedFormat === "mixed"
+        ? `
+- Maak een gemengde set: ongeveer de helft meerkeuze en ongeveer de helft invulvragen in flashcard-stijl.
+- Meerkeuzevragen gebruiken: prompt, options, correctIndex, explanation, category, imagePrompt, imageAlt, questionType.
+- Invulvragen gebruiken: prompt, acceptedAnswers, displayAnswer, explanation, category, imagePrompt, imageAlt, questionType.
+- questionType is per vraag "multiple-choice" of "typed".
+- Gebruik bij typed-vragen géén options.
+`
+        : `
+- Maak alleen meerkeuzevragen.
+- Gebruik per vraag de velden: prompt, options, correctIndex, explanation, category, imagePrompt, imageAlt, questionType.
+- questionType moet "multiple-choice" zijn.
+`
   return `
 Maak precies ${questionCount} quizvragen in het Nederlands voor ${audience}.
 Onderwerp:
@@ -6575,8 +6777,6 @@ Regels:
 - Als het onderwerp basisniveau vraagt, gebruik dan korte zinnen en concrete voorbeelden.
 - Als het onderwerp specialistischer is, maak de vragen inhoudelijk preciezer maar nog steeds helder.
 - Respectvol en feitelijk.
-- 4 antwoordopties per vraag.
-- Zorg dat er precies 1 duidelijk goed antwoord is.
 - Vermijd te algemene placeholder-vragen die alleen het onderwerp herhalen.
 - Korte uitleg per vraag.
 - Voeg "category", "imagePrompt" en "imageAlt" toe.
@@ -6585,19 +6785,12 @@ Regels:
 - Geen tekst, labels, letters of watermerken in het beeld.
 - Bij islamitische kennis: geen gezichten, personen, profeten of levende wezens afbeelden; kies abstracte, objectgerichte of symbolische visuals.
 - Geen markdown, alleen geldige JSON.
+${formatRules}
 ${extraRules}
 
 Formaat:
 [
-  {
-    "prompt": "vraag",
-    "options": ["a", "b", "c", "d"],
-    "correctIndex": 0,
-    "explanation": "korte uitleg",
-    "category": "categorie",
-    "imagePrompt": "english image prompt",
-    "imageAlt": "nederlandse alt"
-  }
+  ${formatExample}
 ]
 `
 }
@@ -6727,7 +6920,14 @@ Formaat:
 `
 }
 
-function buildRepairPrompt({ topic, audience, questionCount, brokenOutput, previousIssue }) {
+function buildRepairPrompt({ topic, audience, questionCount, questionFormat = "multiple-choice", brokenOutput, previousIssue }) {
+  const requestedFormat = normalizePracticeQuestionFormat(questionFormat)
+  const repairSchemaText =
+    requestedFormat === "typed"
+      ? 'Elk object moet bevatten: prompt, questionType, acceptedAnswers, displayAnswer, explanation, category, imagePrompt, imageAlt.'
+      : requestedFormat === "mixed"
+        ? 'Elk object moet bevatten: prompt, questionType, explanation, category, imagePrompt, imageAlt, plus ofwel options + correctIndex, ofwel acceptedAnswers + displayAnswer.'
+        : 'Elk object moet bevatten: prompt, questionType, options, correctIndex, explanation, category, imagePrompt, imageAlt.'
   return `
 Zet de onderstaande AI-output om naar exact geldige JSON voor een quiz.
 
@@ -6741,9 +6941,10 @@ ${previousIssue}
 Regels:
 - Geef alleen een JSON-array terug.
 - Zorg voor precies ${questionCount} objecten.
-- Elk object moet bevatten: prompt, options, correctIndex, explanation, category, imagePrompt, imageAlt.
-- options moet exact 4 items hebben.
-- correctIndex moet 0, 1, 2 of 3 zijn.
+- ${repairSchemaText}
+- Gebruik questionType alleen als "multiple-choice" of "typed".
+- Als questionType "multiple-choice" is, moet options exact 4 items hebben en correctIndex 0, 1, 2 of 3 zijn.
+- Als questionType "typed" is, gebruik je géén options en moet acceptedAnswers minstens 1 bruikbaar antwoord hebben.
 - Verbeter waar nodig de inhoud zodat de vragen echt over het onderwerp gaan.
 - Geen markdown en geen extra tekst.
 
@@ -6839,8 +7040,8 @@ async function requestProviderText(provider, prompt, timeoutMs, systemPrompt = "
   throw new Error(`Onbekende AI-provider: ${provider}`)
 }
 
-function normalizeQuestionsForTopic(rawQuestions, topic) {
-  const normalized = normalizeQuestions(rawQuestions).map((question) => ({
+function normalizeQuestionsForTopic(rawQuestions, topic, questionFormat = "multiple-choice") {
+  const normalized = normalizeQuestions(rawQuestions, { questionFormat }).map((question) => ({
     ...question,
     category: sanitizeCategory(question.category, topic),
   }))
@@ -6857,9 +7058,9 @@ function normalizeQuestionsForTopic(rawQuestions, topic) {
   return rebalanceQuestions(normalized)
 }
 
-function parseQuestionsFromText(text, topic) {
+function parseQuestionsFromText(text, topic, questionFormat = "multiple-choice") {
   const parsed = JSON.parse(extractJsonArray(text))
-  return normalizeQuestionsForTopic(parsed, topic)
+  return normalizeQuestionsForTopic(parsed, topic, questionFormat)
 }
 
 function normalizeLessonPhaseMinutes(phases, durationMinutes) {
@@ -6995,20 +7196,26 @@ function normalizeLessonPlan(rawPlan, { topic, audience, lessonModel, durationMi
   }
 }
 
-function normalizePracticeTest(rawPracticeTest, topic, questionCount = 8) {
+function normalizePracticeTest(rawPracticeTest, topic, questionCount = 8, questionFormat = "multiple-choice") {
   const safeQuestionCount = Math.max(6, Math.min(24, Number(questionCount) || 8))
   if (!rawPracticeTest || typeof rawPracticeTest !== "object") {
-    const fallbackQuestions = buildFallbackQuestions({ topic, questionCount: safeQuestionCount }).slice(0, safeQuestionCount)
+    const fallbackQuestions = buildFallbackQuestions({
+      topic,
+      questionCount: safeQuestionCount,
+      questionFormat,
+    }).slice(0, safeQuestionCount)
     return {
       title: `Oefentoets over ${topic.trim()}`,
       instructions: "Maak deze oefentoets zelfstandig en bespreek daarna de antwoorden klassikaal.",
+      questionFormat: normalizePracticeQuestionFormat(questionFormat),
       questions: fallbackQuestions,
     }
   }
 
   const normalizedQuestions = normalizeQuestionsForTopic(
     rawPracticeTest.questions,
-    topic
+    topic,
+    questionFormat
   )
 
   if (!normalizedQuestions.length) return null
@@ -7018,6 +7225,7 @@ function normalizePracticeTest(rawPracticeTest, topic, questionCount = 8) {
     instructions:
       String(rawPracticeTest.instructions ?? "").trim() ||
       "Maak deze oefentoets zelfstandig en bespreek daarna de antwoorden klassikaal.",
+    questionFormat: normalizePracticeQuestionFormat(rawPracticeTest.questionFormat || questionFormat),
     questions: normalizedQuestions.slice(0, safeQuestionCount),
   }
 }
@@ -7137,6 +7345,7 @@ function normalizeLessonPackage(
     lessonModel,
     durationMinutes,
     practiceQuestionCount = 8,
+    practiceQuestionFormat = "multiple-choice",
     slideCount = 6,
     includePracticeTest = false,
     includePresentation = false,
@@ -7158,7 +7367,7 @@ function normalizeLessonPackage(
 
   if (includePracticeTest) {
     try {
-      practiceTest = normalizePracticeTest(rawPlan.practiceTest, topic, practiceQuestionCount)
+      practiceTest = normalizePracticeTest(rawPlan.practiceTest, topic, practiceQuestionCount, practiceQuestionFormat)
     } catch (error) {
       console.warn(
         `[AI] oefentoets is overgeslagen: ${error instanceof Error ? error.message : "onbekende normalisatiefout"}`
@@ -7477,7 +7686,7 @@ function formatProviderLabel(provider) {
   return provider
 }
 
-async function generateQuestionsWithProvider(provider, { topic, audience, questionCount }) {
+async function generateQuestionsWithProvider(provider, { topic, audience, questionCount, questionFormat = "multiple-choice" }) {
   const providerTimeoutMs = AI_PROVIDER_REQUEST_TIMEOUT_MS
   let lastError = null
 
@@ -7489,10 +7698,14 @@ async function generateQuestionsWithProvider(provider, { topic, audience, questi
 
     try {
       console.info(`[AI] ${provider} attempt ${attempt} gestart voor onderwerp: ${topic}`)
-      const rawText = await requestProviderText(provider, buildQuestionPrompt({ topic, audience, questionCount, extraRules }), providerTimeoutMs)
+      const rawText = await requestProviderText(
+        provider,
+        buildQuestionPrompt({ topic, audience, questionCount, questionFormat, extraRules }),
+        providerTimeoutMs
+      )
 
       try {
-        const questions = parseQuestionsFromText(rawText, topic)
+        const questions = parseQuestionsFromText(rawText, topic, questionFormat)
         console.info(`[AI] ${provider} attempt ${attempt} geaccepteerd met ${questions.length} vragen`)
         return questions
       } catch (parseError) {
@@ -7506,12 +7719,13 @@ async function generateQuestionsWithProvider(provider, { topic, audience, questi
               topic,
               audience,
               questionCount,
+              questionFormat,
               brokenOutput: rawText,
               previousIssue: parseError instanceof Error ? parseError.message : "output was ongeldig",
             }),
             AI_PROVIDER_REPAIR_TIMEOUT_MS
           )
-          const repairedQuestions = parseQuestionsFromText(repairedText, topic)
+          const repairedQuestions = parseQuestionsFromText(repairedText, topic, questionFormat)
           console.info(`[AI] ${provider} repair-pass geslaagd`)
           return repairedQuestions
         } catch (repairError) {
@@ -7641,16 +7855,16 @@ async function generateLessonPlanWithProvider(
   throw lastError ?? new Error(`${provider} kon geen bruikbaar lesplan genereren.`)
 }
 
-async function generateQuestionsWithGemini(topic, audience, questionCount) {
-  return generateQuestionsWithProvider("gemini", { topic, audience, questionCount })
+async function generateQuestionsWithGemini(topic, audience, questionCount, questionFormat = "multiple-choice") {
+  return generateQuestionsWithProvider("gemini", { topic, audience, questionCount, questionFormat })
 }
 
-async function generateQuestionsWithGroq(topic, audience, questionCount) {
-  return generateQuestionsWithProvider("groq", { topic, audience, questionCount })
+async function generateQuestionsWithGroq(topic, audience, questionCount, questionFormat = "multiple-choice") {
+  return generateQuestionsWithProvider("groq", { topic, audience, questionCount, questionFormat })
 }
 
-async function generateQuestionsWithOpenAI(topic, audience, questionCount) {
-  return generateQuestionsWithProvider("openai", { topic, audience, questionCount })
+async function generateQuestionsWithOpenAI(topic, audience, questionCount, questionFormat = "multiple-choice") {
+  return generateQuestionsWithProvider("openai", { topic, audience, questionCount, questionFormat })
 }
 
 async function generateLessonPlan({
@@ -7781,16 +7995,17 @@ function formatGenerationError(error) {
   return `AI kon de ronde niet genereren. Details: ${rawMessage}`
 }
 
-async function generateQuestions({ topic, audience, questionCount }) {
+async function generateQuestions({ topic, audience, questionCount, questionFormat = "multiple-choice" }) {
   if (!genAI && !groq && !openAI) throw new Error("Er is geen AI-provider geconfigureerd op de server.")
   if (!topic?.trim()) throw new Error("Voer eerst een onderwerp of thema in.")
 
   const safeQuestionCount = Math.max(6, Math.min(24, Number(questionCount) || 12))
   const targetAudience = audience?.trim() || "vmbo"
+  const requestedFormat = normalizePracticeQuestionFormat(questionFormat)
   const attempts = [
-    ...(genAI ? [{ name: "gemini", run: () => generateQuestionsWithGemini(topic, targetAudience, safeQuestionCount) }] : []),
-    ...(groq ? [{ name: "groq", run: () => generateQuestionsWithGroq(topic, targetAudience, safeQuestionCount) }] : []),
-    ...(openAI ? [{ name: "openai", run: () => generateQuestionsWithOpenAI(topic, targetAudience, safeQuestionCount) }] : []),
+    ...(genAI ? [{ name: "gemini", run: () => generateQuestionsWithGemini(topic, targetAudience, safeQuestionCount, requestedFormat) }] : []),
+    ...(groq ? [{ name: "groq", run: () => generateQuestionsWithGroq(topic, targetAudience, safeQuestionCount, requestedFormat) }] : []),
+    ...(openAI ? [{ name: "openai", run: () => generateQuestionsWithOpenAI(topic, targetAudience, safeQuestionCount, requestedFormat) }] : []),
   ]
 
   const errors = []
@@ -8737,6 +8952,7 @@ io.on("connection", (socket) => {
     durationMinutes,
     slideCount,
     practiceQuestionCount,
+    practiceQuestionFormat,
     teamNames,
     groupModeEnabled,
     includePracticeTest,
@@ -8750,6 +8966,7 @@ io.on("connection", (socket) => {
     const safeLessonModel = String(lessonModel ?? "edi").trim() || "edi"
     const safeSlideCount = Math.max(4, Math.min(7, Number(slideCount) || 6))
     const safePracticeQuestionCount = Math.max(6, Math.min(24, Number(practiceQuestionCount) || 8))
+    const safePracticeQuestionFormat = normalizePracticeQuestionFormat(practiceQuestionFormat)
     const wantsPracticeTest = Boolean(includePracticeTest)
     const wantsPresentation = Boolean(includePresentation)
     const wantsVideoPlan = Boolean(includePresentation && includeVideoPlan)
@@ -8806,12 +9023,14 @@ io.on("connection", (socket) => {
             topic: `${String(topic ?? "").trim()}\nMaak hier een korte oefentoets van met afwisselende controlevragen.`,
             audience,
             questionCount: safePracticeQuestionCount,
+            questionFormat: safePracticeQuestionFormat,
           }),
           AI_ROUND_GENERATION_TIMEOUT_MS
         )
         practiceTest = {
           title: `Oefentoets over ${String(topic ?? "").trim() || "dit onderwerp"}`,
           instructions: "Maak deze oefentoets zelfstandig en bespreek daarna de antwoorden.",
+          questionFormat: safePracticeQuestionFormat,
           questions: practiceResult.questions,
           providerLabel: practiceResult.providerLabel,
         }
@@ -8821,7 +9040,12 @@ io.on("connection", (socket) => {
         practiceTest = {
           title: `Oefentoets over ${String(topic ?? "").trim() || "dit onderwerp"}`,
           instructions: "Maak deze oefentoets zelfstandig en bespreek daarna de antwoorden.",
-          questions: buildFallbackQuestions({ topic, questionCount: safePracticeQuestionCount }).slice(0, safePracticeQuestionCount),
+          questionFormat: safePracticeQuestionFormat,
+          questions: buildFallbackQuestions({
+            topic,
+            questionCount: safePracticeQuestionCount,
+            questionFormat: safePracticeQuestionFormat,
+          }).slice(0, safePracticeQuestionCount),
           providerLabel: "Lokale reserve",
         }
       }
@@ -8889,7 +9113,8 @@ io.on("connection", (socket) => {
       id: `practice-${index + 1}`,
       prompt: String(question.prompt || question.question_text || "").trim(),
       options: [...(question.options || [])],
-      durationSec: 25,
+      acceptedAnswers: [...(question.acceptedAnswers || [])],
+      durationSec: normalizePracticeQuestionFormat(question.questionType) === "typed" ? 35 : 25,
     }))
     room.currentQuestionIndex = 0
     room.answeredPlayers = new Set()
@@ -9909,7 +10134,7 @@ io.on("connection", (socket) => {
     await syncMathResumeIndexForPlayer(room, player)
   })
 
-  socket.on("player:answer", ({ answer }) => {
+  socket.on("player:answer", ({ answer, typedAnswer }) => {
     const room = getRoomBySocketId(socket.id)
     if (!room) return
     const question = currentQuestion(room)
@@ -9924,8 +10149,29 @@ io.on("connection", (socket) => {
     const withinAnswerWindow = startTime && now <= startTime + currentDuration * 1000 + ANSWER_GRACE_MS
     if (!withinAnswerWindow) return
 
+    const questionType = normalizePracticeQuestionFormat(question.questionType)
+    const submittedTypedAnswer = String(typedAnswer ?? "").trim()
+    if (questionType === "typed" && room.game.source !== "practice") {
+      socket.emit("player:error", { message: "Dit type vraag is alleen beschikbaar in de oefentoets." })
+      return
+    }
+    if (questionType === "typed" && !submittedTypedAnswer) {
+      socket.emit("player:error", { message: "Typ eerst je antwoord in." })
+      return
+    }
+    if (questionType !== "typed" && !Number.isInteger(answer)) {
+      socket.emit("player:error", { message: "Kies eerst een antwoordoptie." })
+      return
+    }
+
     room.answeredPlayers.add(player.id)
-    const isCorrect = answer === question.correctIndex
+    const correctAnswer =
+      String(question.displayAnswer || question.options?.[question.correctIndex] || question.acceptedAnswers?.[0] || "").trim()
+    const acceptedAnswers = questionType === "typed" ? normalizeAcceptedAnswers(question) : []
+    const isCorrect =
+      questionType === "typed"
+        ? acceptedAnswers.some((candidate) => matchesExpectedCandidate(submittedTypedAnswer, candidate))
+        : answer === question.correctIndex
     const elapsedMs = Math.max(0, now - startTime)
     const scoring = isCorrect
       ? getBattleAnswerScoring(room, elapsedMs, currentDuration)
@@ -9936,7 +10182,10 @@ io.on("connection", (socket) => {
           awardedPoints: 0,
         }
     room.playerAnswers.set(player.id, {
-      answerIndex: answer,
+      answerIndex: questionType === "typed" ? null : answer,
+      answerText: questionType === "typed" ? submittedTypedAnswer : "",
+      correctAnswer,
+      acceptedAnswers,
       isCorrect,
       elapsedMs,
       awardedPoints: scoring.awardedPoints,
