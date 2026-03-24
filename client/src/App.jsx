@@ -964,6 +964,10 @@ function HostPage() {
   const [manualSlideImageAltDraft, setManualSlideImageAltDraft] = useState("")
   const [manualSlideUploadName, setManualSlideUploadName] = useState("")
   const [slideImageBusy, setSlideImageBusy] = useState(false)
+  const [manualQuestionImageUrlDraft, setManualQuestionImageUrlDraft] = useState("")
+  const [manualQuestionImageAltDraft, setManualQuestionImageAltDraft] = useState("")
+  const [manualQuestionUploadName, setManualQuestionUploadName] = useState("")
+  const [questionImageBusy, setQuestionImageBusy] = useState(false)
   const hostSessionRef = useRef(hostSession)
   const loginUsernameRef = useRef(loginForm.username)
   const hostRestoreRetryRef = useRef(false)
@@ -1452,6 +1456,20 @@ function HostPage() {
           : "Handmatige dia-afbeelding verwijderd."
       )
     }
+    const onQuestionImageSuccess = ({ manualImageUrl, imageAlt, sourceTitle, searchAttempt }) => {
+      hostRestoreRetryRef.current = false
+      setQuestionImageBusy(false)
+      setManualQuestionImageUrlDraft(manualImageUrl || "")
+      if (typeof imageAlt === "string") setManualQuestionImageAltDraft(imageAlt)
+      setManualQuestionUploadName("")
+      setStatus(
+        manualImageUrl
+          ? sourceTitle
+            ? `Vraagafbeelding bijgewerkt${searchAttempt ? ` (poging ${searchAttempt})` : ""}: ${sourceTitle}.`
+            : "Vraagafbeelding bijgewerkt."
+          : "Handmatige vraagafbeelding verwijderd."
+      )
+    }
     const onRoomBackup = ({ snapshot }) => {
       const username = hostSessionRef.current.username || loginUsernameRef.current
       const storedBackup = writeHostRoomBackup(username, snapshot)
@@ -1488,6 +1506,7 @@ function HostPage() {
     socket.on("host:learner-code:success", onLearnerCodeSuccess)
     socket.on("host:classes:success", onClassesSuccess)
     socket.on("host:presentation-image:success", onPresentationImageSuccess)
+    socket.on("host:question-image:success", onQuestionImageSuccess)
     socket.on("host:room:backup", onRoomBackup)
     socket.on("host:backup:restore:success", onBackupRestoreSuccess)
 
@@ -1517,6 +1536,7 @@ function HostPage() {
       socket.off("host:learner-code:success", onLearnerCodeSuccess)
       socket.off("host:classes:success", onClassesSuccess)
       socket.off("host:presentation-image:success", onPresentationImageSuccess)
+      socket.off("host:question-image:success", onQuestionImageSuccess)
       socket.off("host:room:backup", onRoomBackup)
       socket.off("host:backup:restore:success", onBackupRestoreSuccess)
     }
@@ -1527,6 +1547,13 @@ function HostPage() {
     setManualSlideImageAltDraft(currentPresentationSlide?.imageAlt || currentPresentationSlide?.title || "")
     setManualSlideUploadName("")
   }, [currentPresentationSlide?.id, currentPresentationSlide?.manualImageUrl, currentPresentationSlide?.imageAlt, currentPresentationSlide?.title])
+
+  useEffect(() => {
+    setManualQuestionImageUrlDraft(game.question?.manualImageUrl || "")
+    setManualQuestionImageAltDraft(game.question?.imageAlt || getQuestionPrompt(game.question))
+    setManualQuestionUploadName("")
+    setQuestionImageBusy(false)
+  }, [game.question?.id, game.question?.manualImageUrl, game.question?.imageAlt, game.question?.prompt])
 
   useEffect(() => {
     if (!slideImageBusy) return undefined
@@ -2261,6 +2288,74 @@ function HostPage() {
     }
   }
 
+  const saveManualQuestionImageUrl = () => {
+    if (!game.question?.id) {
+      setStatus("Er is nu geen actieve vraag om een afbeelding aan te koppelen.")
+      return
+    }
+    setQuestionImageBusy(true)
+    setStatus("Vraagafbeelding wordt bijgewerkt...")
+    socket.emit("host:question-image:update", {
+      imageUrl: manualQuestionImageUrlDraft,
+      imageAlt: manualQuestionImageAltDraft,
+    })
+  }
+
+  const autoFindQuestionImage = () => {
+    if (!game.question?.id) {
+      setStatus("Er is nu geen actieve vraag om automatisch een afbeelding voor te zoeken.")
+      return
+    }
+    setQuestionImageBusy(true)
+    setStatus("Site zoekt nu een passende internetafbeelding voor deze vraag...")
+    socket.emit("host:question-image:auto")
+  }
+
+  const clearManualQuestionImage = () => {
+    if (!game.question?.id) {
+      setStatus("Er is nu geen actieve vraag om een afbeelding te wissen.")
+      return
+    }
+    setQuestionImageBusy(true)
+    setStatus("Handmatige vraagafbeelding wordt verwijderd...")
+    socket.emit("host:question-image:clear")
+  }
+
+  const uploadManualQuestionImage = async (file) => {
+    if (!game.question?.id || !file) return
+    setManualQuestionUploadName(file.name || "upload")
+    setQuestionImageBusy(true)
+    setStatus("Vraagafbeelding wordt geoptimaliseerd en geupload...")
+
+    try {
+      const optimizedDataUrl = await optimizeImageFile(file)
+      const response = await fetch("/api/host/question-image-upload", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          sessionToken: hostSession.sessionToken,
+          uploadDataUrl: optimizedDataUrl,
+          imageAlt: manualQuestionImageAltDraft,
+        }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(payload?.message || "Uploaden van de vraagafbeelding is mislukt.")
+      }
+      setManualQuestionImageUrlDraft(payload?.manualImageUrl || "")
+      if (typeof payload?.imageAlt === "string") setManualQuestionImageAltDraft(payload.imageAlt)
+      setManualQuestionUploadName("")
+      setQuestionImageBusy(false)
+      setStatus("Vraagafbeelding bijgewerkt.")
+    } catch (error) {
+      setQuestionImageBusy(false)
+      setManualQuestionUploadName("")
+      setStatus(error instanceof Error ? error.message : "Uploaden van de vraagafbeelding is mislukt.")
+    }
+  }
+
   const isManagementWorkspace = hostWorkspace === "management"
   const isHomeWorkspace = hostWorkspace === "home"
 
@@ -2943,6 +3038,20 @@ function HostPage() {
             <>
               {game.mode === "battle" && liveGroupModeEnabled ? <BattleRaceBanner game={game} teams={teams} variant="compact" /> : null}
               <QuestionCard question={game.question} />
+              <ManualQuestionImageCard
+                altText={manualQuestionImageAltDraft}
+                hasManualImage={Boolean(game.question?.manualImageUrl)}
+                imageUrl={manualQuestionImageUrlDraft}
+                isBusy={questionImageBusy}
+                onAltTextChange={setManualQuestionImageAltDraft}
+                onAutoSearch={autoFindQuestionImage}
+                onClear={clearManualQuestionImage}
+                onImageUrlChange={setManualQuestionImageUrlDraft}
+                onSaveUrl={saveManualQuestionImageUrl}
+                onUpload={uploadManualQuestionImage}
+                question={game.question}
+                uploadName={manualQuestionUploadName}
+              />
               {game.mode === "battle" && game.source !== "practice" ? (
                 <BattleQuestionControls
                   answerWindowExpired={Boolean(battleAnswerWindowExpired)}
@@ -5516,6 +5625,92 @@ function ManualSlideImageCard({
   )
 }
 
+function ManualQuestionImageCard({
+  question,
+  imageUrl,
+  altText,
+  uploadName,
+  hasManualImage,
+  isBusy = false,
+  onAutoSearch,
+  onImageUrlChange,
+  onAltTextChange,
+  onSaveUrl,
+  onUpload,
+  onClear,
+}) {
+  if (!question) return null
+
+  return (
+    <section className="glass board-card manual-image-card">
+      <div className="section-head">
+        <h2>Vraagafbeelding</h2>
+        <span className="pill">{question.category || "Vraag"}</span>
+      </div>
+      <p className="muted">
+        Laat de site eerst zelf een passende internetafbeelding zoeken. Lukt dat niet goed, dan kun je nog steeds zelf een directe afbeeldingslink plakken of een bestand uploaden.
+      </p>
+      <div className="field-row manual-image-grid">
+        <label className="field">
+          <span>Afbeeldingslink</span>
+          <input
+            onChange={(event) => onImageUrlChange(event.target.value)}
+            placeholder="https://voorbeeld.nl/afbeelding.jpg"
+            value={imageUrl}
+          />
+        </label>
+        <label className="field">
+          <span>Alt-tekst</span>
+          <input
+            onChange={(event) => onAltTextChange(event.target.value)}
+            placeholder="Korte beschrijving van de afbeelding"
+            value={altText}
+          />
+        </label>
+      </div>
+      <div className="manual-image-actions">
+        <button className="button-primary" disabled={isBusy} onClick={onAutoSearch} type="button">
+          {isBusy ? "Bezig..." : "Zoek automatisch online"}
+        </button>
+        <button className="button-secondary" disabled={isBusy || !imageUrl.trim()} onClick={onSaveUrl} type="button">
+          Gebruik link
+        </button>
+        <label className={`button-ghost manual-upload-button ${isBusy ? "is-disabled" : ""}`}>
+          {isBusy ? "Bezig..." : "Upload afbeelding"}
+          <input
+            accept="image/*"
+            disabled={isBusy}
+            onChange={(event) => {
+              const file = event.target.files?.[0]
+              if (file) onUpload(file)
+              event.target.value = ""
+            }}
+            type="file"
+          />
+        </label>
+        <button className="button-ghost subtle-danger" disabled={isBusy || !hasManualImage} onClick={onClear} type="button">
+          Wis handmatige afbeelding
+        </button>
+      </div>
+      <div className="manual-image-meta">
+        <span>{hasManualImage ? "Handmatige afbeelding actief" : "Automatisch beeld actief"}</span>
+        {uploadName ? <strong>{uploadName}</strong> : null}
+      </div>
+      {question.manualImageSearchQuery || question.manualImageSourceTitle || question.manualImageSourceUrl ? (
+        <div className="manual-image-source">
+          {question.manualImageSearchQuery ? <span>Zoekterm: {question.manualImageSearchQuery}</span> : null}
+          {question.manualImageSourceTitle ? <strong>Bron: {question.manualImageSourceTitle}</strong> : null}
+          {question.manualImageSourceUrl ? (
+            <a href={question.manualImageSourceUrl} rel="noreferrer" target="_blank">
+              Open bron
+            </a>
+          ) : null}
+        </div>
+      ) : null}
+    </section>
+  )
+}
+
 function PresentationSlideCanvas({ presentation, slide, compact = false, variant = "default" }) {
   if (!slide) return null
   const stackedLayout = compact || variant === "preview" || variant === "student"
@@ -7114,14 +7309,13 @@ function playTone(frequency, duration, type = "sine") {
 function QuestionVisual({ question }) {
   const [hasImageError, setHasImageError] = useState(false)
   const prompt = getQuestionPrompt(question)
-  const imageUrl =
-    question.imageUrl || buildQuestionImageUrl(question.imagePrompt || prompt, question.category, { kind: "question" })
+  const imageUrl = question.manualImageUrl || question.imageUrl || ""
 
   useEffect(() => {
     setHasImageError(false)
-  }, [question.id])
+  }, [question.id, question.manualImageUrl, question.imageUrl])
 
-  if (hasImageError) {
+  if (!imageUrl || hasImageError) {
     return (
       <div className="visual-fallback">
         <span className="visual-label">{question.category}</span>

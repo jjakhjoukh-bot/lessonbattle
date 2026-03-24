@@ -2273,6 +2273,37 @@ async function saveManualImageFromRemoteUrl({ imageUrl = "", entityId = "slide" 
   return `/manual-images/${fileName}`
 }
 
+function collectManualImageUrlsFromQuestions(questions = []) {
+  return (questions || [])
+    .map((question) => sanitizeManualImageUrl(question?.manualImageUrl || ""))
+    .filter(Boolean)
+}
+
+function buildQuestionSearchPrompt(question = {}, room = null) {
+  return [
+    room?.game?.topic || "",
+    question?.category || "",
+    question?.imageAlt || "",
+    question?.imagePrompt || "",
+    question?.prompt || question?.question_text || "",
+    ...(Array.isArray(question?.options) ? question.options : []),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .trim()
+}
+
+function buildQuestionSearchCategory(question = {}, room = null) {
+  return [
+    room?.game?.topic || "",
+    question?.category || "",
+    room?.game?.source === "practice" ? "oefentoets" : room?.game?.mode || "",
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .trim()
+}
+
 function stripHtmlTags(value = "") {
   return String(value || "")
     .replace(/<[^>]*>/g, " ")
@@ -4269,7 +4300,7 @@ function withLessonPhaseContext(lesson, phaseIndex = lesson?.currentPhaseIndex ?
 function sanitizeQuestion(question, viewer = "host", room = null) {
   if (!question) return null
   const prompt = String(question.prompt || question.question_text || "").trim()
-  const imagePrompt = question.imagePrompt || prompt
+  const imagePrompt = ensureQuestionImagePrompt(prompt, question.category, question.imagePrompt)
   const questionType = normalizePracticeQuestionFormat(question.questionType)
   const displayAnswer =
     String(question.displayAnswer || question.options?.[question.correctIndex] || question.acceptedAnswers?.[0] || "").trim()
@@ -4283,6 +4314,7 @@ function sanitizeQuestion(question, viewer = "host", room = null) {
     category: question.category,
     imagePrompt,
     imageAlt: question.imageAlt || prompt,
+    manualImageUrl: sanitizeManualImageUrl(question.manualImageUrl || ""),
     durationSec: Number(question.durationSec) || room?.game?.questionDurationSec || 20,
     imageUrl: buildSignedImageUrl({
       prompt: imagePrompt,
@@ -4311,6 +4343,12 @@ function sanitizeQuestion(question, viewer = "host", room = null) {
     correctIndex: question.correctIndex,
     displayAnswer,
     acceptedAnswers: [...(question.acceptedAnswers || [])],
+    manualImageSourceUrl: String(question.manualImageSourceUrl || "").trim(),
+    manualImageSourceImageUrl: String(question.manualImageSourceImageUrl || "").trim(),
+    manualImageSearchQuery: String(question.manualImageSearchQuery || "").trim(),
+    manualImageSourceTitle: String(question.manualImageSourceTitle || "").trim(),
+    manualImageSearchAttempt: Math.max(0, Number(question.manualImageSearchAttempt) || 0),
+    manualImageSourceHistory: sanitizeImageSourceHistory(question.manualImageSourceHistory || []),
   }
 }
 
@@ -5950,10 +5988,12 @@ function cloneLessonForRoom(lesson, libraryId = null) {
 }
 
 function collectManualImageUrlsFromLesson(lesson) {
-  if (!lesson?.presentation?.slides?.length) return []
-  return lesson.presentation.slides
-    .map((slide) => sanitizeManualImageUrl(slide?.manualImageUrl || ""))
-    .filter(Boolean)
+  const slideUrls =
+    lesson?.presentation?.slides?.length
+      ? lesson.presentation.slides.map((slide) => sanitizeManualImageUrl(slide?.manualImageUrl || "")).filter(Boolean)
+      : []
+  const practiceUrls = collectManualImageUrlsFromQuestions(lesson?.practiceTest?.questions || [])
+  return [...slideUrls, ...practiceUrls]
 }
 
 function isManualImageUrlStillReferenced(targetUrl = "") {
@@ -5962,6 +6002,7 @@ function isManualImageUrlStillReferenced(targetUrl = "") {
 
   for (const room of rooms.values()) {
     if (collectManualImageUrlsFromLesson(room.lesson).includes(normalizedTarget)) return true
+    if (collectManualImageUrlsFromQuestions(room.questions).includes(normalizedTarget)) return true
   }
 
   for (const entry of lessonLibrary) {
@@ -5992,12 +6033,38 @@ function removeManualImageFileIfUnused(targetUrl = "") {
   }
 }
 
-function cloneQuestionsForStorage(questions = []) {
-  return (questions || []).map((question) => ({
+function cloneQuestionForStorage(question = {}) {
+  const prompt = String(question?.prompt || question?.question_text || "").trim()
+  const category = String(question?.category || "").trim() || "Quiz"
+  const imagePrompt = ensureQuestionImagePrompt(prompt, category, question?.imagePrompt)
+  const imageAlt = String(question?.imageAlt || "").trim() || prompt || "Vraagafbeelding"
+
+  return {
     ...question,
-    options: [...(question.options || [])],
-    acceptedAnswers: [...(question.acceptedAnswers || [])],
-  }))
+    prompt,
+    question_text: prompt,
+    category,
+    imagePrompt,
+    imageAlt,
+    imageUrl: buildSignedImageUrl({
+      prompt: imagePrompt,
+      category,
+      kind: "question",
+    }),
+    manualImageUrl: sanitizeManualImageUrl(question?.manualImageUrl || ""),
+    manualImageSourceUrl: String(question?.manualImageSourceUrl || "").trim(),
+    manualImageSourceImageUrl: String(question?.manualImageSourceImageUrl || "").trim(),
+    manualImageSearchQuery: String(question?.manualImageSearchQuery || "").trim(),
+    manualImageSourceTitle: String(question?.manualImageSourceTitle || "").trim(),
+    manualImageSearchAttempt: Math.max(0, Number(question?.manualImageSearchAttempt) || 0),
+    manualImageSourceHistory: sanitizeImageSourceHistory(question?.manualImageSourceHistory || []),
+    options: [...(question?.options || [])],
+    acceptedAnswers: [...(question?.acceptedAnswers || [])],
+  }
+}
+
+function cloneQuestionsForStorage(questions = []) {
+  return (questions || []).map((question) => cloneQuestionForStorage(question))
 }
 
 function detectSessionCategory(topic, type = "lesson") {
@@ -6798,6 +6865,64 @@ async function updatePresentationSlideManualImage({ room, slideId, imageUrl, ima
   emitStateToRoom(room)
   return {
     slideId: normalizedSlideId,
+    manualImageUrl: nextManualImageUrl,
+    imageAlt: nextImageAlt,
+  }
+}
+
+async function updateCurrentQuestionManualImage({ room, imageUrl, imageAlt, uploadDataUrl }) {
+  const activeQuestion = currentQuestion(room)
+  if (!room || !activeQuestion) {
+    throw new Error("Er staat nu geen actieve vraag klaar.")
+  }
+
+  const previousManualImageUrl = sanitizeManualImageUrl(activeQuestion.manualImageUrl || "")
+  let nextManualImageUrl = sanitizeManualImageUrl(imageUrl)
+  if (String(uploadDataUrl || "").trim()) {
+    nextManualImageUrl = saveManualImageFromDataUrl({
+      dataUrl: uploadDataUrl,
+      entityId: activeQuestion.id || `question-${room.currentQuestionIndex + 1}`,
+    })
+  } else if (nextManualImageUrl && !isLocalManualImageUrl(nextManualImageUrl)) {
+    nextManualImageUrl = await saveManualImageFromRemoteUrl({
+      imageUrl: nextManualImageUrl,
+      entityId: activeQuestion.id || `question-${room.currentQuestionIndex + 1}`,
+    })
+  }
+
+  if (!nextManualImageUrl) {
+    throw new Error("Plak een geldige afbeeldingslink of upload een bestand.")
+  }
+
+  const nextImageAlt =
+    String(imageAlt ?? "").trim() ||
+    activeQuestion.imageAlt ||
+    String(activeQuestion.prompt || activeQuestion.question_text || "").trim() ||
+    "Vraagafbeelding"
+
+  room.questions = room.questions.map((question, index) =>
+    index === room.currentQuestionIndex
+      ? {
+          ...question,
+          manualImageUrl: nextManualImageUrl,
+          imageAlt: nextImageAlt,
+          manualImageSourceUrl: "",
+          manualImageSourceImageUrl: "",
+          manualImageSearchQuery: "",
+          manualImageSourceTitle: "",
+          manualImageSearchAttempt: Math.max(0, Number(question?.manualImageSearchAttempt) || 0),
+          manualImageSourceHistory: sanitizeImageSourceHistory(question?.manualImageSourceHistory || []),
+        }
+      : question
+  )
+
+  if (previousManualImageUrl && previousManualImageUrl !== nextManualImageUrl) {
+    removeManualImageFileIfUnused(previousManualImageUrl)
+  }
+
+  emitStateToRoom(room)
+  return {
+    questionId: activeQuestion.id,
     manualImageUrl: nextManualImageUrl,
     imageAlt: nextImageAlt,
   }
@@ -8785,6 +8910,40 @@ app.post("/api/host/presentation-image-upload", async (req, res) => {
   }
 })
 
+app.post("/api/host/question-image-upload", async (req, res) => {
+  const sessionToken = String(req.body?.sessionToken || "").trim()
+  const session = getHostSessionByToken(sessionToken)
+  if (!session) {
+    res.status(401).json({ message: "Je docentsessie is verlopen. Log opnieuw in." })
+    return
+  }
+
+  const roomCode = String(session.roomCode || "").trim().toUpperCase()
+  const room = roomCode ? rooms.get(roomCode) || null : null
+  if (!room || !currentQuestion(room)) {
+    res.status(409).json({ message: "Er staat nu geen actieve vraag klaar voor upload." })
+    return
+  }
+
+  try {
+    const payload = await updateCurrentQuestionManualImage({
+      room,
+      imageAlt: req.body?.imageAlt,
+      uploadDataUrl: req.body?.uploadDataUrl,
+      imageUrl: "",
+    })
+    rememberHostRoomForSession(session, room.code)
+    if (room.hostSocketId) {
+      io.to(room.hostSocketId).emit("host:question-image:success", payload)
+    }
+    res.json(payload)
+  } catch (error) {
+    res.status(400).json({
+      message: error instanceof Error ? error.message : "De afbeelding kon niet worden opgeslagen.",
+    })
+  }
+})
+
 ensureManualImagesDir()
 app.use("/manual-images", express.static(manualImagesPath))
 
@@ -10271,6 +10430,158 @@ io.on("connection", (socket) => {
       slideId: normalizedSlideId,
       manualImageUrl: "",
       imageAlt: previousSlide?.imageAlt || previousSlide?.title || "Presentatiedia",
+    })
+  })
+
+  socket.on("host:question-image:update", async ({ imageUrl, imageAlt, uploadDataUrl }) => {
+    const room = requireHostRoom(socket)
+    if (!room || !currentQuestion(room)) return
+    try {
+      const payload = await updateCurrentQuestionManualImage({
+        room,
+        imageUrl,
+        imageAlt,
+        uploadDataUrl,
+      })
+      socket.emit("host:question-image:success", payload)
+    } catch (error) {
+      socket.emit("host:error", {
+        message: error instanceof Error ? error.message : "De vraagafbeelding kon niet worden opgeslagen.",
+      })
+    }
+  })
+
+  socket.on("host:question-image:auto", async () => {
+    const room = requireHostRoom(socket)
+    const activeQuestion = currentQuestion(room)
+    if (!room || !activeQuestion) return
+
+    const previousManualImageUrl = sanitizeManualImageUrl(activeQuestion.manualImageUrl || "")
+    const excludedSources = [
+      ...(Array.isArray(activeQuestion.manualImageSourceHistory) ? activeQuestion.manualImageSourceHistory : []),
+      activeQuestion.manualImageSourceUrl,
+      activeQuestion.manualImageUrl,
+      activeQuestion.manualImageSourceImageUrl,
+      activeQuestion.manualImageSourceTitle,
+    ].filter(Boolean)
+    const searchAttempt = Math.max(1, (Number(activeQuestion.manualImageSearchAttempt) || 0) + 1)
+
+    room.questions = room.questions.map((question, index) =>
+      index === room.currentQuestionIndex
+        ? {
+            ...question,
+            manualImageSearchAttempt: searchAttempt,
+          }
+        : question
+    )
+
+    let referenceImage = null
+    try {
+      referenceImage = await searchReusableReferenceImage({
+        prompt: buildQuestionSearchPrompt(activeQuestion, room),
+        category: buildQuestionSearchCategory(activeQuestion, room),
+        kind: "question",
+        exclude: excludedSources,
+        attemptIndex: searchAttempt - 1,
+      })
+    } catch (error) {
+      socket.emit("host:error", {
+        message: error instanceof Error ? error.message : "Zoeken naar een online vraagafbeelding is mislukt.",
+      })
+      return
+    }
+
+    if (!referenceImage?.buffer) {
+      socket.emit("host:error", {
+        message: previousManualImageUrl
+          ? "Er is geen beter passend alternatief gevonden dan de huidige vraagafbeelding. Pas de vraagtekst aan of upload handmatig."
+          : "Er is geen passende rechtenvrije internetafbeelding gevonden voor deze vraag. Probeer een andere vraag of upload handmatig.",
+      })
+      return
+    }
+
+    let nextManualImageUrl = ""
+    try {
+      nextManualImageUrl = saveManualImageFromBuffer({
+        imageBuffer: referenceImage.buffer,
+        mimeType: referenceImage.contentType,
+        entityId: activeQuestion.id || `question-${room.currentQuestionIndex + 1}`,
+      })
+    } catch (error) {
+      socket.emit("host:error", {
+        message: error instanceof Error ? error.message : "De gevonden vraagafbeelding kon niet worden opgeslagen.",
+      })
+      return
+    }
+
+    room.questions = room.questions.map((question, index) =>
+      index === room.currentQuestionIndex
+        ? {
+            ...question,
+            manualImageUrl: nextManualImageUrl,
+            imageAlt: question.imageAlt || question.prompt || "Vraagafbeelding",
+            manualImageSourceUrl: referenceImage.sourceUrl || "",
+            manualImageSourceImageUrl: referenceImage.originalImageUrl || referenceImage.imageUrl || "",
+            manualImageSearchQuery: referenceImage.searchQuery || "",
+            manualImageSourceTitle: referenceImage.title || "",
+            manualImageSearchAttempt: searchAttempt,
+            manualImageSourceHistory: sanitizeImageSourceHistory([
+              ...(Array.isArray(question.manualImageSourceHistory) ? question.manualImageSourceHistory : []),
+              referenceImage.sourceUrl,
+              referenceImage.originalImageUrl,
+              referenceImage.imageUrl,
+              referenceImage.title,
+            ]),
+          }
+        : question
+    )
+
+    if (previousManualImageUrl && previousManualImageUrl !== nextManualImageUrl) {
+      removeManualImageFileIfUnused(previousManualImageUrl)
+    }
+
+    emitStateToRoom(room)
+    socket.emit("host:question-image:success", {
+      questionId: activeQuestion.id,
+      manualImageUrl: nextManualImageUrl,
+      imageAlt: activeQuestion.imageAlt || activeQuestion.prompt || "Vraagafbeelding",
+      sourceTitle: referenceImage.title || "",
+      sourceUrl: referenceImage.sourceUrl || "",
+      searchQuery: referenceImage.searchQuery || "",
+      searchAttempt,
+    })
+  })
+
+  socket.on("host:question-image:clear", () => {
+    const room = requireHostRoom(socket)
+    const activeQuestion = currentQuestion(room)
+    if (!room || !activeQuestion) return
+
+    const previousManualImageUrl = sanitizeManualImageUrl(activeQuestion.manualImageUrl || "")
+    room.questions = room.questions.map((question, index) =>
+      index === room.currentQuestionIndex
+        ? {
+            ...question,
+            manualImageUrl: "",
+            manualImageSourceUrl: "",
+            manualImageSourceImageUrl: "",
+            manualImageSearchQuery: "",
+            manualImageSourceTitle: "",
+            manualImageSearchAttempt: 0,
+            manualImageSourceHistory: sanitizeImageSourceHistory(question.manualImageSourceHistory || []),
+          }
+        : question
+    )
+
+    if (previousManualImageUrl) {
+      removeManualImageFileIfUnused(previousManualImageUrl)
+    }
+
+    emitStateToRoom(room)
+    socket.emit("host:question-image:success", {
+      questionId: activeQuestion.id,
+      manualImageUrl: "",
+      imageAlt: activeQuestion.imageAlt || activeQuestion.prompt || "Vraagafbeelding",
     })
   })
 
