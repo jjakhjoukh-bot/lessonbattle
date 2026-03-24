@@ -8,6 +8,7 @@ import path from "path"
 import { Server } from "socket.io"
 import { fileURLToPath } from "url"
 import { GoogleGenerativeAI } from "@google/generative-ai"
+import * as XLSX from "xlsx"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -492,6 +493,10 @@ function isValidLearnerCode(value = "") {
   return /^\d{4}$/.test(String(value ?? ""))
 }
 
+function normalizeStudentNumber(value = "") {
+  return String(value ?? "").trim().slice(0, 32)
+}
+
 function generateUniqueLearnerCode(room) {
   const takenCodes = new Set((room?.players || []).map((player) => String(player.learnerCode || "")))
   for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -499,6 +504,108 @@ function generateUniqueLearnerCode(room) {
     if (!takenCodes.has(candidate)) return candidate
   }
   return `${Date.now()}`.slice(-4)
+}
+
+function generateUniqueClassroomLearnerCode(classroom, extraTakenCodes = new Set()) {
+  const takenCodes = new Set((classroom?.learners || []).map((learner) => String(learner.learnerCode || "")))
+  for (const code of extraTakenCodes) {
+    if (code) takenCodes.add(String(code))
+  }
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const candidate = String(randomInt(1000, 9999))
+    if (!takenCodes.has(candidate)) return candidate
+  }
+  return `${Date.now()}`.slice(-4)
+}
+
+function generateNextStudentNumber(existingNumbers = []) {
+  let maxNumber = 0
+  for (const entry of existingNumbers) {
+    const normalized = normalizeStudentNumber(entry)
+    if (!/^\d+$/.test(normalized)) continue
+    maxNumber = Math.max(maxNumber, Number(normalized))
+  }
+  return String(maxNumber + 1).padStart(6, "0")
+}
+
+function normalizeImportHeaderKey(value = "") {
+  return String(value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "")
+}
+
+const CLASSROOM_IMPORT_FIELD_ALIASES = {
+  name: [
+    "naam",
+    "leerling",
+    "leerlingnaam",
+    "student",
+    "studentnaam",
+    "name",
+    "fullname",
+    "volledigenaam",
+  ],
+  learnerCode: ["leerlingcode", "leercode", "logincode", "incode", "pincode", "code", "passcode"],
+  studentNumber: ["leerlingnummer", "studentnummer", "nummer", "studentid", "leerlingid", "studentnumber"],
+  className: ["klas", "classname", "class", "groep", "group"],
+  sectionName: ["sectie", "vak", "section", "sectionname", "subject"],
+  audience: ["doelgroep", "niveau", "audience", "level"],
+}
+
+function readImportFieldValue(rawRow = {}, fieldName = "") {
+  const aliases = CLASSROOM_IMPORT_FIELD_ALIASES[fieldName] || []
+  for (const [rawKey, rawValue] of Object.entries(rawRow || {})) {
+    if (aliases.includes(normalizeImportHeaderKey(rawKey))) {
+      return String(rawValue ?? "").trim()
+    }
+  }
+  return ""
+}
+
+function parseClassroomLearnerImport(fileBuffer, fileName = "") {
+  const workbook = XLSX.read(fileBuffer, { type: "buffer" })
+  const importedLearners = []
+  let detectedClassName = ""
+  let detectedSectionName = ""
+  let detectedAudience = ""
+
+  for (const sheetName of workbook.SheetNames || []) {
+    const worksheet = workbook.Sheets?.[sheetName]
+    if (!worksheet) continue
+    const rows = XLSX.utils.sheet_to_json(worksheet, { defval: "", raw: false })
+    for (const rawRow of rows) {
+      const name = String(readImportFieldValue(rawRow, "name") || "").trim()
+      if (!name) continue
+      const learnerCode = normalizeLearnerCode(readImportFieldValue(rawRow, "learnerCode"))
+      const studentNumber = normalizeStudentNumber(readImportFieldValue(rawRow, "studentNumber"))
+      if (!detectedClassName) {
+        detectedClassName = String(readImportFieldValue(rawRow, "className") || "").trim()
+      }
+      if (!detectedSectionName) {
+        detectedSectionName = String(readImportFieldValue(rawRow, "sectionName") || "").trim()
+      }
+      if (!detectedAudience) {
+        detectedAudience = String(readImportFieldValue(rawRow, "audience") || "").trim()
+      }
+      importedLearners.push({
+        id: generateEntityId("class-import-row"),
+        name,
+        learnerCode,
+        studentNumber,
+        sourceSheet: sheetName,
+        sourceFileName: fileName,
+      })
+    }
+  }
+
+  return {
+    learners: importedLearners,
+    detectedClassName,
+    detectedSectionName,
+    detectedAudience,
+  }
 }
 
 function normalizeMathLevel(value) {
@@ -4879,11 +4986,13 @@ function normalizeClassroomLearner(rawEntry) {
   if (!rawEntry || typeof rawEntry !== "object") return null
   const name = String(rawEntry.name ?? "").trim()
   const learnerCode = normalizeLearnerCode(rawEntry.learnerCode)
+  const studentNumber = normalizeStudentNumber(rawEntry.studentNumber)
   if (!name || !isValidLearnerCode(learnerCode)) return null
   return {
     id: String(rawEntry.id ?? generateEntityId("class-learner")),
     name,
     learnerCode,
+    studentNumber,
     createdAt: String(rawEntry.createdAt ?? new Date().toISOString()),
     updatedAt: String(rawEntry.updatedAt ?? new Date().toISOString()),
   }
@@ -5068,6 +5177,7 @@ function classroomSummaries() {
         id: learner.id,
         name: learner.name,
         learnerCode: learner.learnerCode,
+        studentNumber: learner.studentNumber || "",
         createdAt: learner.createdAt,
         updatedAt: learner.updatedAt,
       })),
@@ -5130,6 +5240,118 @@ function findClassroomById(classId = "") {
   return classrooms.find((entry) => entry.id === String(classId ?? "").trim()) || null
 }
 
+function mergeImportedLearnersIntoClassroom(classroom, importedLearners = []) {
+  const now = new Date().toISOString()
+  const nextLearners = (classroom?.learners || []).map((learner) => ({ ...learner }))
+  const codeOwnerMap = new Map()
+  const studentNumberOwnerMap = new Map()
+
+  for (const learner of nextLearners) {
+    if (learner.learnerCode) codeOwnerMap.set(learner.learnerCode, learner.id)
+    if (learner.studentNumber) studentNumberOwnerMap.set(learner.studentNumber, learner.id)
+  }
+
+  let addedCount = 0
+  let updatedCount = 0
+  let skippedCount = 0
+
+  for (const importedLearner of importedLearners) {
+    const trimmedName = String(importedLearner?.name || "").trim()
+    if (!trimmedName) {
+      skippedCount += 1
+      continue
+    }
+
+    const importedCode = normalizeLearnerCode(importedLearner?.learnerCode)
+    const importedStudentNumber = normalizeStudentNumber(importedLearner?.studentNumber)
+    const matchedLearner =
+      (importedStudentNumber
+        ? nextLearners.find((learner) => normalizeStudentNumber(learner.studentNumber) === importedStudentNumber)
+        : null) ||
+      (importedCode ? nextLearners.find((learner) => learner.learnerCode === importedCode) : null) ||
+      nextLearners.find((learner) => normalizeParticipantName(learner.name) === normalizeParticipantName(trimmedName)) ||
+      null
+
+    if (matchedLearner) {
+      const nextCodeCandidate =
+        importedCode && (!codeOwnerMap.has(importedCode) || codeOwnerMap.get(importedCode) === matchedLearner.id)
+          ? importedCode
+          : matchedLearner.learnerCode
+      const nextStudentNumberCandidate =
+        importedStudentNumber &&
+        (!studentNumberOwnerMap.has(importedStudentNumber) || studentNumberOwnerMap.get(importedStudentNumber) === matchedLearner.id)
+          ? importedStudentNumber
+          : normalizeStudentNumber(matchedLearner.studentNumber)
+      const nextCode = isValidLearnerCode(nextCodeCandidate)
+        ? nextCodeCandidate
+        : generateUniqueClassroomLearnerCode({ learners: nextLearners.filter((learner) => learner.id !== matchedLearner.id) }, codeOwnerMap.keys())
+      const nextStudentNumber =
+        nextStudentNumberCandidate ||
+        generateNextStudentNumber(
+          nextLearners
+            .filter((learner) => learner.id !== matchedLearner.id)
+            .map((learner) => learner.studentNumber)
+            .concat([...studentNumberOwnerMap.keys()].filter(Boolean))
+        )
+
+      const changed =
+        matchedLearner.name !== trimmedName ||
+        matchedLearner.learnerCode !== nextCode ||
+        normalizeStudentNumber(matchedLearner.studentNumber) !== nextStudentNumber
+
+      if (!changed) {
+        skippedCount += 1
+        continue
+      }
+
+      codeOwnerMap.delete(matchedLearner.learnerCode)
+      if (matchedLearner.studentNumber) studentNumberOwnerMap.delete(matchedLearner.studentNumber)
+
+      matchedLearner.name = trimmedName
+      matchedLearner.learnerCode = nextCode
+      matchedLearner.studentNumber = nextStudentNumber
+      matchedLearner.updatedAt = now
+
+      codeOwnerMap.set(nextCode, matchedLearner.id)
+      studentNumberOwnerMap.set(nextStudentNumber, matchedLearner.id)
+      updatedCount += 1
+      continue
+    }
+
+    const nextCode =
+      isValidLearnerCode(importedCode) && !codeOwnerMap.has(importedCode)
+        ? importedCode
+        : generateUniqueClassroomLearnerCode({ learners: nextLearners }, codeOwnerMap.keys())
+    const nextStudentNumber =
+      importedStudentNumber && !studentNumberOwnerMap.has(importedStudentNumber)
+        ? importedStudentNumber
+        : generateNextStudentNumber(nextLearners.map((learner) => learner.studentNumber).concat([...studentNumberOwnerMap.keys()]))
+    const nextLearner = normalizeClassroomLearner({
+      id: generateEntityId("class-learner"),
+      name: trimmedName,
+      learnerCode: nextCode,
+      studentNumber: nextStudentNumber,
+      createdAt: now,
+      updatedAt: now,
+    })
+    if (!nextLearner) {
+      skippedCount += 1
+      continue
+    }
+    nextLearners.push(nextLearner)
+    codeOwnerMap.set(nextCode, nextLearner.id)
+    studentNumberOwnerMap.set(nextStudentNumber, nextLearner.id)
+    addedCount += 1
+  }
+
+  return {
+    nextLearners,
+    addedCount,
+    updatedCount,
+    skippedCount,
+  }
+}
+
 function updateClassroomInMemory(classroomId, updater) {
   const index = classrooms.findIndex((entry) => entry.id === String(classroomId ?? "").trim())
   if (index === -1) return null
@@ -5162,12 +5384,6 @@ async function syncClassroomLearnerAcrossMathRooms(classroom, learner, previousN
       room.math.classId = classroom.id
       room.math.className = classroom.name
     }
-    if (previousName || previousLearnerCode) {
-      await removeMathResumeIndex(previousName || matchingPlayer.name, previousLearnerCode || matchingPlayer.learnerCode)
-      await renameMathGrowthRecord(previousName, previousLearnerCode, learner.name, learner.learnerCode)
-    } else {
-      await ensureMathGrowthRecordLoaded(learner.name, learner.learnerCode)
-    }
     const progress = ensureMathProgress(room, matchingPlayer.id)
     syncMathGrowthForPlayer(room, matchingPlayer, progress)
     await syncMathResumeIndexForPlayer(room, matchingPlayer)
@@ -5180,6 +5396,24 @@ async function syncClassroomLearnerAcrossMathRooms(classroom, learner, previousN
     schedulePersistActiveRooms()
     schedulePersistMathRoomToCloud(room)
     emitStateToRoom(room)
+  }
+}
+
+async function migrateClassroomLearnerIdentity(previousName = "", previousLearnerCode = "", nextName = "", nextLearnerCode = "") {
+  const normalizedPreviousCode = normalizeLearnerCode(previousLearnerCode)
+  const normalizedNextCode = normalizeLearnerCode(nextLearnerCode)
+  const trimmedPreviousName = String(previousName ?? "").trim()
+  const trimmedNextName = String(nextName ?? "").trim()
+  const changedIdentity =
+    normalizeParticipantName(trimmedPreviousName) !== normalizeParticipantName(trimmedNextName) ||
+    normalizedPreviousCode !== normalizedNextCode
+
+  if (!trimmedNextName || !isValidLearnerCode(normalizedNextCode)) return
+  if (changedIdentity && trimmedPreviousName && isValidLearnerCode(normalizedPreviousCode)) {
+    await removeMathResumeIndex(trimmedPreviousName, normalizedPreviousCode)
+    await renameMathGrowthRecord(trimmedPreviousName, normalizedPreviousCode, trimmedNextName, normalizedNextCode)
+  } else {
+    await ensureMathGrowthRecordLoaded(trimmedNextName, normalizedNextCode)
   }
 }
 
@@ -8479,7 +8713,7 @@ io.on("connection", (socket) => {
     })
   })
 
-  socket.on("host:classes:learner:add", async ({ classId, name, learnerCode }) => {
+  socket.on("host:classes:learner:add", async ({ classId, name, learnerCode, studentNumber }) => {
     const room = requireHostRoom(socket)
     if (!room) return
     await ensureClassroomsHydratedFromCloud()
@@ -8495,12 +8729,17 @@ io.on("connection", (socket) => {
       socket.emit("host:error", { message: "Vul eerst de naam van de leerling in." })
       return
     }
-    if (!isValidLearnerCode(normalizedCode)) {
+    if (String(learnerCode ?? "").trim() && !isValidLearnerCode(normalizedCode)) {
       socket.emit("host:error", { message: "Gebruik een leerlingcode van precies 4 cijfers." })
       return
     }
-    if (classroom.learners.some((entry) => entry.learnerCode === normalizedCode)) {
+    if (normalizedCode && classroom.learners.some((entry) => entry.learnerCode === normalizedCode)) {
       socket.emit("host:error", { message: "Deze leerlingcode is al in gebruik binnen deze klas." })
+      return
+    }
+    const normalizedStudentNumber = normalizeStudentNumber(studentNumber)
+    if (normalizedStudentNumber && classroom.learners.some((entry) => normalizeStudentNumber(entry.studentNumber) === normalizedStudentNumber)) {
+      socket.emit("host:error", { message: "Dit leerlingnummer is al in gebruik binnen deze klas." })
       return
     }
 
@@ -8508,7 +8747,8 @@ io.on("connection", (socket) => {
     const nextLearner = normalizeClassroomLearner({
       id: generateEntityId("class-learner"),
       name: trimmedName,
-      learnerCode: normalizedCode,
+      learnerCode: normalizedCode || generateUniqueClassroomLearnerCode(classroom),
+      studentNumber: normalizedStudentNumber || generateNextStudentNumber(classroom.learners.map((entry) => entry.studentNumber)),
       createdAt: now,
       updatedAt: now,
     })
@@ -8523,7 +8763,7 @@ io.on("connection", (socket) => {
     })
   })
 
-  socket.on("host:classes:learner:update", async ({ classId, learnerId, name, learnerCode }) => {
+  socket.on("host:classes:learner:update", async ({ classId, learnerId, name, learnerCode, studentNumber }) => {
     const room = requireHostRoom(socket)
     if (!room) return
     await ensureClassroomsHydratedFromCloud()
@@ -8545,12 +8785,22 @@ io.on("connection", (socket) => {
       socket.emit("host:error", { message: "Vul eerst de naam van de leerling in." })
       return
     }
-    if (!isValidLearnerCode(normalizedCode)) {
+    if (String(learnerCode ?? "").trim() && !isValidLearnerCode(normalizedCode)) {
       socket.emit("host:error", { message: "Gebruik een leerlingcode van precies 4 cijfers." })
       return
     }
-    if (classroom.learners.some((entry) => entry.id !== currentLearner.id && entry.learnerCode === normalizedCode)) {
+    if (normalizedCode && classroom.learners.some((entry) => entry.id !== currentLearner.id && entry.learnerCode === normalizedCode)) {
       socket.emit("host:error", { message: "Deze leerlingcode is al in gebruik binnen deze klas." })
+      return
+    }
+    const normalizedStudentNumber = normalizeStudentNumber(studentNumber)
+    if (
+      normalizedStudentNumber &&
+      classroom.learners.some(
+        (entry) => entry.id !== currentLearner.id && normalizeStudentNumber(entry.studentNumber) === normalizedStudentNumber
+      )
+    ) {
+      socket.emit("host:error", { message: "Dit leerlingnummer is al in gebruik binnen deze klas." })
       return
     }
 
@@ -8562,7 +8812,11 @@ io.on("connection", (socket) => {
           ? {
               ...learnerEntry,
               name: trimmedName,
-              learnerCode: normalizedCode,
+              learnerCode: normalizedCode || learnerEntry.learnerCode || generateUniqueClassroomLearnerCode(classroom),
+              studentNumber:
+                normalizedStudentNumber ||
+                normalizeStudentNumber(learnerEntry.studentNumber) ||
+                generateNextStudentNumber(classroom.learners.map((entry) => entry.studentNumber)),
               updatedAt: now,
             }
           : learnerEntry
@@ -8571,11 +8825,93 @@ io.on("connection", (socket) => {
     }))
     const nextLearner = nextClassroom?.learners.find((entry) => entry.id === currentLearner.id) || null
     if (nextLearner) {
-      await renameMathGrowthRecord(currentLearner.name, currentLearner.learnerCode, nextLearner.name, nextLearner.learnerCode)
+      await migrateClassroomLearnerIdentity(currentLearner.name, currentLearner.learnerCode, nextLearner.name, nextLearner.learnerCode)
       await syncClassroomLearnerAcrossMathRooms(nextClassroom, nextLearner, currentLearner.name, currentLearner.learnerCode)
     }
     socket.emit("host:classes:success", {
       message: `Gegevens van ${trimmedName} zijn bijgewerkt.`,
+    })
+  })
+
+  socket.on("host:classes:import", async ({ classId, fileName, fileDataBase64 }) => {
+    const room = requireHostRoom(socket)
+    if (!room) return
+    await ensureClassroomsHydratedFromCloud()
+
+    const classroom = findClassroomById(classId)
+    if (!classroom) {
+      socket.emit("host:error", { message: "Deze klas bestaat niet meer." })
+      return
+    }
+
+    const normalizedFileName = String(fileName ?? "").trim() || "leerlingenbestand.xlsx"
+    const base64Payload = String(fileDataBase64 || "").trim()
+    if (!base64Payload) {
+      socket.emit("host:error", { message: "Kies eerst een Excel- of CSV-bestand om te importeren." })
+      return
+    }
+
+    let parsedImport = null
+    try {
+      parsedImport = parseClassroomLearnerImport(Buffer.from(base64Payload, "base64"), normalizedFileName)
+    } catch (error) {
+      socket.emit("host:error", {
+        message:
+          error instanceof Error && error.message
+            ? `Dit bestand kon niet worden gelezen. Controleer of het een geldig Excel- of CSV-bestand is. (${error.message})`
+            : "Dit bestand kon niet worden gelezen. Controleer of het een geldig Excel- of CSV-bestand is.",
+      })
+      return
+    }
+
+    const importedLearners = Array.isArray(parsedImport?.learners) ? parsedImport.learners : []
+    if (!importedLearners.length) {
+      socket.emit("host:error", {
+        message:
+          "In dit bestand vonden we geen leerlingen. Gebruik bij voorkeur kolommen zoals naam, leerlingcode en leerlingnummer.",
+      })
+      return
+    }
+
+    const previousLearnersById = new Map(
+      classroom.learners.map((learner) => [
+        learner.id,
+        {
+          name: learner.name,
+          learnerCode: learner.learnerCode,
+        },
+      ])
+    )
+    const importResult = mergeImportedLearnersIntoClassroom(classroom, importedLearners)
+    if (!importResult.addedCount && !importResult.updatedCount) {
+      socket.emit("host:classes:success", {
+        message: `Import afgerond: er waren geen nieuwe of gewijzigde leerlingen in ${classroom.name}.`,
+      })
+      return
+    }
+
+    const nextClassroom = updateClassroomInMemory(classroom.id, (entry) => ({
+      ...entry,
+      learners: importResult.nextLearners,
+      updatedAt: new Date().toISOString(),
+    }))
+    if (!nextClassroom) {
+      socket.emit("host:error", { message: "De klas kon na het importeren niet worden bijgewerkt." })
+      return
+    }
+
+    for (const learner of nextClassroom.learners) {
+      const previous = previousLearnersById.get(learner.id)
+      if (!previous) {
+        await ensureMathGrowthRecordLoaded(learner.name, learner.learnerCode)
+        continue
+      }
+      await migrateClassroomLearnerIdentity(previous.name, previous.learnerCode, learner.name, learner.learnerCode)
+      await syncClassroomLearnerAcrossMathRooms(nextClassroom, learner, previous.name, previous.learnerCode)
+    }
+
+    socket.emit("host:classes:success", {
+      message: `Import klaar voor ${nextClassroom.name}: ${importResult.addedCount} toegevoegd, ${importResult.updatedCount} bijgewerkt, ${importResult.skippedCount} overgeslagen.`,
     })
   })
 

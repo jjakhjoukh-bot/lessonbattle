@@ -22,6 +22,7 @@ const TARGET_MANUAL_UPLOAD_DATA_BYTES = 1400 * 1024
 const MAX_MANUAL_UPLOAD_DIMENSION = 1280
 const MIN_MANUAL_UPLOAD_DIMENSION = 480
 const MANUAL_UPLOAD_QUALITY_STEPS = [0.82, 0.72, 0.62, 0.52, 0.44]
+const MAX_CLASSROOM_IMPORT_FILE_BYTES = 6 * 1024 * 1024
 const MATH_LEVEL_OPTIONS = ["0f", "1f", "2f", "3f", "4f"]
 const PLAYER_JOIN_MODE_CLASSROOM = "classroom"
 const PLAYER_JOIN_MODE_HOME_MATH = "home-math"
@@ -571,6 +572,26 @@ function readFileAsDataUrl(file) {
   })
 }
 
+function readFileAsArrayBuffer(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result)
+    reader.onerror = () => reject(new Error("Bestand kon niet worden gelezen."))
+    reader.readAsArrayBuffer(file)
+  })
+}
+
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer)
+  const chunkSize = 0x8000
+  let binary = ""
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    const chunk = bytes.subarray(index, index + chunkSize)
+    binary += String.fromCharCode(...chunk)
+  }
+  return window.btoa(binary)
+}
+
 function estimateDataUrlBytes(dataUrl) {
   const base64Payload = String(dataUrl || "").split(",")[1] || ""
   return Math.floor((base64Payload.length * 3) / 4)
@@ -851,6 +872,7 @@ function HostPage() {
   const [classroomDrafts, setClassroomDrafts] = useState({})
   const [classroomLearnerDrafts, setClassroomLearnerDrafts] = useState({})
   const [classroomLearnerEditDrafts, setClassroomLearnerEditDrafts] = useState({})
+  const [classroomImportBusyId, setClassroomImportBusyId] = useState("")
   const [loginForm, setLoginForm] = useState(storedHostSession.loginForm)
   const [hostSession, setHostSession] = useState(storedHostSession.hostSession)
   const [localRoomBackup, setLocalRoomBackup] = useState(() =>
@@ -1041,7 +1063,7 @@ function HostPage() {
             classroom.sectionName,
             classroom.audience,
             classroom.ownerDisplayName,
-            ...(classroom.learners || []).flatMap((learner) => [learner.name, learner.learnerCode]),
+            ...(classroom.learners || []).flatMap((learner) => [learner.name, learner.learnerCode, learner.studentNumber]),
           ]
             .filter(Boolean)
             .join(" "),
@@ -1171,7 +1193,7 @@ function HostPage() {
     setClassroomLearnerDrafts((current) => {
       const nextDrafts = { ...current }
       for (const classroom of classrooms) {
-        nextDrafts[classroom.id] = nextDrafts[classroom.id] || { name: "", learnerCode: "" }
+        nextDrafts[classroom.id] = nextDrafts[classroom.id] || { name: "", learnerCode: "", studentNumber: "" }
       }
       return nextDrafts
     })
@@ -1182,6 +1204,7 @@ function HostPage() {
           nextDrafts[learner.id] = {
             name: nextDrafts[learner.id]?.name ?? learner.name ?? "",
             learnerCode: nextDrafts[learner.id]?.learnerCode ?? learner.learnerCode ?? "",
+            studentNumber: nextDrafts[learner.id]?.studentNumber ?? learner.studentNumber ?? "",
           }
         }
       }
@@ -1262,6 +1285,7 @@ function HostPage() {
     const onError = ({ message }) => {
       const normalizedMessage = String(message || "")
       setSlideImageBusy(false)
+      setClassroomImportBusyId("")
       setStatus(`Fout: ${normalizedMessage}`)
 
       if (/onjuiste docentgegevens/i.test(normalizedMessage)) {
@@ -1324,6 +1348,7 @@ function HostPage() {
     }
     const onClassesSuccess = ({ message }) => {
       setNewClassroomForm((current) => ({ ...current, name: "" }))
+      setClassroomImportBusyId("")
       setStatus(message || "Klassen zijn bijgewerkt.")
     }
     const onPresentationImageSuccess = ({ manualImageUrl, imageAlt, sourceTitle, searchAttempt }) => {
@@ -1835,16 +1860,17 @@ function HostPage() {
   }
 
   const addLearnerToClassroom = (classId) => {
-    const draft = classroomLearnerDrafts[classId] || { name: "", learnerCode: "" }
+    const draft = classroomLearnerDrafts[classId] || { name: "", learnerCode: "", studentNumber: "" }
     setStatus("Leerling wordt aan de klas toegevoegd...")
     socket.emit("host:classes:learner:add", {
       classId,
       name: draft.name,
       learnerCode: draft.learnerCode,
+      studentNumber: draft.studentNumber,
     })
     setClassroomLearnerDrafts((current) => ({
       ...current,
-      [classId]: { name: "", learnerCode: "" },
+      [classId]: { name: "", learnerCode: "", studentNumber: "" },
     }))
   }
 
@@ -1857,7 +1883,31 @@ function HostPage() {
       learnerId,
       name: draft.name,
       learnerCode: draft.learnerCode,
+      studentNumber: draft.studentNumber,
     })
+  }
+
+  const importLearnersIntoClassroom = async (classId, file) => {
+    if (!file) return
+    if (file.size > MAX_CLASSROOM_IMPORT_FILE_BYTES) {
+      setStatus("Dit bestand is te groot. Gebruik een Excel- of CSV-bestand tot ongeveer 6 MB.")
+      return
+    }
+
+    try {
+      setClassroomImportBusyId(classId)
+      setStatus("Leerlingenbestand wordt ingelezen...")
+      const buffer = await readFileAsArrayBuffer(file)
+      const fileDataBase64 = arrayBufferToBase64(buffer)
+      socket.emit("host:classes:import", {
+        classId,
+        fileName: file.name,
+        fileDataBase64,
+      })
+    } catch (error) {
+      setClassroomImportBusyId("")
+      setStatus(error instanceof Error ? error.message : "Het leerlingenbestand kon niet worden gelezen.")
+    }
   }
 
   const deleteClassroomLearner = (classId, learnerId) => {
@@ -1941,17 +1991,18 @@ function HostPage() {
     }
     downloadCsvFile(
       `lessonbattle-klassen-${slugifyFilePart(hostSession.roomCode || "school") || "export"}.csv`,
-      ["Klas", "Sectie", "Doelgroep", "Eigenaar", "Leerling", "Leerlingcode", "Aangemaakt", "Laatst bijgewerkt"],
+      ["Klas", "Sectie", "Doelgroep", "Eigenaar", "Leerling", "Leerlingnummer", "Leerlingcode", "Aangemaakt", "Laatst bijgewerkt"],
       filteredClassrooms.flatMap((classroom) => {
         const learners = classroom.learners?.length
           ? classroom.learners
-          : [{ id: `${classroom.id}-empty`, name: "", learnerCode: "", createdAt: "", updatedAt: "" }]
+          : [{ id: `${classroom.id}-empty`, name: "", studentNumber: "", learnerCode: "", createdAt: "", updatedAt: "" }]
         return learners.map((learner) => [
           classroom.name,
           classroom.sectionName || "",
           classroom.audience || "",
           classroom.ownerDisplayName || "",
           learner.name || "",
+          learner.studentNumber || "",
           learner.learnerCode || "",
           learner.createdAt ? formatHistoryDate(learner.createdAt) : "",
           learner.updatedAt ? formatHistoryDate(learner.updatedAt) : "",
@@ -2881,6 +2932,7 @@ function HostPage() {
           {managementPanel === "classes" ? (
             <ClassesSection
               audienceFilter={classroomAudienceFilter}
+              classroomImportBusyId={classroomImportBusyId}
               classroomDrafts={classroomDrafts}
               classroomLearnerDrafts={classroomLearnerDrafts}
               classroomLearnerEditDrafts={classroomLearnerEditDrafts}
@@ -2905,7 +2957,7 @@ function HostPage() {
                   ...current,
                   [classId]:
                     typeof updater === "function"
-                      ? updater(current[classId] || { name: "", learnerCode: "" })
+                      ? updater(current[classId] || { name: "", learnerCode: "", studentNumber: "" })
                       : updater,
                 }))
               }
@@ -2914,10 +2966,11 @@ function HostPage() {
                   ...current,
                   [learnerId]:
                     typeof updater === "function"
-                      ? updater(current[learnerId] || { name: "", learnerCode: "" })
+                      ? updater(current[learnerId] || { name: "", learnerCode: "", studentNumber: "" })
                       : updater,
                 }))
               }
+              onClassroomImport={importLearnersIntoClassroom}
               onClassroomLearnerSave={saveClassroomLearner}
               onClassroomSave={updateClassroom}
               onCreateClassroom={createClassroom}
@@ -3069,18 +3122,19 @@ function PlayerPage() {
       }
     }
   })
+  const storedJoinMode = joinSessionCodeFromUrl ? PLAYER_JOIN_MODE_CLASSROOM : playerSession.joinMode || PLAYER_JOIN_MODE_CLASSROOM
   const [name, setName] = useState(playerSession.name || "")
   const [teamId, setTeamId] = useState(playerSession.teamId || "")
   const [roomCode, setRoomCode] = useState(joinSessionCodeFromUrl || playerSession.roomCode || "")
   const [playerId, setPlayerId] = useState(playerSession.playerId || "")
   const [playerSessionId, setPlayerSessionId] = useState(playerSession.playerSessionId || createPlayerSessionId())
   const [learnerCode, setLearnerCode] = useState(playerSession.learnerCode || "")
-  const [joinMode, setJoinMode] = useState(
-    joinSessionCodeFromUrl ? PLAYER_JOIN_MODE_CLASSROOM : playerSession.joinMode || PLAYER_JOIN_MODE_CLASSROOM
-  )
+  const [joinMode, setJoinMode] = useState(storedJoinMode)
   const [joinCodeLockedFromUrl, setJoinCodeLockedFromUrl] = useState(Boolean(joinSessionCodeFromUrl))
   const [roomPreview, setRoomPreview] = useState({ valid: false, teams: [], intakeTotal: 0, mode: "battle", groupModeEnabled: false })
-  const [joined, setJoined] = useState(Boolean(joinSessionCodeFromUrl ? false : playerSession.joined))
+  const [joined, setJoined] = useState(
+    Boolean(joinSessionCodeFromUrl ? false : storedJoinMode === PLAYER_JOIN_MODE_HOME_MATH ? false : playerSession.joined)
+  )
   const [homeMathSession, setHomeMathSession] = useState(null)
   const [learnerPortal, setLearnerPortal] = useState(null)
   const [selfPracticeSession, setSelfPracticeSession] = useState(null)
@@ -3100,6 +3154,17 @@ function PlayerPage() {
   const liveResult = game.mode === "math" ? game.math?.lastResult || null : result
   const isLocalHomeMath = Boolean(homeMathSession)
   const isSelfPracticeActive = Boolean(selfPracticeSession)
+  const resetLearnerLiveState = () => {
+    setJoined(false)
+    setPlayerId("")
+    setResult(null)
+    setChosenAnswer(null)
+    setAnswerLocked(false)
+    setPracticeTextAnswer("")
+    setMathAnswer("")
+    setLessonAnswer("")
+    setLessonResult(null)
+  }
 
   useSoundEffects(liveResult, game.status)
 
@@ -3129,8 +3194,7 @@ function PlayerPage() {
     setJoinMode(PLAYER_JOIN_MODE_CLASSROOM)
     setJoinCodeLockedFromUrl(true)
     setRoomCode(joinSessionCodeFromUrl)
-    setJoined(false)
-    setPlayerId("")
+    resetLearnerLiveState()
     setTeamId("")
     setHomeMathSession(null)
     setResult(null)
@@ -3169,6 +3233,7 @@ function PlayerPage() {
           setStatus("Je gaat verder met je opgeslagen oefenroute op dit apparaat.")
           return
         }
+        resetLearnerLiveState()
         setStatus("Je bent ingelogd. Er staat nu geen actieve rekenroute klaar, maar je kunt hieronder wel zelf een oefentoets starten.")
         return
       }
@@ -3222,8 +3287,10 @@ function PlayerPage() {
       setStatus("Je leercode is bijgewerkt. Je voortgang blijft bewaard.")
     }
     const onPortalReady = (payload) => {
+      setJoined(false)
+      setPlayerId("")
       setLearnerPortal(payload)
-      if (joinMode === PLAYER_JOIN_MODE_HOME_MATH && !joined && !homeMathSession && !selfPracticeSession) {
+      if (joinMode === PLAYER_JOIN_MODE_HOME_MATH && !homeMathSession && !selfPracticeSession) {
         setStatus("Je bent ingelogd. Kies hieronder of je verder rekent of een oefentoets start.")
       }
     }
@@ -3378,6 +3445,11 @@ function PlayerPage() {
 
   const join = () => {
     if (joinMode === PLAYER_JOIN_MODE_HOME_MATH) {
+      resetLearnerLiveState()
+      setLearnerPortal(null)
+      setHomeMathSession(null)
+      setSelfPracticeSession(null)
+      setStatus("Je leerlinglogin wordt gecontroleerd...")
       socket.emit("player:portal:login", {
         name: name.trim(),
         learnerCode,
@@ -3559,8 +3631,9 @@ function PlayerPage() {
     Boolean(learnerPortal) &&
     selfPracticeTopic.trim().length >= 2 &&
     !isSelfPracticeActive &&
-    !joined &&
+    (!joined || game.mode !== "math") &&
     !isLocalHomeMath
+  const shouldShowHomeMathPortal = isHomeMathJoin && !isLocalHomeMath && !isSelfPracticeActive && (!joined || game.mode !== "math")
 
   if (isLocalHomeMath) {
     return (
@@ -3574,12 +3647,12 @@ function PlayerPage() {
             <div className="mode-switch join-mode-switch">
               <button
               className={`mode-chip ${joinMode === PLAYER_JOIN_MODE_CLASSROOM ? "is-active" : ""}`}
-              onClick={() => {
+                onClick={() => {
                   setJoinMode(PLAYER_JOIN_MODE_CLASSROOM)
                   setJoinCodeLockedFromUrl(Boolean(joinSessionCodeFromUrl))
                   if (joinSessionCodeFromUrl) setRoomCode(joinSessionCodeFromUrl)
                   setHomeMathSession(null)
-                  setJoined(false)
+                  resetLearnerLiveState()
                   setStatus(
                     joinSessionCodeFromUrl
                       ? "Sessiecode is al ingevuld via de QR-code. Vul alleen je naam in."
@@ -3595,6 +3668,11 @@ function PlayerPage() {
                 onClick={() => {
                   setJoinMode(PLAYER_JOIN_MODE_HOME_MATH)
                   setJoinCodeLockedFromUrl(false)
+                  resetLearnerLiveState()
+                  setLearnerPortal(null)
+                  setHomeMathSession(null)
+                  setSelfPracticeSession(null)
+                  setStatus("Log in met je naam en leerlingcode om zelfstandig te oefenen.")
                 }}
                 type="button"
               >
@@ -3828,7 +3906,7 @@ function PlayerPage() {
     )
   }
 
-  if (!joined && isHomeMathJoin) {
+  if (shouldShowHomeMathPortal) {
     return (
       <main className="page-shell player-shell">
         <section className="player-layout">
@@ -3847,6 +3925,7 @@ function PlayerPage() {
                   setLearnerPortal(null)
                   setSelfPracticeSession(null)
                   setHomeMathSession(null)
+                  resetLearnerLiveState()
                 }}
                 type="button"
               >
@@ -3857,6 +3936,11 @@ function PlayerPage() {
                 onClick={() => {
                   setJoinMode(PLAYER_JOIN_MODE_HOME_MATH)
                   setJoinCodeLockedFromUrl(false)
+                  resetLearnerLiveState()
+                  setLearnerPortal(null)
+                  setHomeMathSession(null)
+                  setSelfPracticeSession(null)
+                  setStatus("Log in met je naam en leerlingcode om zelfstandig te oefenen.")
                 }}
                 type="button"
               >
@@ -4002,6 +4086,7 @@ function PlayerPage() {
                   setJoinMode(PLAYER_JOIN_MODE_CLASSROOM)
                   setJoinCodeLockedFromUrl(Boolean(joinSessionCodeFromUrl))
                   if (joinSessionCodeFromUrl) setRoomCode(joinSessionCodeFromUrl)
+                  resetLearnerLiveState()
                 }}
                 type="button"
               >
@@ -4013,6 +4098,10 @@ function PlayerPage() {
                   setJoinMode(PLAYER_JOIN_MODE_HOME_MATH)
                   setJoinCodeLockedFromUrl(false)
                   setLearnerPortal(null)
+                  resetLearnerLiveState()
+                  setHomeMathSession(null)
+                  setSelfPracticeSession(null)
+                  setStatus("Log in met je naam en leerlingcode om zelfstandig te oefenen.")
                 }}
                 type="button"
               >
@@ -4117,6 +4206,7 @@ function PlayerPage() {
                 setJoinMode(PLAYER_JOIN_MODE_CLASSROOM)
                 setJoinCodeLockedFromUrl(Boolean(joinSessionCodeFromUrl))
                 if (joinSessionCodeFromUrl) setRoomCode(joinSessionCodeFromUrl)
+                resetLearnerLiveState()
               }}
               type="button"
             >
@@ -4127,6 +4217,11 @@ function PlayerPage() {
               onClick={() => {
                 setJoinMode(PLAYER_JOIN_MODE_HOME_MATH)
                 setJoinCodeLockedFromUrl(false)
+                resetLearnerLiveState()
+                setLearnerPortal(null)
+                setHomeMathSession(null)
+                setSelfPracticeSession(null)
+                setStatus("Log in met je naam en leerlingcode om zelfstandig te oefenen.")
               }}
               type="button"
             >
@@ -5921,10 +6016,12 @@ function LessonLibrarySection({
 function ClassesSection({
   audienceFilter,
   availableAudiences,
+  classroomImportBusyId,
   classrooms,
   newClassroomForm,
   onAudienceFilterChange,
   onCreateClassroom,
+  onClassroomImport,
   onExportCsv,
   onNewClassroomChange,
   onSearchChange,
@@ -6017,6 +6114,8 @@ function ClassesSection({
         </div>
       </div>
 
+      <p className="math-task-preview">Import ondersteunt Excel en CSV met kolommen zoals naam, leerlingcode en leerlingnummer.</p>
+
       {classrooms.length ? (
         <div className="lesson-library-grid">
           {classrooms.map((classroom) => {
@@ -6025,7 +6124,7 @@ function ClassesSection({
               sectionName: classroom.sectionName,
               audience: classroom.audience,
             }
-            const learnerDraft = classroomLearnerDrafts[classroom.id] || { name: "", learnerCode: "" }
+            const learnerDraft = classroomLearnerDrafts[classroom.id] || { name: "", learnerCode: "", studentNumber: "" }
             return (
               <article className="lesson-library-card classroom-card" key={classroom.id}>
                 <div className="lesson-library-head">
@@ -6093,8 +6192,20 @@ function ClassesSection({
                   <div className="math-host-card-head">
                     <div>
                       <strong>Leerlingen in deze klas</strong>
-                      <span>Leerlingen kunnen met hun naam en leerlingcode later verdergaan.</span>
+                      <span>Leerlingen kunnen met hun naam en leerlingcode later verdergaan. Je kunt ook een Excel- of CSV-lijst importeren.</span>
                     </div>
+                    <label className={`button-ghost classroom-import-button ${classroomImportBusyId === classroom.id ? "is-busy" : ""}`}>
+                      {classroomImportBusyId === classroom.id ? "Importeren..." : "Importeer Excel / CSV"}
+                      <input
+                        accept=".xlsx,.xls,.csv,.txt"
+                        onChange={(event) => {
+                          const file = event.target.files?.[0]
+                          if (file) onClassroomImport(classroom.id, file)
+                          event.target.value = ""
+                        }}
+                        type="file"
+                      />
+                    </label>
                   </div>
                   <div className="math-create-row">
                     <input
@@ -6115,19 +6226,32 @@ function ClassesSection({
                           learnerCode: event.target.value.replace(/\D/g, "").slice(0, 4),
                         }))
                       }
-                      placeholder="4 cijfers"
+                      placeholder="4 cijfers (optioneel)"
                       value={learnerDraft.learnerCode}
+                    />
+                    <input
+                      className="math-code-input"
+                      onChange={(event) =>
+                        onClassroomLearnerDraftChange(classroom.id, (current) => ({
+                          ...current,
+                          studentNumber: event.target.value.replace(/\s+/g, "").slice(0, 12),
+                        }))
+                      }
+                      placeholder="Leerlingnummer (optioneel)"
+                      value={learnerDraft.studentNumber}
                     />
                     <button className="button-primary" onClick={() => onClassroomLearnerAdd(classroom.id)} type="button">
                       Voeg leerling toe
                     </button>
                   </div>
+                  <p className="math-task-preview">Laat leerlingcode of leerlingnummer leeg als Lesson Battle die automatisch mag maken.</p>
 
                   <div className="classroom-learner-list">
                     {(classroom.learners || []).map((learner) => {
                       const learnerEditDraft = classroomLearnerEditDrafts[learner.id] || {
                         name: learner.name,
                         learnerCode: learner.learnerCode,
+                        studentNumber: learner.studentNumber,
                       }
                       return (
                         <div className="classroom-learner-row" key={learner.id}>
@@ -6149,6 +6273,17 @@ function ClassesSection({
                               }))
                             }
                             value={learnerEditDraft.learnerCode}
+                          />
+                          <input
+                            className="math-code-input"
+                            onChange={(event) =>
+                              onClassroomLearnerEditChange(learner.id, (current) => ({
+                                ...current,
+                                studentNumber: event.target.value.replace(/\s+/g, "").slice(0, 12),
+                              }))
+                            }
+                            placeholder="Leerlingnummer"
+                            value={learnerEditDraft.studentNumber}
                           />
                           <button className="button-ghost" onClick={() => onClassroomLearnerSave(classroom.id, learner.id)} type="button">
                             Bewaar

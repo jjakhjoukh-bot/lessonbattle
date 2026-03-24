@@ -3184,8 +3184,26 @@ body::after {
 
 .classroom-learner-row {
   display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(120px, 0.8fr) auto auto;
+  grid-template-columns: minmax(0, 1.4fr) minmax(120px, 0.8fr) minmax(140px, 1fr) auto auto;
   gap: 10px;
+}
+
+.classroom-import-button {
+  position: relative;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.classroom-import-button input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.classroom-import-button.is-busy {
+  opacity: 0.72;
+  pointer-events: none;
 }
 
 .lesson-library-meta span {
@@ -3574,7 +3592,7 @@ body::after {
 }
 
 .math-create-row {
-  grid-template-columns: 1.3fr 0.9fr auto;
+  grid-template-columns: 1.3fr 0.9fr 1fr auto;
   align-items: center;
 }
 
