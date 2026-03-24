@@ -3154,6 +3154,7 @@ function PlayerPage() {
   const liveResult = game.mode === "math" ? game.math?.lastResult || null : result
   const isLocalHomeMath = Boolean(homeMathSession)
   const isSelfPracticeActive = Boolean(selfPracticeSession)
+  const isLiveMathRoute = Boolean(joined && game.mode === "math" && game.math)
   const resetLearnerLiveState = () => {
     setJoined(false)
     setPlayerId("")
@@ -3399,6 +3400,13 @@ function PlayerPage() {
   }, [homeMathSession, joinMode, joined, learnerCode, name])
 
   useEffect(() => {
+    if (joinMode !== PLAYER_JOIN_MODE_HOME_MATH) return
+    if (isLocalHomeMath || isSelfPracticeActive || isLiveMathRoute) return
+    if (!joined && !playerId) return
+    resetLearnerLiveState()
+  }, [isLiveMathRoute, isLocalHomeMath, isSelfPracticeActive, joinMode, joined, playerId])
+
+  useEffect(() => {
     if (joined) return
     setStatus(
       joinMode === PLAYER_JOIN_MODE_HOME_MATH
@@ -3631,9 +3639,9 @@ function PlayerPage() {
     Boolean(learnerPortal) &&
     selfPracticeTopic.trim().length >= 2 &&
     !isSelfPracticeActive &&
-    (!joined || game.mode !== "math") &&
+    !isLiveMathRoute &&
     !isLocalHomeMath
-  const shouldShowHomeMathPortal = isHomeMathJoin && !isLocalHomeMath && !isSelfPracticeActive && (!joined || game.mode !== "math")
+  const shouldShowHomeMathPortal = isHomeMathJoin && !isLocalHomeMath && !isSelfPracticeActive && !isLiveMathRoute
 
   if (isLocalHomeMath) {
     return (
