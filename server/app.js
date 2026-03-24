@@ -5076,6 +5076,46 @@ function classroomSummaries() {
     }))
 }
 
+function findClassroomLearnerByCredentials(name = "", learnerCode = "") {
+  const normalizedName = normalizeParticipantName(name)
+  const normalizedCode = normalizeLearnerCode(learnerCode)
+  if (!normalizedName || !isValidLearnerCode(normalizedCode)) return { classroom: null, learner: null }
+
+  for (const classroom of classrooms) {
+    const learner =
+      classroom.learners.find(
+        (entry) =>
+          entry.learnerCode === normalizedCode &&
+          normalizeParticipantName(entry.name || "") === normalizedName
+      ) || null
+    if (learner) return { classroom, learner }
+  }
+
+  return { classroom: null, learner: null }
+}
+
+function resolveLearnerPortalProfile(name = "", learnerCode = "") {
+  const trimmedName = String(name ?? "").trim()
+  const normalizedCode = normalizeLearnerCode(learnerCode)
+  if (!trimmedName || !isValidLearnerCode(normalizedCode)) return null
+
+  const { classroom, learner } = findClassroomLearnerByCredentials(trimmedName, normalizedCode)
+  const growthSummary = getMathGrowthSummary(trimmedName, normalizedCode)
+
+  if (!learner && !growthSummary) return null
+
+  return {
+    name: learner?.name || trimmedName,
+    learnerCode: normalizedCode,
+    classId: classroom?.id || "",
+    className: classroom?.name || "",
+    sectionName: classroom?.sectionName || "",
+    audience: classroom?.audience || "vmbo",
+    canResumeMath: Boolean(growthSummary?.sessionCount),
+    growthSummary: growthSummary || null,
+  }
+}
+
 function emitClassroomsToSocket(socket) {
   socket.emit("host:classes:update", { classrooms: classroomSummaries() })
 }
@@ -10132,6 +10172,76 @@ io.on("connection", (socket) => {
     emitStateToSocket(socket, room)
     emitStateToRoom(room)
     await syncMathResumeIndexForPlayer(room, player)
+  })
+
+  socket.on("player:portal:login", async ({ name, learnerCode }) => {
+    await ensureClassroomsHydratedFromCloud()
+    const profile = resolveLearnerPortalProfile(name, learnerCode)
+    if (!profile) {
+      socket.emit("player:error", {
+        message: "We herkennen deze naam en leerlingcode nog niet. Vraag je docent om je eerst aan een klas toe te voegen.",
+      })
+      return
+    }
+
+    socket.emit("player:portal:ready", profile)
+  })
+
+  socket.on("player:self-practice:start", async ({ name, learnerCode, topic, questionCount, questionFormat }) => {
+    await ensureClassroomsHydratedFromCloud()
+    const profile = resolveLearnerPortalProfile(name, learnerCode)
+    if (!profile) {
+      socket.emit("player:error", {
+        message: "We herkennen deze naam en leerlingcode nog niet. Vraag je docent om je eerst aan een klas toe te voegen.",
+      })
+      return
+    }
+
+    const trimmedTopic = String(topic ?? "").trim()
+    if (trimmedTopic.length < 2) {
+      socket.emit("player:error", { message: "Kies eerst een onderwerp voor je oefentoets." })
+      return
+    }
+
+    const safeQuestionCount = Math.max(6, Math.min(24, Number(questionCount) || 8))
+    const safeQuestionFormat = normalizePracticeQuestionFormat(questionFormat)
+
+    try {
+      const practiceResult = await withTimeout(
+        generateQuestions({
+          topic: `${trimmedTopic}\nMaak hier een zelfstandige oefentoets van voor een leerling.`,
+          audience: profile.audience || "vmbo",
+          questionCount: safeQuestionCount,
+          questionFormat: safeQuestionFormat,
+        }),
+        AI_ROUND_GENERATION_TIMEOUT_MS
+      )
+
+      socket.emit("player:self-practice:started", {
+        title: `Oefentoets over ${trimmedTopic}`,
+        instructions: "Werk zelfstandig, kijk na elke vraag naar de uitleg en ga daarna verder.",
+        topic: trimmedTopic,
+        questionFormat: safeQuestionFormat,
+        questions: cloneQuestionsForStorage(practiceResult.questions),
+        providerLabel: practiceResult.providerLabel || "AI",
+      })
+      return
+    } catch (error) {
+      console.error("Leerling-oefentoets genereren mislukt:", error instanceof Error ? error.message : error)
+    }
+
+    socket.emit("player:self-practice:started", {
+      title: `Oefentoets over ${trimmedTopic}`,
+      instructions: "Werk zelfstandig, kijk na elke vraag naar de uitleg en ga daarna verder.",
+      topic: trimmedTopic,
+      questionFormat: safeQuestionFormat,
+      questions: buildFallbackQuestions({
+        topic: trimmedTopic,
+        questionCount: safeQuestionCount,
+        questionFormat: safeQuestionFormat,
+      }).slice(0, safeQuestionCount),
+      providerLabel: "Lokale reserve",
+    })
   })
 
   socket.on("player:answer", ({ answer, typedAnswer }) => {

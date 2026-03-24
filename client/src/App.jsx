@@ -293,6 +293,168 @@ function getPracticeQuestionFormatLabel(format = "") {
   return PRACTICE_QUESTION_FORMAT_OPTIONS.find((option) => option.id === normalized)?.label || "Meerkeuze"
 }
 
+function tokenizeComparableText(value = "") {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/gi, " ")
+    .trim()
+    .split(/\s+/)
+    .filter((part) => part.length >= 1)
+}
+
+function normalizeComparableText(value = "") {
+  return tokenizeComparableText(value).join(" ").trim()
+}
+
+function extractAcceptedAnswerCandidates(value = "") {
+  const source = String(value || "").trim()
+  if (!source) return []
+
+  const quoted = [...source.matchAll(/["'“”‘’]([^"'“”‘’]+)["'“”‘’]/g)].map((match) => match[1])
+  const split = source
+    .replace(/\b(bijvoorbeeld|zoals|denk aan|verwacht ongeveer)\b[:]?/gi, "")
+    .split(/[,;/]|\sof\s/gi)
+    .map((part) => part.trim())
+    .filter(Boolean)
+
+  return [...new Set([...quoted, ...split].map((part) => normalizeComparableText(part)).filter(Boolean))]
+}
+
+function matchesAcceptedAnswer(response = "", candidate = "") {
+  const normalizedResponse = normalizeComparableText(response)
+  const normalizedCandidate = normalizeComparableText(candidate)
+
+  if (!normalizedResponse || !normalizedCandidate) return false
+  if (normalizedResponse === normalizedCandidate) return true
+
+  const responseTokens = tokenizeComparableText(normalizedResponse)
+  const candidateTokens = tokenizeComparableText(normalizedCandidate)
+
+  if (responseTokens.length === 1 && candidateTokens.includes(responseTokens[0])) return true
+  if (candidateTokens.length === 1 && responseTokens.includes(candidateTokens[0])) return true
+
+  return (
+    normalizedResponse.length >= 5 &&
+    normalizedCandidate.length >= 5 &&
+    (normalizedResponse.includes(normalizedCandidate) || normalizedCandidate.includes(normalizedResponse))
+  )
+}
+
+function createSelfPracticeSession(payload = {}) {
+  const questions = Array.isArray(payload.questions)
+    ? payload.questions.map((question, index) => ({
+        ...question,
+        id: question.id || `self-practice-${index + 1}`,
+        options: [...(question.options || [])],
+        acceptedAnswers: [...(question.acceptedAnswers || [])],
+      }))
+    : []
+
+  return {
+    id: `self-practice-${Date.now().toString(36)}`,
+    title: String(payload.title || "Oefentoets").trim() || "Oefentoets",
+    instructions:
+      String(payload.instructions || "Werk zelfstandig, kijk na elke vraag naar de uitleg en ga daarna verder.").trim() ||
+      "Werk zelfstandig, kijk na elke vraag naar de uitleg en ga daarna verder.",
+    topic: String(payload.topic || "").trim(),
+    providerLabel: String(payload.providerLabel || "Lesson Battle").trim() || "Lesson Battle",
+    questionFormat: String(payload.questionFormat || "multiple-choice").trim() || "multiple-choice",
+    questions,
+    currentIndex: 0,
+    currentResult: null,
+    answers: [],
+    startedAt: new Date().toISOString(),
+    finishedAt: "",
+  }
+}
+
+function evaluateSelfPracticeQuestion(question, submission = {}) {
+  const questionType = String(question?.questionType || "multiple-choice").trim().toLowerCase()
+  if (questionType === "typed") {
+    const answerText = String(submission.answerText || "").trim()
+    const acceptedAnswers = [
+      ...new Set(
+        [...(question.acceptedAnswers || []), question.displayAnswer || ""]
+          .flatMap((entry) => [entry, ...extractAcceptedAnswerCandidates(entry)])
+          .map((entry) => String(entry || "").trim())
+          .filter(Boolean)
+      ),
+    ]
+    const correct = acceptedAnswers.some((candidate) => matchesAcceptedAnswer(answerText, candidate))
+    return {
+      questionType: "typed",
+      answerIndex: null,
+      answerText,
+      correct,
+      correctIndex: null,
+      correctAnswer: String(question.displayAnswer || acceptedAnswers[0] || "").trim(),
+      explanation: question.explanation || "",
+      awardedPoints: 0,
+      basePoints: 0,
+      speedBonus: 0,
+      multiplier: 1,
+    }
+  }
+
+  const answerIndex = Number(submission.answerIndex)
+  const correctIndex = Number(question?.correctIndex)
+  return {
+    questionType: "multiple-choice",
+    answerIndex,
+    answerText: "",
+    correct: Number.isInteger(answerIndex) && answerIndex === correctIndex,
+    correctIndex,
+    correctAnswer: String(question?.options?.[correctIndex] || "").trim(),
+    explanation: question?.explanation || "",
+    awardedPoints: 0,
+    basePoints: 0,
+    speedBonus: 0,
+    multiplier: 1,
+  }
+}
+
+function submitSelfPracticeSessionAnswer(session, submission = {}) {
+  if (!session?.questions?.length) return session
+  const currentQuestion = session.questions[session.currentIndex] || null
+  if (!currentQuestion) return session
+  const result = evaluateSelfPracticeQuestion(currentQuestion, submission)
+  const nextAnswers = [
+    ...session.answers,
+    {
+      questionId: currentQuestion.id,
+      prompt: currentQuestion.prompt,
+      answeredAt: new Date().toISOString(),
+      ...result,
+    },
+  ]
+
+  return {
+    ...session,
+    currentResult: result,
+    answers: nextAnswers,
+  }
+}
+
+function advanceSelfPracticeSession(session) {
+  if (!session?.questions?.length) return session
+  const isLastQuestion = session.currentIndex + 1 >= session.questions.length
+  if (isLastQuestion) {
+    return {
+      ...session,
+      finishedAt: session.finishedAt || new Date().toISOString(),
+      currentResult: null,
+    }
+  }
+
+  return {
+    ...session,
+    currentIndex: session.currentIndex + 1,
+    currentResult: null,
+  }
+}
+
 function formatMathLevelLabel(level) {
   return String(level || "").trim().toUpperCase()
 }
@@ -2920,6 +3082,11 @@ function PlayerPage() {
   const [roomPreview, setRoomPreview] = useState({ valid: false, teams: [], intakeTotal: 0, mode: "battle", groupModeEnabled: false })
   const [joined, setJoined] = useState(Boolean(joinSessionCodeFromUrl ? false : playerSession.joined))
   const [homeMathSession, setHomeMathSession] = useState(null)
+  const [learnerPortal, setLearnerPortal] = useState(null)
+  const [selfPracticeSession, setSelfPracticeSession] = useState(null)
+  const [selfPracticeTopic, setSelfPracticeTopic] = useState("")
+  const [selfPracticeQuestionCount, setSelfPracticeQuestionCount] = useState(8)
+  const [selfPracticeQuestionFormat, setSelfPracticeQuestionFormat] = useState("multiple-choice")
   const [result, setResult] = useState(null)
   const [chosenAnswer, setChosenAnswer] = useState(null)
   const [answerLocked, setAnswerLocked] = useState(false)
@@ -2932,6 +3099,7 @@ function PlayerPage() {
   const timeLeft = useQuestionCountdown(game)
   const liveResult = game.mode === "math" ? game.math?.lastResult || null : result
   const isLocalHomeMath = Boolean(homeMathSession)
+  const isSelfPracticeActive = Boolean(selfPracticeSession)
 
   useSoundEffects(liveResult, game.status)
 
@@ -2974,7 +3142,11 @@ function PlayerPage() {
 
   useEffect(() => {
     const onJoined = (nextMode = roomPreview.mode) => {
+      setLearnerPortal((current) =>
+        current || (name.trim() && /^\d{4}$/.test(learnerCode) ? { name: name.trim(), learnerCode, audience: "vmbo" } : current)
+      )
       setHomeMathSession(null)
+      setSelfPracticeSession(null)
       setJoined(true)
       setStatus(nextMode === "math" ? "Je bent verbonden. Je rekensom of instaptoets staat voor je klaar." : "Je bent verbonden. Wacht op de volgende vraag.")
     }
@@ -2994,9 +3166,11 @@ function PlayerPage() {
           setHomeMathSession(localMath)
           if (localSnapshot?.roomCode) setRoomCode(localSnapshot.roomCode)
           setJoined(true)
-          setStatus("Je gaat verder met je opgeslagen thuisroute op dit apparaat.")
+          setStatus("Je gaat verder met je opgeslagen oefenroute op dit apparaat.")
           return
         }
+        setStatus("Je bent ingelogd. Er staat nu geen actieve rekenroute klaar, maar je kunt hieronder wel zelf een oefentoets starten.")
+        return
       }
       setStatus(text)
     }
@@ -3047,6 +3221,21 @@ function PlayerPage() {
       if (nextLearnerCode) setLearnerCode(nextLearnerCode)
       setStatus("Je leercode is bijgewerkt. Je voortgang blijft bewaard.")
     }
+    const onPortalReady = (payload) => {
+      setLearnerPortal(payload)
+      if (joinMode === PLAYER_JOIN_MODE_HOME_MATH && !joined && !homeMathSession && !selfPracticeSession) {
+        setStatus("Je bent ingelogd. Kies hieronder of je verder rekent of een oefentoets start.")
+      }
+    }
+    const onSelfPracticeStarted = (payload) => {
+      setSelfPracticeSession(createSelfPracticeSession(payload))
+      setPracticeTextAnswer("")
+      setChosenAnswer(null)
+      setAnswerLocked(false)
+      setResult(null)
+      setJoined(false)
+      setStatus("Je oefentoets staat klaar. Werk rustig vraag voor vraag.")
+    }
 
     socket.on("player:joined", onJoinedPayload)
     socket.on("player:error", onPlayerError)
@@ -3055,6 +3244,8 @@ function PlayerPage() {
     socket.on("player:answer:result", onAnswerResult)
     socket.on("player:lesson-response:result", onLessonResponseResult)
     socket.on("player:profile:update", onProfileUpdate)
+    socket.on("player:portal:ready", onPortalReady)
+    socket.on("player:self-practice:started", onSelfPracticeStarted)
 
     return () => {
       socket.off("player:joined", onJoinedPayload)
@@ -3064,8 +3255,10 @@ function PlayerPage() {
       socket.off("player:answer:result", onAnswerResult)
       socket.off("player:lesson-response:result", onLessonResponseResult)
       socket.off("player:profile:update", onProfileUpdate)
+      socket.off("player:portal:ready", onPortalReady)
+      socket.off("player:self-practice:started", onSelfPracticeStarted)
     }
-  }, [joinMode, learnerCode, name, roomCode.length])
+  }, [homeMathSession, joinMode, joined, learnerCode, name, roomCode.length, selfPracticeSession])
 
   useEffect(() => {
     const nextSession = { name, teamId, roomCode, joined, playerId, playerSessionId, learnerCode, joinMode }
@@ -3135,14 +3328,14 @@ function PlayerPage() {
     if (!localMath) return
     setHomeMathSession(localMath)
     if (localSnapshot?.roomCode) setRoomCode(localSnapshot.roomCode)
-    setStatus("Je opgeslagen thuisroute is direct geladen.")
+    setStatus("Je opgeslagen oefenroute is direct geladen.")
   }, [homeMathSession, joinMode, joined, learnerCode, name])
 
   useEffect(() => {
     if (joined) return
     setStatus(
       joinMode === PLAYER_JOIN_MODE_HOME_MATH
-        ? "Vul je naam en leerlingcode in om thuis verder te gaan."
+        ? "Vul je naam en leerlingcode in. Daarna kun je zelfstandig oefenen of je rekenroute hervatten."
         : joinCodeLockedFromUrl
           ? "Sessiecode is al ingevuld via de QR-code. Vul alleen je naam in."
           : "Vul je gegevens in en sluit aan."
@@ -3185,13 +3378,17 @@ function PlayerPage() {
 
   const join = () => {
     if (joinMode === PLAYER_JOIN_MODE_HOME_MATH) {
+      socket.emit("player:portal:login", {
+        name: name.trim(),
+        learnerCode,
+      })
       const localSnapshot = readHomeMathSnapshot(name.trim(), learnerCode)
       const localMath = activateHomeMathSnapshot(localSnapshot)
       if (localMath) {
         setHomeMathSession(localMath)
         setJoined(true)
         if (localSnapshot?.roomCode) setRoomCode(localSnapshot.roomCode)
-        setStatus("Je thuisroute staat klaar. Je kunt direct verder.")
+        setStatus("Je oefenroute staat klaar. Je kunt direct verder.")
       }
       socket.emit("player:resume-math", {
         name: name.trim(),
@@ -3201,6 +3398,8 @@ function PlayerPage() {
       return
     }
 
+    setLearnerPortal(null)
+    setSelfPracticeSession(null)
     socket.emit("player:join", {
       name: name.trim(),
       teamId,
@@ -3247,6 +3446,41 @@ function PlayerPage() {
 
   const submitLessonAnswer = () => {
     socket.emit("player:lesson-response", { response: lessonAnswer })
+  }
+
+  const startSelfPractice = () => {
+    socket.emit("player:self-practice:start", {
+      name: name.trim(),
+      learnerCode,
+      topic: selfPracticeTopic,
+      questionCount: selfPracticeQuestionCount,
+      questionFormat: selfPracticeQuestionFormat,
+    })
+    setStatus("Je oefentoets wordt klaargezet...")
+  }
+
+  const submitSelfPracticeAnswer = ({ answerIndex = null, answerText = "" } = {}) => {
+    if (!selfPracticeSession) return
+    const nextSession = submitSelfPracticeSessionAnswer(selfPracticeSession, { answerIndex, answerText })
+    setSelfPracticeSession(nextSession)
+    setPracticeTextAnswer(String(answerText || "").trim())
+    setChosenAnswer(Number.isInteger(answerIndex) ? answerIndex : null)
+    setAnswerLocked(true)
+    setStatus(nextSession.currentResult?.correct ? "Goed gedaan. Kijk naar de uitleg en ga daarna verder." : "Kijk naar de uitleg en probeer de volgende vraag daarna opnieuw.")
+  }
+
+  const goToNextSelfPracticeQuestion = () => {
+    if (!selfPracticeSession) return
+    const nextSession = advanceSelfPracticeSession(selfPracticeSession)
+    setSelfPracticeSession(nextSession)
+    setPracticeTextAnswer("")
+    setChosenAnswer(null)
+    setAnswerLocked(false)
+    if (nextSession.finishedAt) {
+      setStatus("Je oefentoets is afgerond. Kies gerust een nieuw onderwerp.")
+      return
+    }
+    setStatus("Nieuwe vraag klaar. Werk rustig verder.")
   }
 
   const availableTeams = joined ? teams : roomPreview.valid ? roomPreview.teams : teams
@@ -3313,6 +3547,20 @@ function PlayerPage() {
       ? Boolean(name.trim()) && /^\d{4}$/.test(learnerCode)
       : roomPreview.valid && (isMathPreview ? /^\d{4}$/.test(learnerCode) : Boolean(name.trim()))
   const showPlayerSidebar = game.mode !== "math"
+  const selfPracticeQuestion = isSelfPracticeActive ? selfPracticeSession.questions?.[selfPracticeSession.currentIndex] || null : null
+  const selfPracticeResult = isSelfPracticeActive ? selfPracticeSession.currentResult || null : null
+  const selfPracticeAnsweredCount = isSelfPracticeActive ? selfPracticeSession.answers.length : 0
+  const selfPracticeCorrectCount = isSelfPracticeActive
+    ? selfPracticeSession.answers.filter((entry) => entry.correct).length
+    : 0
+  const selfPracticeIsTypedQuestion = selfPracticeQuestion?.questionType === "typed"
+  const canStartSelfPractice =
+    isHomeMathJoin &&
+    Boolean(learnerPortal) &&
+    selfPracticeTopic.trim().length >= 2 &&
+    !isSelfPracticeActive &&
+    !joined &&
+    !isLocalHomeMath
 
   if (isLocalHomeMath) {
     return (
@@ -3320,7 +3568,7 @@ function PlayerPage() {
         <section className="player-layout">
           <div className="glass join-card">
             <span className="eyebrow">Deelnemen</span>
-            <h1>Ga thuis verder</h1>
+            <h1>Zelf oefenen</h1>
             <p className="muted">{status}</p>
 
             <div className="mode-switch join-mode-switch">
@@ -3350,7 +3598,7 @@ function PlayerPage() {
                 }}
                 type="button"
               >
-                Thuis rekenen
+                Zelf oefenen
               </button>
             </div>
 
@@ -3378,11 +3626,11 @@ function PlayerPage() {
             </label>
 
             <button className="button-primary" disabled={!canJoinRoom} onClick={join} type="button">
-              Verder met rekenen
+              Oefenroute openen
             </button>
 
             <p className="muted learner-code-note">
-              Je opgeslagen thuisroute staat op dit apparaat klaar. Vul alleen je naam en leerlingcode in om door te gaan.
+              Je opgeslagen oefenroute staat op dit apparaat klaar. Vul alleen je naam en leerlingcode in om door te gaan.
             </p>
           </div>
 
@@ -3422,12 +3670,444 @@ function PlayerPage() {
     )
   }
 
+  if (isSelfPracticeActive) {
+    const selfPracticeIsFinished = Boolean(selfPracticeSession.finishedAt)
+    const selfPracticeAccuracy = selfPracticeAnsweredCount
+      ? Math.round((selfPracticeCorrectCount / Math.max(1, selfPracticeAnsweredCount)) * 100)
+      : 0
+
+    return (
+      <main className="page-shell player-shell">
+        <section className="player-layout">
+          <div className="glass join-card">
+            <span className="eyebrow">Zelf oefenen</span>
+            <h1>{selfPracticeSession.title}</h1>
+            <p className="muted">{status}</p>
+            <div className="lesson-library-meta">
+              <span>{selfPracticeSession.topic || "Algemeen onderwerp"}</span>
+              <span>{getPracticeQuestionFormatLabel(selfPracticeSession.questionFormat)}</span>
+              <span>{selfPracticeSession.providerLabel}</span>
+            </div>
+            <button
+              className="button-ghost"
+              onClick={() => {
+                setSelfPracticeSession(null)
+                setPracticeTextAnswer("")
+                setChosenAnswer(null)
+                setAnswerLocked(false)
+                setStatus("Kies hieronder een nieuw onderwerp om verder te oefenen.")
+              }}
+              type="button"
+            >
+              Kies een nieuwe oefentoets
+            </button>
+          </div>
+
+          <div className="glass battle-card">
+            <div className="section-head">
+              <h2>{selfPracticeIsFinished ? "Jouw resultaat" : "Jouw oefenvraag"}</h2>
+              <div className="pill-row">
+                <span className="pill timer-pill">
+                  {selfPracticeIsFinished
+                    ? `${selfPracticeCorrectCount}/${selfPracticeAnsweredCount} goed`
+                    : `Vraag ${Math.min(selfPracticeSession.currentIndex + 1, selfPracticeSession.questions.length)} / ${selfPracticeSession.questions.length}`}
+                </span>
+                <span className="pill">{selfPracticeAccuracy}% score</span>
+              </div>
+            </div>
+
+            {selfPracticeIsFinished ? (
+              <div className="results-card">
+                <span className="eyebrow">Oefentoets afgerond</span>
+                <h3>Netjes gewerkt</h3>
+                <p>
+                  Je maakte {selfPracticeAnsweredCount} vragen over <strong>{selfPracticeSession.topic}</strong> en had {selfPracticeCorrectCount} goed.
+                </p>
+                <div className="score-breakdown">
+                  <span className="score-chip">Score {selfPracticeAccuracy}%</span>
+                  <span className="score-chip">{getPracticeQuestionFormatLabel(selfPracticeSession.questionFormat)}</span>
+                </div>
+              </div>
+            ) : (
+              <>
+                <ProgressBar current={selfPracticeSession.currentIndex + 1} total={selfPracticeSession.questions.length} timeLeft={0} duration={0} />
+                <QuestionCard question={selfPracticeQuestion} compact={false} showOptions={false} />
+                {selfPracticeIsTypedQuestion ? (
+                  <div className="typed-practice-panel">
+                    <div className="typed-practice-card">
+                      <span className="visual-label">Zelf typen</span>
+                      <strong>Typ je antwoord</strong>
+                      <p>{selfPracticeSession.instructions}</p>
+                    </div>
+                    <div className="typed-practice-form">
+                      <input
+                        className="typed-practice-input"
+                        disabled={Boolean(selfPracticeResult)}
+                        onChange={(event) => setPracticeTextAnswer(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key !== "Enter") return
+                          event.preventDefault()
+                          if (!practiceTextAnswer.trim() || selfPracticeResult) return
+                          submitSelfPracticeAnswer({ answerText: practiceTextAnswer })
+                        }}
+                        placeholder={selfPracticeQuestion?.answerPlaceholder || "Typ hier je antwoord"}
+                        value={practiceTextAnswer}
+                      />
+                      <button
+                        className="button-primary typed-practice-submit"
+                        disabled={!practiceTextAnswer.trim() || Boolean(selfPracticeResult)}
+                        onClick={() => submitSelfPracticeAnswer({ answerText: practiceTextAnswer })}
+                        type="button"
+                      >
+                        Check antwoord
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="answer-grid">
+                    {selfPracticeQuestion?.options?.map((option, index) => {
+                      const isCorrectChoice =
+                        Boolean(selfPracticeResult && typeof selfPracticeResult.correctIndex === "number" && index === selfPracticeResult.correctIndex)
+                      const isWrongChosen = Boolean(selfPracticeResult && selfPracticeResult.correct === false && index === chosenAnswer)
+
+                      return (
+                        <button
+                          key={`${selfPracticeQuestion?.id}-${index}`}
+                          className={`answer-button ${chosenAnswer === index ? "is-selected" : ""} ${isCorrectChoice ? "is-correct" : ""} ${isWrongChosen ? "is-wrong" : ""}`}
+                          disabled={Boolean(selfPracticeResult)}
+                          onClick={() => {
+                            if (selfPracticeResult) return
+                            setChosenAnswer(index)
+                            submitSelfPracticeAnswer({ answerIndex: index })
+                          }}
+                          type="button"
+                        >
+                          <span>{String.fromCharCode(65 + index)}</span>
+                          <strong>{option}</strong>
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+
+                {selfPracticeResult ? (
+                  <div className={`answer-result ${selfPracticeResult.correct ? "ok" : "bad"}`}>
+                    <strong>{selfPracticeResult.correct ? "Goed antwoord" : "Nog niet goed"}</strong>
+                    <p>{selfPracticeResult.explanation || "Kijk rustig naar de uitleg en ga daarna verder."}</p>
+                    {selfPracticeResult.questionType === "typed" ? (
+                      <div className="typed-answer-summary">
+                        <span>Jouw antwoord: {selfPracticeResult.answerText || "geen antwoord"}</span>
+                        <span>Goed antwoord: {selfPracticeResult.correctAnswer || "niet beschikbaar"}</span>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                {selfPracticeResult ? (
+                  <button className="button-secondary practice-next-button" onClick={goToNextSelfPracticeQuestion} type="button">
+                    {selfPracticeSession.currentIndex + 1 >= selfPracticeSession.questions.length ? "Bekijk resultaat" : "Volgende vraag"}
+                  </button>
+                ) : null}
+              </>
+            )}
+          </div>
+
+          <div className="glass side-column">
+            <LearnerCodeCard learnerCode={learnerCode} roomCode={roomCode} />
+            <div className="result-tile">
+              <span>Gemaakt</span>
+              <strong>{selfPracticeAnsweredCount}</strong>
+            </div>
+            <div className="result-tile">
+              <span>Goed</span>
+              <strong>{selfPracticeCorrectCount}</strong>
+            </div>
+          </div>
+        </section>
+      </main>
+    )
+  }
+
+  if (!joined && isHomeMathJoin) {
+    return (
+      <main className="page-shell player-shell">
+        <section className="player-layout">
+          <div className="glass join-card">
+            <span className="eyebrow">Leerlinglogin</span>
+            <h1>Zelf oefenen</h1>
+            <p className="muted">{status}</p>
+
+            <div className="mode-switch join-mode-switch">
+              <button
+                className={`mode-chip ${joinMode === PLAYER_JOIN_MODE_CLASSROOM ? "is-active" : ""}`}
+                onClick={() => {
+                  setJoinMode(PLAYER_JOIN_MODE_CLASSROOM)
+                  setJoinCodeLockedFromUrl(Boolean(joinSessionCodeFromUrl))
+                  if (joinSessionCodeFromUrl) setRoomCode(joinSessionCodeFromUrl)
+                  setLearnerPortal(null)
+                  setSelfPracticeSession(null)
+                  setHomeMathSession(null)
+                }}
+                type="button"
+              >
+                Klassikaal meedoen
+              </button>
+              <button
+                className={`mode-chip ${isHomeMathJoin ? "is-active" : ""}`}
+                onClick={() => {
+                  setJoinMode(PLAYER_JOIN_MODE_HOME_MATH)
+                  setJoinCodeLockedFromUrl(false)
+                }}
+                type="button"
+              >
+                Zelf oefenen
+              </button>
+            </div>
+
+            <label className="field">
+              <span>Jouw naam</span>
+              <input
+                autoCapitalize="words"
+                autoComplete="nickname"
+                ref={nameInputRef}
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                placeholder="Bijv. Layan"
+              />
+            </label>
+
+            <label className="field">
+              <span>Leerlingcode</span>
+              <input
+                inputMode="numeric"
+                maxLength={4}
+                value={learnerCode}
+                onChange={(event) => setLearnerCode(event.target.value.replace(/\D/g, "").slice(0, 4))}
+                placeholder="Bijv. 1122"
+              />
+            </label>
+
+            <button className="button-primary" disabled={!canJoinRoom} onClick={join} type="button">
+              Inloggen als leerling
+            </button>
+
+            <p className="muted learner-code-note">
+              Na het inloggen kun je een oefentoets kiezen of je rekenroute hervatten als die al klaarstaat.
+            </p>
+          </div>
+
+          <div className="glass battle-card">
+            {!learnerPortal ? (
+              <div className="empty-state">
+                <h3>Kies hoe je wilt oefenen</h3>
+                <p>
+                  Log eerst in met je naam en leerlingcode. Daarna kun je zelfstandig een oefentoets starten of verdergaan met rekenen.
+                </p>
+              </div>
+            ) : (
+              <>
+                <div className="section-head">
+                  <h2>Welkom {learnerPortal.name}</h2>
+                  <div className="pill-row">
+                    {learnerPortal.className ? <span className="pill">{learnerPortal.className}</span> : null}
+                    <span className="pill">{learnerPortal.audience || "vmbo"}</span>
+                  </div>
+                </div>
+
+                <div className="lesson-summary-grid">
+                  <div className="lesson-box">
+                    <strong>Verder met rekenen</strong>
+                    <p>
+                      {learnerPortal.canResumeMath
+                        ? "We hebben eerdere rekenvoortgang gevonden. Als er een actieve route klaarstaat, laden we die automatisch."
+                        : "Er staat nu geen actieve rekenroute klaar, maar je kunt wel zelfstandig een oefentoets maken."}
+                    </p>
+                    {learnerPortal.growthSummary?.lastPracticedAt ? (
+                      <span className="pill">Laatst geoefend: {formatHistoryDate(learnerPortal.growthSummary.lastPracticedAt)}</span>
+                    ) : null}
+                  </div>
+                  <div className="lesson-box accent-box practice-box">
+                    <strong>Start een oefentoets</strong>
+                    <p>Kies een onderwerp en laat Lesson Battle meteen oefenvragen voor je klaarzetten.</p>
+                    <div className="lesson-library-edit-grid">
+                      <label className="field inline-field">
+                        <span>Onderwerp</span>
+                        <input
+                          onChange={(event) => setSelfPracticeTopic(event.target.value)}
+                          placeholder="Bijv. Marokko, werkwoordspelling of breuken"
+                          value={selfPracticeTopic}
+                        />
+                      </label>
+                      <label className="field inline-field">
+                        <span>Aantal vragen</span>
+                        <input
+                          max="24"
+                          min="6"
+                          onChange={(event) => setSelfPracticeQuestionCount(Number(event.target.value))}
+                          type="number"
+                          value={selfPracticeQuestionCount}
+                        />
+                      </label>
+                      <label className="field inline-field">
+                        <span>Vorm</span>
+                        <select onChange={(event) => setSelfPracticeQuestionFormat(event.target.value)} value={selfPracticeQuestionFormat}>
+                          {PRACTICE_QUESTION_FORMAT_OPTIONS.map((option) => (
+                            <option key={option.id} value={option.id}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                    <div className="lesson-library-actions">
+                      <button className="button-secondary" disabled={!canStartSelfPractice} onClick={startSelfPractice} type="button">
+                        Start oefentoets
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+
+          <div className="glass side-column">
+            {learnerCode ? <LearnerCodeCard learnerCode={learnerCode} roomCode={roomCode} /> : null}
+            <div className="result-tile">
+              <span>Zelf oefenen</span>
+              <strong>Naam + leerlingcode</strong>
+            </div>
+            <div className="result-tile">
+              <span>Klassikaal meedoen</span>
+              <strong>Naam + sessiecode</strong>
+            </div>
+          </div>
+        </section>
+      </main>
+    )
+  }
+
+  if (!joined) {
+    return (
+      <main className="page-shell player-shell">
+        <section className="player-layout">
+          <div className="glass join-card">
+            <span className="eyebrow">Deelnemen</span>
+            <h1>Doe mee met de klas</h1>
+            <p className="muted">{status}</p>
+
+            <div className="mode-switch join-mode-switch">
+              <button
+                className={`mode-chip ${joinMode === PLAYER_JOIN_MODE_CLASSROOM ? "is-active" : ""}`}
+                onClick={() => {
+                  setJoinMode(PLAYER_JOIN_MODE_CLASSROOM)
+                  setJoinCodeLockedFromUrl(Boolean(joinSessionCodeFromUrl))
+                  if (joinSessionCodeFromUrl) setRoomCode(joinSessionCodeFromUrl)
+                }}
+                type="button"
+              >
+                Klassikaal meedoen
+              </button>
+              <button
+                className={`mode-chip ${isHomeMathJoin ? "is-active" : ""}`}
+                onClick={() => {
+                  setJoinMode(PLAYER_JOIN_MODE_HOME_MATH)
+                  setJoinCodeLockedFromUrl(false)
+                  setLearnerPortal(null)
+                }}
+                type="button"
+              >
+                Zelf oefenen
+              </button>
+            </div>
+
+            <label className="field">
+              <span>Jouw naam</span>
+              <input
+                autoCapitalize="words"
+                autoComplete="nickname"
+                ref={nameInputRef}
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                placeholder="Bijv. Layan"
+              />
+            </label>
+
+            {joinGroupModeEnabled ? (
+              <label className="field">
+                <span>Groep (optioneel)</span>
+                <select value={teamId} onChange={(event) => setTeamId(event.target.value)}>
+                  <option value="">Geen groep</option>
+                  {availableTeams.map((team) => (
+                    <option key={team.id} value={team.id}>
+                      {team.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+
+            <label className="field">
+              <span>Sessiecode</span>
+              {joinCodeLockedFromUrl ? (
+                <div className="prefilled-session-code">
+                  <strong>{roomCode || "-----"}</strong>
+                  <span>Deze sessiecode is al ingevuld via de QR-code.</span>
+                </div>
+              ) : (
+                <input
+                  value={roomCode}
+                  onChange={(event) => setRoomCode(event.target.value.toUpperCase())}
+                  placeholder="Bijv. AB12C"
+                />
+              )}
+            </label>
+
+            <button className="button-primary" disabled={!canJoinRoom} onClick={join} type="button">
+              Ik doe klassikaal mee
+            </button>
+
+            {!isHomeMathJoin ? (
+              <div className="join-home-note">
+                <strong>Wil je zelfstandig oefenen?</strong>
+                <p>Kies hierboven Zelf oefenen. Dan log je in met je naam en leerlingcode en kies je daarna zelf een oefentoets.</p>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="glass battle-card">
+            <div className="empty-state">
+              <h3>Klassikaal meedoen</h3>
+              <p>
+                Vul je naam en sessiecode in. Daarna kom je pas in de live les, presentatie, oefentoets of battle van je docent.
+              </p>
+            </div>
+          </div>
+
+          <div className="glass side-column">
+            <div className="result-tile">
+              <span>Stap 1</span>
+              <strong>Naam invullen</strong>
+            </div>
+            <div className="result-tile">
+              <span>Stap 2</span>
+              <strong>Sessiecode invullen</strong>
+            </div>
+            <div className="result-tile">
+              <span>Stap 3</span>
+              <strong>Wachten op start</strong>
+            </div>
+          </div>
+        </section>
+      </main>
+    )
+  }
+
   return (
     <main className="page-shell player-shell">
       <section className="player-layout">
         <div className="glass join-card">
           <span className="eyebrow">Deelnemen</span>
-          <h1>{isHomeMathJoin ? "Ga thuis verder" : isMathPreview ? "Start rekenen" : "Doe mee aan de sessie"}</h1>
+          <h1>{isHomeMathJoin ? "Zelf oefenen" : isMathPreview ? "Start rekenen" : "Doe mee aan de sessie"}</h1>
           <p className="muted">{status}</p>
 
           <div className="mode-switch join-mode-switch">
@@ -3450,7 +4130,7 @@ function PlayerPage() {
               }}
               type="button"
             >
-              Thuis rekenen
+              Zelf oefenen
             </button>
           </div>
 
@@ -3512,7 +4192,7 @@ function PlayerPage() {
           ) : null}
 
           <button className="button-primary" disabled={!canJoinRoom} onClick={join} type="button">
-            {joined ? "Opnieuw koppelen" : isHomeMathJoin ? "Verder met rekenen" : "Ik doe mee"}
+            {joined ? "Opnieuw koppelen" : isHomeMathJoin ? "Leerlinglogin starten" : "Ik doe mee"}
           </button>
 
           {selectedTeam && joinGroupModeEnabled ? (
@@ -3535,7 +4215,7 @@ function PlayerPage() {
           {!isHomeMathJoin ? (
             <div className="join-home-note">
               <strong>Thuis verder?</strong>
-              <p>Klik hierboven op Thuis rekenen. Dan vul je alleen je naam en leerlingcode in. Een sessiecode is thuis niet nodig.</p>
+              <p>Klik hierboven op Zelf oefenen. Dan vul je alleen je naam en leerlingcode in. Een sessiecode is daar niet nodig.</p>
             </div>
           ) : null}
         </div>
