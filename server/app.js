@@ -7542,6 +7542,7 @@ async function buildAiAttachmentContext(attachments = []) {
 
   const snippets = []
   let remainingChars = MAX_AI_ATTACHMENT_TOTAL_TEXT_CHARS
+  let readableAttachmentCount = 0
 
   for (const attachment of normalizedAttachments) {
     if (remainingChars <= 0) break
@@ -7550,6 +7551,7 @@ async function buildAiAttachmentContext(attachments = []) {
       if (!extractedText) continue
       const snippet = extractedText.slice(0, Math.min(MAX_AI_ATTACHMENT_SNIPPET_CHARS, remainingChars)).trim()
       if (!snippet) continue
+      readableAttachmentCount += 1
       snippets.push(`Bestand: ${attachment.name}\n${snippet}`)
       remainingChars -= snippet.length
     } catch (error) {
@@ -7557,11 +7559,17 @@ async function buildAiAttachmentContext(attachments = []) {
     }
   }
 
-  if (!snippets.length) return ""
+  if (!snippets.length || readableAttachmentCount === 0) {
+    throw new Error(
+      "De bijlagen konden niet goed worden gelezen. Gebruik een PDF, Word-, Excel-, TXT- of CSV-bestand met echte tekstinhoud."
+    )
+  }
 
   return [
-    "Gebruik dit bronmateriaal als extra context. Baseer vragen en lesopbouw waar mogelijk op deze inhoud.",
-    "Als het bronmateriaal concretere informatie bevat dan de korte onderwerpzin, volg dan het bronmateriaal.",
+    "Gebruik dit bronmateriaal als leidende context.",
+    "Baseer vragen en lesopbouw primair op deze inhoud.",
+    "Als het bronmateriaal concreter is dan de korte onderwerpzin, volg dan het bronmateriaal.",
+    "Wissel nooit van vak, thema of domein tenzij het expliciet in het bronmateriaal staat.",
     snippets.join("\n\n---\n\n"),
   ].join("\n\n")
 }
@@ -7634,6 +7642,9 @@ ${sourceContext ? `Bronmateriaal:\n${sourceContext}\n` : ""}
 Regels:
 - Analyseer eerst welk soort onderwerp dit is en maak inhoudelijk passende vragen.
 - Pas taalniveau, moeilijkheid en context aan op de doelgroep.
+- Als er bronmateriaal is meegegeven, is dat bronmateriaal leidend.
+- Gebruik alleen informatie uit het bronmateriaal of directe, logische afleidingen daarvan.
+- Genereer nooit vragen over een ander vak, ander land, andere religie of ander thema tenzij dat expliciet in het bronmateriaal staat.
 - Als het onderwerp basisniveau vraagt, gebruik dan korte zinnen en concrete voorbeelden.
 - Als het onderwerp specialistischer is, maak de vragen inhoudelijk preciezer maar nog steeds helder.
 - Respectvol en feitelijk.
@@ -7643,7 +7654,7 @@ Regels:
 - imagePrompt moet echt het kernbegrip of de situatie uit de vraag zichtbaar maken.
 - Vermijd vage prompts zoals "educational illustration" zonder inhoud.
 - Geen tekst, labels, letters of watermerken in het beeld.
-- Bij islamitische kennis: geen gezichten, personen, profeten of levende wezens afbeelden; kies abstracte, objectgerichte of symbolische visuals.
+- Alleen als het onderwerp expliciet islamitische kennis of religie behandelt: geen gezichten, personen, profeten of levende wezens afbeelden; kies abstracte, objectgerichte of symbolische visuals.
 - Geen markdown, alleen geldige JSON.
 ${formatRules}
 ${extraRules}
@@ -7722,6 +7733,8 @@ Regels:
 - Maak een bruikbare les voor een docent, geen algemene uitleg.
 - De les moet direct inzetbaar zijn in een groep.
 - Werk het onderwerp concreet uit en blijf dicht bij de invoer van de docent.
+- Als er bronmateriaal is meegegeven, is dat bronmateriaal leidend.
+- Gebruik geen ander vak of thema dan wat expliciet in de invoer of het bronmateriaal staat.
 - Zorg voor afwisseling tussen uitleg, begeleide oefening, interactie en controle van begrip.
 - Verwerk minimaal 5 en maximaal 7 lesfasen.
 - Elke fase heeft: title, goal, teacherScript, studentActivity, interactivePrompt, checkForUnderstanding, expectedAnswer, keywords, minutes.
@@ -7810,7 +7823,8 @@ Regels:
 - Gebruik questionType alleen als "multiple-choice" of "typed".
 - Als questionType "multiple-choice" is, moet options exact 4 items hebben en correctIndex 0, 1, 2 of 3 zijn.
 - Als questionType "typed" is, gebruik je géén options en moet acceptedAnswers minstens 1 bruikbaar antwoord hebben.
-- Verbeter waar nodig de inhoud zodat de vragen echt over het onderwerp gaan.
+- Verbeter waar nodig de inhoud zodat de vragen echt over het onderwerp en het bronmateriaal gaan.
+- Genereer geen ander vak, ander land, andere religie of ander thema dan wat expliciet in de invoer of het bronmateriaal staat.
 - Geen markdown en geen extra tekst.
 
 Te herstellen output:
@@ -7855,6 +7869,7 @@ Regels:
 ${includePresentation ? '- Elke slide moet bevatten: id, title, focus, bullets, studentViewText, speakerNotes, imagePrompt, imageAlt.' : ""}
 - ${includePresentation && includeVideoPlan ? 'Voeg binnen presentation ook een geldig "video" veld toe met title, summary, studentViewText en scenes.' : 'Laat een eventueel "video" veld weg.'}
 - Houd de les inhoudelijk passend bij het onderwerp.
+- Houd de les ook inhoudelijk passend bij het bronmateriaal als dat is meegegeven.
 - Geen markdown en geen extra tekst.
 
 Te herstellen output:
@@ -8591,6 +8606,105 @@ function formatProviderLabel(provider) {
   return provider
 }
 
+const AI_ALIGNMENT_STOPWORDS = new Set([
+  "de", "het", "een", "van", "voor", "met", "zonder", "naar", "over", "onder", "tussen", "door", "maar", "want", "zoals",
+  "zijn", "haar", "hun", "jouw", "jullie", "deze", "dit", "dat", "daar", "hier", "niet", "wel", "meer", "minder", "ook",
+  "dan", "dus", "als", "bij", "uit", "binnen", "buiten", "tegen", "om", "tot", "nog", "eens", "geen", "alleen", "vaak",
+  "make", "maak", "vragen", "vraag", "lesson", "battle", "oefentoets", "leerling", "leerlingen", "docent", "klas",
+  "onderwerp", "thema", "question", "questions", "topic", "answer", "multiple", "choice", "typed", "mixed", "about",
+  "from", "with", "that", "this", "these", "your", "their", "have", "into", "then", "than", "when", "where", "which",
+])
+
+function extractAlignmentKeywords(text = "", limit = 18) {
+  const counts = new Map()
+  const normalized = String(text || "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s-]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+
+  if (!normalized) return []
+
+  for (const rawToken of normalized.split(" ")) {
+    const token = rawToken.trim()
+    if (!token || token.length < 4) continue
+    if (AI_ALIGNMENT_STOPWORDS.has(token)) continue
+    counts.set(token, (counts.get(token) || 0) + 1)
+  }
+
+  return [...counts.entries()]
+    .sort((left, right) => right[1] - left[1] || right[0].length - left[0].length)
+    .slice(0, limit)
+    .map(([token]) => token)
+}
+
+function buildQuestionAlignmentCorpus(questions = []) {
+  return (Array.isArray(questions) ? questions : [])
+    .map((question) =>
+      [
+        question?.prompt,
+        question?.explanation,
+        question?.category,
+        question?.displayAnswer,
+        ...(Array.isArray(question?.options) ? question.options : []),
+        ...(Array.isArray(question?.acceptedAnswers) ? question.acceptedAnswers : []),
+      ]
+        .filter(Boolean)
+        .join(" ")
+    )
+    .join(" \n ")
+}
+
+function buildLessonAlignmentCorpus(lessonPlan = {}) {
+  const phases = Array.isArray(lessonPlan?.phases) ? lessonPlan.phases : []
+  const slides = Array.isArray(lessonPlan?.presentation?.slides) ? lessonPlan.presentation.slides : []
+  const materials = Array.isArray(lessonPlan?.materials) ? lessonPlan.materials : []
+  const successCriteria = Array.isArray(lessonPlan?.successCriteria) ? lessonPlan.successCriteria : []
+
+  return [
+    lessonPlan?.title,
+    lessonPlan?.lessonGoal,
+    ...materials,
+    ...successCriteria,
+    ...phases.flatMap((phase) => [
+      phase?.title,
+      phase?.goal,
+      phase?.teacherScript,
+      phase?.studentActivity,
+      phase?.interactivePrompt,
+      phase?.checkForUnderstanding,
+      phase?.expectedAnswer,
+      ...(Array.isArray(phase?.keywords) ? phase.keywords : []),
+    ]),
+    ...slides.flatMap((slide) => [
+      slide?.title,
+      slide?.focus,
+      slide?.studentViewText,
+      slide?.speakerNotes,
+      ...(Array.isArray(slide?.bullets) ? slide.bullets : []),
+    ]),
+  ]
+    .filter(Boolean)
+    .join(" \n ")
+}
+
+function ensureAttachmentAlignment({ sourceContext = "", topic = "", generatedText = "", kindLabel = "output" }) {
+  if (!String(sourceContext || "").trim()) return
+
+  const sourceKeywords = extractAlignmentKeywords(`${topic}\n${sourceContext}`, 20)
+  if (sourceKeywords.length < 3) return
+
+  const generatedLower = String(generatedText || "").toLowerCase()
+  const matchedKeywords = sourceKeywords.filter((keyword) => generatedLower.includes(keyword))
+  const minimumMatches = Math.min(3, Math.max(2, Math.ceil(sourceKeywords.length / 6)))
+
+  if (matchedKeywords.length >= minimumMatches) return
+
+  throw new Error(
+    `De ${kindLabel} sluiten niet goed genoeg aan op het bronmateriaal. Er komen te weinig kernwoorden uit de bijlage terug.`
+  )
+}
+
 async function generateQuestionsWithProvider(provider, { topic, audience, questionCount, questionFormat = "multiple-choice", sourceContext = "" }) {
   const providerTimeoutMs = AI_PROVIDER_REQUEST_TIMEOUT_MS
   let lastError = null
@@ -8611,6 +8725,12 @@ async function generateQuestionsWithProvider(provider, { topic, audience, questi
 
       try {
         const questions = parseQuestionsFromText(rawText, topic, questionFormat)
+        ensureAttachmentAlignment({
+          sourceContext,
+          topic,
+          generatedText: buildQuestionAlignmentCorpus(questions),
+          kindLabel: "vragen",
+        })
         console.info(`[AI] ${provider} attempt ${attempt} geaccepteerd met ${questions.length} vragen`)
         return questions
       } catch (parseError) {
@@ -8632,6 +8752,12 @@ async function generateQuestionsWithProvider(provider, { topic, audience, questi
             AI_PROVIDER_REPAIR_TIMEOUT_MS
           )
           const repairedQuestions = parseQuestionsFromText(repairedText, topic, questionFormat)
+          ensureAttachmentAlignment({
+            sourceContext,
+            topic,
+            generatedText: buildQuestionAlignmentCorpus(repairedQuestions),
+            kindLabel: "vragen",
+          })
           console.info(`[AI] ${provider} repair-pass geslaagd`)
           return repairedQuestions
         } catch (repairError) {
@@ -8708,6 +8834,12 @@ async function generateLessonPlanWithProvider(
           includePresentation,
           includeVideoPlan,
         })
+        ensureAttachmentAlignment({
+          sourceContext,
+          topic,
+          generatedText: buildLessonAlignmentCorpus(lessonPlan),
+          kindLabel: "lesopzet",
+        })
         console.info(`[AI] ${provider} lesson attempt ${attempt} geaccepteerd met ${lessonPlan.phases.length} lesfasen`)
         return lessonPlan
       } catch (parseError) {
@@ -8743,6 +8875,12 @@ async function generateLessonPlanWithProvider(
             includePracticeTest,
             includePresentation,
             includeVideoPlan,
+          })
+          ensureAttachmentAlignment({
+            sourceContext,
+            topic,
+            generatedText: buildLessonAlignmentCorpus(repairedPlan),
+            kindLabel: "lesopzet",
           })
           console.info(`[AI] ${provider} lesson repair-pass geslaagd`)
           return repairedPlan
@@ -10093,16 +10231,20 @@ io.on("connection", (socket) => {
         console.info(`[AI] oefentoets voor room ${room.code} gegenereerd via ${practiceResult.providerLabel}`)
       } catch (practiceError) {
         console.error("AI oefentoetsgeneratie mislukt:", practiceError instanceof Error ? practiceError.message : practiceError)
-        practiceTest = {
-          title: `Oefentoets over ${String(topic ?? "").trim() || "dit onderwerp"}`,
-          instructions: "Maak deze oefentoets zelfstandig en bespreek daarna de antwoorden.",
-          questionFormat: safePracticeQuestionFormat,
-          questions: buildFallbackQuestions({
-            topic,
-            questionCount: safePracticeQuestionCount,
+        if (sourceContext) {
+          practiceTest = null
+        } else {
+          practiceTest = {
+            title: `Oefentoets over ${String(topic ?? "").trim() || "dit onderwerp"}`,
+            instructions: "Maak deze oefentoets zelfstandig en bespreek daarna de antwoorden.",
             questionFormat: safePracticeQuestionFormat,
-          }).slice(0, safePracticeQuestionCount),
-          providerLabel: "Lokale reserve",
+            questions: buildFallbackQuestions({
+              topic,
+              questionCount: safePracticeQuestionCount,
+              questionFormat: safePracticeQuestionFormat,
+            }).slice(0, safePracticeQuestionCount),
+            providerLabel: "Lokale reserve",
+          }
         }
       }
     }
@@ -11380,6 +11522,14 @@ io.on("connection", (socket) => {
 
     try {
       sourceContext = await buildAiAttachmentContext(attachments)
+    } catch (error) {
+      socket.emit("player:error", {
+        message: error instanceof Error ? error.message : "De bijlagen konden niet worden gelezen.",
+      })
+      return
+    }
+
+    try {
       const practiceResult = await withTimeout(
         generateQuestions({
           topic: `${trimmedTopic}\nMaak hier een zelfstandige oefentoets van voor een leerling.`,
@@ -11421,6 +11571,12 @@ io.on("connection", (socket) => {
       return
     } catch (error) {
       console.error("Leerling-oefentoets genereren mislukt:", error instanceof Error ? error.message : error)
+      if (sourceContext) {
+        socket.emit("player:error", {
+          message: "De AI kon van dit bronmateriaal geen goede oefentoets maken. Probeer een duidelijkere bijlage of een concreter onderwerp.",
+        })
+        return
+      }
     }
 
     const fallbackQuestions = buildFallbackQuestions({

@@ -1,19 +1,19 @@
 :root {
-  --bg-deep: #24124d;
-  --bg-mid: #372a92;
-  --bg-bright: #ff8e4d;
-  --card-base: rgba(38, 22, 88, 0.78);
-  --card-soft: rgba(70, 46, 145, 0.72);
-  --line: rgba(255, 255, 255, 0.18);
-  --line-strong: rgba(255, 255, 255, 0.28);
+  --bg-deep: #10233b;
+  --bg-mid: #18385b;
+  --bg-bright: #58a6ff;
+  --card-base: rgba(20, 35, 58, 0.82);
+  --card-soft: rgba(28, 51, 84, 0.76);
+  --line: rgba(255, 255, 255, 0.14);
+  --line-strong: rgba(255, 255, 255, 0.22);
   --text-main: #ffffff;
-  --muted: #dce4ff;
-  --muted-strong: #f7d9a5;
-  --accent-cyan: #54ebdf;
-  --accent-yellow: #ffd76c;
-  --accent-pink: #ff6ba8;
+  --muted: #d8e6f8;
+  --muted-strong: #d7ecff;
+  --accent-cyan: #42c9d1;
+  --accent-yellow: #8bc4ff;
+  --accent-pink: #4f8fff;
   --accent-blue: #77a8ff;
-  --shadow-pop: 0 28px 60px rgba(18, 10, 46, 0.38);
+  --shadow-pop: 0 20px 44px rgba(7, 18, 34, 0.22);
 }
 
 * {
@@ -31,10 +31,10 @@ body {
   color: var(--text-main);
   font-family: "Trebuchet MS", "Arial Rounded MT Bold", "Verdana", sans-serif;
   background:
-    radial-gradient(circle at 12% 16%, rgba(84, 235, 223, 0.22), transparent 22%),
-    radial-gradient(circle at 88% 14%, rgba(255, 215, 108, 0.2), transparent 19%),
-    radial-gradient(circle at 78% 78%, rgba(255, 107, 168, 0.16), transparent 21%),
-    linear-gradient(145deg, var(--bg-deep), var(--bg-mid) 58%, #1f2d77 100%);
+    radial-gradient(circle at 12% 16%, rgba(88, 166, 255, 0.14), transparent 22%),
+    radial-gradient(circle at 84% 18%, rgba(66, 201, 209, 0.12), transparent 18%),
+    radial-gradient(circle at 76% 78%, rgba(119, 168, 255, 0.08), transparent 20%),
+    linear-gradient(145deg, var(--bg-deep), var(--bg-mid) 62%, #1b456e 100%);
   background-attachment: fixed;
 }
 
@@ -42,25 +42,25 @@ body::before,
 body::after {
   content: "";
   position: fixed;
-  width: 280px;
-  height: 280px;
+  width: 220px;
+  height: 220px;
   border-radius: 34% 66% 59% 41% / 42% 41% 59% 58%;
   pointer-events: none;
   z-index: 0;
   filter: blur(2px);
-  opacity: 0.8;
+  opacity: 0.46;
 }
 
 body::before {
   top: 4%;
   right: -90px;
-  background: radial-gradient(circle, rgba(255, 215, 108, 0.34), rgba(255, 142, 77, 0.08));
+  background: radial-gradient(circle, rgba(119, 168, 255, 0.3), rgba(88, 166, 255, 0.05));
 }
 
 body::after {
   left: -110px;
   bottom: 8%;
-  background: radial-gradient(circle, rgba(84, 235, 223, 0.24), rgba(119, 168, 255, 0.06));
+  background: radial-gradient(circle, rgba(66, 201, 209, 0.2), rgba(88, 166, 255, 0.05));
 }
 
 .page-shell {
@@ -202,12 +202,12 @@ body::after {
 
 .glass {
   background:
-    linear-gradient(180deg, rgba(54, 34, 122, 0.95), rgba(29, 21, 74, 0.94)),
+    linear-gradient(180deg, rgba(25, 43, 71, 0.95), rgba(17, 31, 54, 0.94)),
     var(--card-base);
   border: 2px solid var(--line);
   box-shadow:
     var(--shadow-pop),
-    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
   backdrop-filter: blur(18px);
 }
 
@@ -252,8 +252,8 @@ body::after {
 .join-card h1 {
   margin: 8px 0 14px;
   font-family: "Avenir Next Condensed", "Trebuchet MS", sans-serif;
-  font-size: clamp(2.6rem, 4vw, 4.9rem);
-  line-height: 0.95;
+  font-size: clamp(2.3rem, 3.4vw, 4.3rem);
+  line-height: 0.98;
   letter-spacing: -0.04em;
 }
 
@@ -776,13 +776,13 @@ body::after {
 }
 
 .button-primary {
-  background: linear-gradient(135deg, #ffd76c, #ff8e4d 55%, #ff6ba8);
+  background: linear-gradient(135deg, #2f6df6, #1993cf 55%, #18a999);
   color: white;
-  box-shadow: 0 16px 30px rgba(255, 105, 168, 0.3);
+  box-shadow: 0 14px 26px rgba(24, 88, 175, 0.22);
 }
 
 .button-secondary {
-  background: linear-gradient(135deg, #54ebdf, #5f8dff);
+  background: linear-gradient(135deg, #304866, #3e6fb3);
   color: white;
 }
 
@@ -1073,6 +1073,21 @@ body::after {
 .teacher-live-toolbar .button-ghost {
   min-height: 46px;
   padding-inline: 16px;
+}
+
+.teacher-prep-submit-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  justify-content: flex-end;
+  padding-top: 6px;
+}
+
+.teacher-prep-submit-bar .button-primary,
+.teacher-prep-submit-bar .button-secondary {
+  min-height: 54px;
+  padding-inline: 20px;
 }
 
 .host-panel-heading {

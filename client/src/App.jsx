@@ -2993,14 +2993,6 @@ function HostPage() {
             </div>
           ) : null}
 
-          {controlMode === "lesson" ? (
-            <LessonSummaryCard
-              lesson={game.lesson}
-              onSave={game.lesson?.phases?.length ? saveCurrentLesson : null}
-              onStartPractice={game.lesson?.practiceTest?.questionCount ? startPracticeTest : null}
-            />
-          ) : null}
-
           {controlMode !== "math" ? (
             <AiAttachmentCard
               attachments={hostAiAttachments}
@@ -3011,6 +3003,35 @@ function HostPage() {
               title="Bijlagen voor AI"
             />
           ) : null}
+
+          {controlMode === "lesson" ? (
+            <LessonSummaryCard
+              lesson={game.lesson}
+              onSave={game.lesson?.phases?.length ? saveCurrentLesson : null}
+              onStartPractice={game.lesson?.practiceTest?.questionCount ? startPracticeTest : null}
+            />
+          ) : null}
+
+          <div className="teacher-prep-submit-bar">
+            {controlMode !== "math" ? (
+              <button
+                className="button-secondary"
+                disabled={!hostSession.authenticated}
+                onClick={configureTeams}
+                type="button"
+              >
+                Groepsinstellingen opslaan
+              </button>
+            ) : null}
+            <button
+              className="button-primary"
+              disabled={!hostSession.authenticated}
+              onClick={controlMode === "math" ? generateMathSession : controlMode === "lesson" ? generateLesson : generate}
+              type="button"
+            >
+              {controlMode === "lesson" || controlMode === "math" ? buildActionLabel : "Ronde klaarzetten"}
+            </button>
+          </div>
 
           {game.mode === "math" && controlMode !== "math" ? (
             <div className="field math-config-card">
@@ -3081,24 +3102,6 @@ function HostPage() {
               type="button"
             >
               {showHostSecondaryPanels ? "Verberg leerlingen en scores" : "Toon leerlingen en scores"}
-            </button>
-            {controlMode !== "math" ? (
-              <button
-                className="button-secondary"
-                disabled={!hostSession.authenticated}
-                onClick={configureTeams}
-                type="button"
-              >
-                Groepsinstellingen opslaan
-              </button>
-            ) : null}
-            <button
-              className="button-primary"
-              disabled={!hostSession.authenticated}
-              onClick={controlMode === "math" ? generateMathSession : controlMode === "lesson" ? generateLesson : generate}
-              type="button"
-            >
-              {controlMode === "lesson" || controlMode === "math" ? buildActionLabel : "Ronde klaarzetten"}
             </button>
             {game.mode === "battle" && game.source !== "practice" && game.question && game.status === "preview" ? (
               <button className="button-primary" disabled={!hostSession.authenticated} onClick={startBattleQuestion} type="button">
