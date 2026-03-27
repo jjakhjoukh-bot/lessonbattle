@@ -133,6 +133,11 @@ const MATH_CLOUD_COLLECTION = "lessonBattleMathRooms"
 const MATH_CLOUD_RESUME_COLLECTION = "lessonBattleMathResume"
 const MATH_CLOUD_HOST_COLLECTION = "lessonBattleMathHosts"
 const MATH_CLOUD_GROWTH_COLLECTION = "lessonBattleMathGrowth"
+const MAX_AI_ATTACHMENT_COUNT = 3
+const MAX_AI_ATTACHMENT_FILE_BYTES = 2 * 1024 * 1024
+const MAX_AI_ATTACHMENT_TOTAL_TEXT_CHARS = 42000
+const MAX_AI_ATTACHMENT_SNIPPET_CHARS = 14000
+const SUPPORTED_AI_ATTACHMENT_EXTENSIONS = new Set([".txt", ".md", ".csv", ".json", ".pdf", ".docx", ".xlsx", ".xls"])
 const CLASSROOM_CLOUD_COLLECTION = "lessonBattleClassrooms"
 const SELF_PRACTICE_CLOUD_COLLECTION = "lessonBattleSelfPractice"
 const MATH_CLOUD_SCOPE = "https://www.googleapis.com/auth/datastore"
@@ -7438,7 +7443,130 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-function buildQuestionPrompt({ topic, audience, questionCount, questionFormat = "multiple-choice", extraRules = "" }) {
+function getFileExtension(fileName = "") {
+  const normalized = String(fileName || "").trim().toLowerCase()
+  const index = normalized.lastIndexOf(".")
+  return index >= 0 ? normalized.slice(index) : ""
+}
+
+function normalizeAiPromptAttachments(attachments = []) {
+  if (!Array.isArray(attachments)) return []
+  return attachments
+    .slice(0, MAX_AI_ATTACHMENT_COUNT)
+    .map((attachment, index) => ({
+      id: String(attachment?.id || `attachment-${index + 1}`).trim(),
+      name: String(attachment?.name || `bijlage-${index + 1}`).trim() || `bijlage-${index + 1}`,
+      mimeType: String(attachment?.mimeType || "application/octet-stream").trim().toLowerCase(),
+      size: Math.max(0, Number(attachment?.size) || 0),
+      fileDataBase64: String(attachment?.fileDataBase64 || "").trim(),
+    }))
+    .filter((attachment) => attachment.fileDataBase64)
+}
+
+function sanitizeAttachmentText(value = "") {
+  return String(value || "")
+    .replace(/\u0000/g, " ")
+    .replace(/\r/g, "\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim()
+}
+
+function extractWorksheetPreviewText(workbook) {
+  const sheetNames = Array.isArray(workbook?.SheetNames) ? workbook.SheetNames.slice(0, 3) : []
+  const sections = []
+
+  for (const sheetName of sheetNames) {
+    const worksheet = workbook?.Sheets?.[sheetName]
+    if (!worksheet) continue
+    const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: "" }).slice(0, 18)
+    const rowText = rows
+      .map((row) =>
+        (Array.isArray(row) ? row : [])
+          .map((cell) => String(cell ?? "").trim())
+          .filter(Boolean)
+          .join(" | ")
+      )
+      .filter(Boolean)
+      .join("\n")
+    if (rowText) {
+      sections.push(`Sheet: ${sheetName}\n${rowText}`)
+    }
+  }
+
+  return sections.join("\n\n")
+}
+
+async function extractTextFromAiPromptAttachment(attachment) {
+  const extension = getFileExtension(attachment?.name)
+  const mimeType = String(attachment?.mimeType || "").toLowerCase()
+  const buffer = Buffer.from(String(attachment?.fileDataBase64 || ""), "base64")
+
+  if (!buffer.length) throw new Error("De bijlage is leeg.")
+  if (buffer.length > MAX_AI_ATTACHMENT_FILE_BYTES) {
+    throw new Error(`${attachment?.name || "Een bijlage"} is te groot.`)
+  }
+
+  if (SUPPORTED_AI_ATTACHMENT_EXTENSIONS.has(extension) === false && !mimeType.startsWith("text/")) {
+    throw new Error(`${attachment?.name || "Deze bijlage"} wordt nog niet ondersteund.`)
+  }
+
+  if (extension === ".pdf" || mimeType === "application/pdf") {
+    const { default: pdfParse } = await import("pdf-parse")
+    const parsed = await pdfParse(buffer)
+    return sanitizeAttachmentText(parsed?.text || "")
+  }
+
+  if (extension === ".docx" || mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
+    const mammoth = await import("mammoth")
+    const extracted = await mammoth.extractRawText({ buffer })
+    return sanitizeAttachmentText(extracted?.value || "")
+  }
+
+  if (
+    extension === ".xlsx" ||
+    extension === ".xls" ||
+    mimeType === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
+    mimeType === "application/vnd.ms-excel"
+  ) {
+    const workbook = XLSX.read(buffer, { type: "buffer" })
+    return sanitizeAttachmentText(extractWorksheetPreviewText(workbook))
+  }
+
+  return sanitizeAttachmentText(buffer.toString("utf8"))
+}
+
+async function buildAiAttachmentContext(attachments = []) {
+  const normalizedAttachments = normalizeAiPromptAttachments(attachments)
+  if (!normalizedAttachments.length) return ""
+
+  const snippets = []
+  let remainingChars = MAX_AI_ATTACHMENT_TOTAL_TEXT_CHARS
+
+  for (const attachment of normalizedAttachments) {
+    if (remainingChars <= 0) break
+    try {
+      const extractedText = await extractTextFromAiPromptAttachment(attachment)
+      if (!extractedText) continue
+      const snippet = extractedText.slice(0, Math.min(MAX_AI_ATTACHMENT_SNIPPET_CHARS, remainingChars)).trim()
+      if (!snippet) continue
+      snippets.push(`Bestand: ${attachment.name}\n${snippet}`)
+      remainingChars -= snippet.length
+    } catch (error) {
+      console.warn("[AI] bijlage kon niet worden gelezen:", attachment?.name, error instanceof Error ? error.message : error)
+    }
+  }
+
+  if (!snippets.length) return ""
+
+  return [
+    "Gebruik dit bronmateriaal als extra context. Baseer vragen en lesopbouw waar mogelijk op deze inhoud.",
+    "Als het bronmateriaal concretere informatie bevat dan de korte onderwerpzin, volg dan het bronmateriaal.",
+    snippets.join("\n\n---\n\n"),
+  ].join("\n\n")
+}
+
+function buildQuestionPrompt({ topic, audience, questionCount, questionFormat = "multiple-choice", extraRules = "", sourceContext = "" }) {
   const requestedFormat = normalizePracticeQuestionFormat(questionFormat)
   const formatExample =
     requestedFormat === "typed"
@@ -7501,6 +7629,8 @@ Maak precies ${questionCount} quizvragen in het Nederlands voor ${audience}.
 Onderwerp:
 ${topic.trim()}
 
+${sourceContext ? `Bronmateriaal:\n${sourceContext}\n` : ""}
+
 Regels:
 - Analyseer eerst welk soort onderwerp dit is en maak inhoudelijk passende vragen.
 - Pas taalniveau, moeilijkheid en context aan op de doelgroep.
@@ -7536,6 +7666,7 @@ function buildLessonPrompt({
   includePresentation = false,
   includeVideoPlan = false,
   extraRules = "",
+  sourceContext = "",
 }) {
   const practiceSection = includePracticeTest
     ? `
@@ -7575,6 +7706,8 @@ Maak een complete interactieve lesopzet in het Nederlands.
 
 Onderwerp:
 ${topic.trim()}
+
+${sourceContext ? `Bronmateriaal:\n${sourceContext}\n` : ""}
 
 Doelgroep:
 ${audience}
@@ -7650,7 +7783,7 @@ Formaat:
 `
 }
 
-function buildRepairPrompt({ topic, audience, questionCount, questionFormat = "multiple-choice", brokenOutput, previousIssue }) {
+function buildRepairPrompt({ topic, audience, questionCount, questionFormat = "multiple-choice", brokenOutput, previousIssue, sourceContext = "" }) {
   const requestedFormat = normalizePracticeQuestionFormat(questionFormat)
   const repairSchemaText =
     requestedFormat === "typed"
@@ -7664,6 +7797,8 @@ Zet de onderstaande AI-output om naar exact geldige JSON voor een quiz.
 Onderwerp: ${topic.trim()}
 Doelgroep: ${audience}
 Aantal vragen: ${questionCount}
+
+${sourceContext ? `Bronmateriaal:\n${sourceContext}\n` : ""}
 
 Probleem dat hersteld moet worden:
 ${previousIssue}
@@ -7695,6 +7830,7 @@ function buildLessonRepairPrompt({
   includeVideoPlan = false,
   brokenOutput,
   previousIssue,
+  sourceContext = "",
 }) {
   return `
 Zet de onderstaande AI-output om naar exact geldige JSON voor een lesopzet.
@@ -7703,6 +7839,8 @@ Onderwerp: ${topic.trim()}
 Doelgroep: ${audience}
 Lesmodel: ${lessonModel}
 Lesduur: ${durationMinutes} minuten
+
+${sourceContext ? `Bronmateriaal:\n${sourceContext}\n` : ""}
 
 Probleem dat hersteld moet worden:
 ${previousIssue}
@@ -8453,7 +8591,7 @@ function formatProviderLabel(provider) {
   return provider
 }
 
-async function generateQuestionsWithProvider(provider, { topic, audience, questionCount, questionFormat = "multiple-choice" }) {
+async function generateQuestionsWithProvider(provider, { topic, audience, questionCount, questionFormat = "multiple-choice", sourceContext = "" }) {
   const providerTimeoutMs = AI_PROVIDER_REQUEST_TIMEOUT_MS
   let lastError = null
 
@@ -8467,7 +8605,7 @@ async function generateQuestionsWithProvider(provider, { topic, audience, questi
       console.info(`[AI] ${provider} attempt ${attempt} gestart voor onderwerp: ${topic}`)
       const rawText = await requestProviderText(
         provider,
-        buildQuestionPrompt({ topic, audience, questionCount, questionFormat, extraRules }),
+        buildQuestionPrompt({ topic, audience, questionCount, questionFormat, extraRules, sourceContext }),
         providerTimeoutMs
       )
 
@@ -8489,6 +8627,7 @@ async function generateQuestionsWithProvider(provider, { topic, audience, questi
               questionFormat,
               brokenOutput: rawText,
               previousIssue: parseError instanceof Error ? parseError.message : "output was ongeldig",
+              sourceContext,
             }),
             AI_PROVIDER_REPAIR_TIMEOUT_MS
           )
@@ -8525,6 +8664,7 @@ async function generateLessonPlanWithProvider(
     includePracticeTest = false,
     includePresentation = false,
     includeVideoPlan = false,
+    sourceContext = "",
   }
 ) {
   const providerTimeoutMs = AI_PROVIDER_REQUEST_TIMEOUT_MS
@@ -8551,6 +8691,7 @@ async function generateLessonPlanWithProvider(
           includePresentation,
           includeVideoPlan,
           extraRules,
+          sourceContext,
         }),
         providerTimeoutMs
       )
@@ -8588,6 +8729,7 @@ async function generateLessonPlanWithProvider(
               includeVideoPlan,
               brokenOutput: rawText,
               previousIssue: parseError instanceof Error ? parseError.message : "output was ongeldig",
+              sourceContext,
             }),
             AI_PROVIDER_REPAIR_TIMEOUT_MS
           )
@@ -8622,16 +8764,16 @@ async function generateLessonPlanWithProvider(
   throw lastError ?? new Error(`${provider} kon geen bruikbaar lesplan genereren.`)
 }
 
-async function generateQuestionsWithGemini(topic, audience, questionCount, questionFormat = "multiple-choice") {
-  return generateQuestionsWithProvider("gemini", { topic, audience, questionCount, questionFormat })
+async function generateQuestionsWithGemini(topic, audience, questionCount, questionFormat = "multiple-choice", sourceContext = "") {
+  return generateQuestionsWithProvider("gemini", { topic, audience, questionCount, questionFormat, sourceContext })
 }
 
-async function generateQuestionsWithGroq(topic, audience, questionCount, questionFormat = "multiple-choice") {
-  return generateQuestionsWithProvider("groq", { topic, audience, questionCount, questionFormat })
+async function generateQuestionsWithGroq(topic, audience, questionCount, questionFormat = "multiple-choice", sourceContext = "") {
+  return generateQuestionsWithProvider("groq", { topic, audience, questionCount, questionFormat, sourceContext })
 }
 
-async function generateQuestionsWithOpenAI(topic, audience, questionCount, questionFormat = "multiple-choice") {
-  return generateQuestionsWithProvider("openai", { topic, audience, questionCount, questionFormat })
+async function generateQuestionsWithOpenAI(topic, audience, questionCount, questionFormat = "multiple-choice", sourceContext = "") {
+  return generateQuestionsWithProvider("openai", { topic, audience, questionCount, questionFormat, sourceContext })
 }
 
 async function generateLessonPlan({
@@ -8644,6 +8786,7 @@ async function generateLessonPlan({
   includePracticeTest = false,
   includePresentation = false,
   includeVideoPlan = false,
+  sourceContext = "",
 }) {
   if (!genAI && !groq && !openAI) throw new Error("Er is geen AI-provider geconfigureerd op de server.")
   if (!topic?.trim()) throw new Error("Voer eerst een onderwerp of thema in.")
@@ -8666,6 +8809,7 @@ async function generateLessonPlan({
               includePracticeTest,
               includePresentation,
               includeVideoPlan,
+              sourceContext,
             }),
         }]
       : []),
@@ -8683,6 +8827,7 @@ async function generateLessonPlan({
               includePracticeTest,
               includePresentation,
               includeVideoPlan,
+              sourceContext,
             }),
         }]
       : []),
@@ -8700,6 +8845,7 @@ async function generateLessonPlan({
               includePracticeTest,
               includePresentation,
               includeVideoPlan,
+              sourceContext,
             }),
         }]
       : []),
@@ -8762,7 +8908,7 @@ function formatGenerationError(error) {
   return `AI kon de ronde niet genereren. Details: ${rawMessage}`
 }
 
-async function generateQuestions({ topic, audience, questionCount, questionFormat = "multiple-choice" }) {
+async function generateQuestions({ topic, audience, questionCount, questionFormat = "multiple-choice", sourceContext = "" }) {
   if (!genAI && !groq && !openAI) throw new Error("Er is geen AI-provider geconfigureerd op de server.")
   if (!topic?.trim()) throw new Error("Voer eerst een onderwerp of thema in.")
 
@@ -8770,9 +8916,9 @@ async function generateQuestions({ topic, audience, questionCount, questionForma
   const targetAudience = audience?.trim() || "vmbo"
   const requestedFormat = normalizePracticeQuestionFormat(questionFormat)
   const attempts = [
-    ...(genAI ? [{ name: "gemini", run: () => generateQuestionsWithGemini(topic, targetAudience, safeQuestionCount, requestedFormat) }] : []),
-    ...(groq ? [{ name: "groq", run: () => generateQuestionsWithGroq(topic, targetAudience, safeQuestionCount, requestedFormat) }] : []),
-    ...(openAI ? [{ name: "openai", run: () => generateQuestionsWithOpenAI(topic, targetAudience, safeQuestionCount, requestedFormat) }] : []),
+    ...(genAI ? [{ name: "gemini", run: () => generateQuestionsWithGemini(topic, targetAudience, safeQuestionCount, requestedFormat, sourceContext) }] : []),
+    ...(groq ? [{ name: "groq", run: () => generateQuestionsWithGroq(topic, targetAudience, safeQuestionCount, requestedFormat, sourceContext) }] : []),
+    ...(openAI ? [{ name: "openai", run: () => generateQuestionsWithOpenAI(topic, targetAudience, safeQuestionCount, requestedFormat, sourceContext) }] : []),
   ]
 
   const errors = []
@@ -9677,7 +9823,7 @@ io.on("connection", (socket) => {
     emitStateToRoom(room)
   })
 
-  socket.on("host:generate", async ({ topic, audience, questionCount, teamNames, questionDurationSec, groupModeEnabled }) => {
+  socket.on("host:generate", async ({ topic, audience, questionCount, teamNames, questionDurationSec, groupModeEnabled, attachments }) => {
     const room = requireHostRoom(socket)
     if (!room) return
 
@@ -9687,9 +9833,11 @@ io.on("connection", (socket) => {
     applyGroupModeSettings(room, groupModeEnabled, Array.isArray(teamNames) ? teamNames : DEFAULT_TEAMS)
 
     let generationResult
+    let sourceContext = ""
     try {
+      sourceContext = await buildAiAttachmentContext(attachments)
       generationResult = await withTimeout(
-        generateQuestions({ topic, audience, questionCount }),
+        generateQuestions({ topic, audience, questionCount, sourceContext }),
         AI_ROUND_GENERATION_TIMEOUT_MS
       )
       room.questions = generationResult.questions.map((question, index) => ({
@@ -9861,6 +10009,7 @@ io.on("connection", (socket) => {
     includePracticeTest,
     includePresentation,
     includeVideoPlan,
+    attachments,
   }) => {
     const room = requireHostRoom(socket)
     if (!room) return
@@ -9878,7 +10027,9 @@ io.on("connection", (socket) => {
     applyGroupModeSettings(room, groupModeEnabled, Array.isArray(teamNames) ? teamNames : DEFAULT_TEAMS)
 
     let lessonResult
+    let sourceContext = ""
     try {
+      sourceContext = await buildAiAttachmentContext(attachments)
       lessonResult = await withTimeout(
         generateLessonPlan({
           topic,
@@ -9890,6 +10041,7 @@ io.on("connection", (socket) => {
           includePracticeTest: false,
           includePresentation: wantsPresentation,
           includeVideoPlan: wantsVideoPlan,
+          sourceContext,
         }),
         AI_ROUND_GENERATION_TIMEOUT_MS
       )
@@ -9927,6 +10079,7 @@ io.on("connection", (socket) => {
             audience,
             questionCount: safePracticeQuestionCount,
             questionFormat: safePracticeQuestionFormat,
+            sourceContext,
           }),
           AI_ROUND_GENERATION_TIMEOUT_MS
         )
@@ -11202,7 +11355,7 @@ io.on("connection", (socket) => {
     socket.emit("player:portal:ready", profile)
   })
 
-  socket.on("player:self-practice:start", async ({ name, learnerCode, topic, questionCount, questionFormat }) => {
+  socket.on("player:self-practice:start", async ({ name, learnerCode, topic, questionCount, questionFormat, attachments }) => {
     await ensureClassroomsHydratedFromCloud()
     const profile = resolveLearnerPortalProfile(name, learnerCode)
     if (!profile) {
@@ -11223,14 +11376,17 @@ io.on("connection", (socket) => {
     const sessionId = generateEntityId("self-practice")
     const topicLabel = cleanSelfPracticeTopicLabel(trimmedTopic)
     const startedAt = new Date().toISOString()
+    let sourceContext = ""
 
     try {
+      sourceContext = await buildAiAttachmentContext(attachments)
       const practiceResult = await withTimeout(
         generateQuestions({
           topic: `${trimmedTopic}\nMaak hier een zelfstandige oefentoets van voor een leerling.`,
           audience: profile.audience || "vmbo",
           questionCount: safeQuestionCount,
           questionFormat: safeQuestionFormat,
+          sourceContext,
         }),
         AI_ROUND_GENERATION_TIMEOUT_MS
       )

@@ -272,7 +272,11 @@ body::after {
   margin-top: 18px;
 }
 
-.hero-tags span {
+.hero-tags span,
+.hero-tag-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   padding: 10px 14px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.11);
@@ -280,6 +284,27 @@ body::after {
   font-size: 0.88rem;
   font-weight: 700;
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+}
+
+.hero-tag-button {
+  border: 1px solid rgba(176, 197, 230, 0.18);
+  cursor: pointer;
+  font: inherit;
+  transition: transform 180ms ease, background 180ms ease, box-shadow 180ms ease;
+}
+
+.hero-tag-button:hover {
+  transform: translateY(-1px);
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.hero-tag-button.is-active {
+  background:
+    linear-gradient(135deg, rgba(37, 99, 235, 0.24), rgba(15, 118, 110, 0.2)),
+    rgba(255, 255, 255, 0.09);
+  box-shadow:
+    inset 0 0 0 1px rgba(191, 219, 254, 0.22),
+    0 10px 22px rgba(15, 23, 42, 0.18);
 }
 
 .eyebrow {
@@ -360,7 +385,12 @@ body::after {
 }
 
 .host-grid {
-  grid-template-columns: 0.95fr 1.05fr;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 18px;
+}
+
+.host-grid.is-live-focused {
+  gap: 0;
 }
 
 .dashboard-grid {
@@ -1012,6 +1042,37 @@ body::after {
 .teacher-live-card {
   display: grid;
   gap: 18px;
+  width: min(100%, 1180px);
+  margin: 0 auto;
+}
+
+.teacher-live-card {
+  order: 1;
+}
+
+.teacher-prep-card {
+  order: 2;
+  background:
+    linear-gradient(180deg, rgba(18, 27, 47, 0.94), rgba(12, 20, 36, 0.97)),
+    rgba(15, 23, 42, 0.92);
+}
+
+.teacher-live-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(176, 197, 230, 0.08);
+}
+
+.teacher-live-toolbar .button-primary,
+.teacher-live-toolbar .button-secondary,
+.teacher-live-toolbar .button-ghost {
+  min-height: 46px;
+  padding-inline: 16px;
 }
 
 .host-panel-heading {
@@ -1750,8 +1811,33 @@ body::after {
 }
 
 .player-layout {
-  grid-template-columns: 0.72fr 1.18fr 0.7fr;
+  grid-template-columns: minmax(0, 1fr);
   align-items: start;
+}
+
+.player-layout.player-layout-single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.player-focus-card {
+  width: min(100%, 980px);
+  margin: 0 auto;
+}
+
+.player-focus-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.player-focus-toolbar .muted {
+  margin: 0;
+}
+
+.compact-empty-state {
+  margin-top: 8px;
 }
 
 .player-score-strip {
@@ -2078,6 +2164,46 @@ body::after {
   background:
     linear-gradient(180deg, rgba(69, 104, 255, 0.08), rgba(255, 255, 255, 0.03)),
     rgba(255, 255, 255, 0.04);
+}
+
+.ai-attachment-card {
+  gap: 14px;
+}
+
+.ai-attachment-card .section-head h2 {
+  font-size: 1.35rem;
+}
+
+.ai-attachment-list {
+  display: grid;
+  gap: 10px;
+}
+
+.ai-attachment-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(176, 197, 230, 0.08);
+}
+
+.ai-attachment-item > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ai-attachment-item strong,
+.ai-attachment-item span {
+  overflow-wrap: anywhere;
+}
+
+.ai-attachment-item span {
+  color: rgba(223, 233, 255, 0.74);
+  font-size: 0.9rem;
 }
 
 .battle-preview-panel {

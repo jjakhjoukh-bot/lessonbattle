@@ -23,6 +23,9 @@ const MAX_MANUAL_UPLOAD_DIMENSION = 1280
 const MIN_MANUAL_UPLOAD_DIMENSION = 480
 const MANUAL_UPLOAD_QUALITY_STEPS = [0.82, 0.72, 0.62, 0.52, 0.44]
 const MAX_CLASSROOM_IMPORT_FILE_BYTES = 6 * 1024 * 1024
+const MAX_AI_ATTACHMENT_FILE_BYTES = 2 * 1024 * 1024
+const MAX_AI_ATTACHMENT_TOTAL_BYTES = 5 * 1024 * 1024
+const MAX_AI_ATTACHMENT_COUNT = 3
 const MATH_LEVEL_OPTIONS = ["0f", "1f", "2f", "3f", "4f"]
 const PLAYER_JOIN_MODE_CLASSROOM = "classroom"
 const PLAYER_JOIN_MODE_HOME_MATH = "home-math"
@@ -81,6 +84,17 @@ const PRACTICE_QUESTION_FORMAT_OPTIONS = [
   { id: "typed", label: "Flashcards / typen" },
   { id: "mixed", label: "Gemengd" },
 ]
+
+const AI_ATTACHMENT_ACCEPT = [
+  ".txt",
+  ".md",
+  ".csv",
+  ".json",
+  ".pdf",
+  ".docx",
+  ".xlsx",
+  ".xls",
+].join(",")
 
 const MANAGEMENT_PANEL_OPTIONS = [
   {
@@ -202,6 +216,44 @@ function formatDateTimeLocalInput(value) {
   if (Number.isNaN(date.getTime())) return ""
   const offsetMs = date.getTimezoneOffset() * 60 * 1000
   return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16)
+}
+
+function formatFileSize(bytes = 0) {
+  const size = Number(bytes) || 0
+  if (size >= 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`
+  if (size >= 1024) return `${Math.round(size / 1024)} KB`
+  return `${size} B`
+}
+
+function isSupportedAiAttachmentFile(file) {
+  const name = String(file?.name || "").toLowerCase()
+  const mimeType = String(file?.type || "").toLowerCase()
+  return (
+    [
+      ".txt",
+      ".md",
+      ".csv",
+      ".json",
+      ".pdf",
+      ".docx",
+      ".xlsx",
+      ".xls",
+    ].some((extension) => name.endsWith(extension)) ||
+    [
+      "text/plain",
+      "text/markdown",
+      "text/csv",
+      "application/json",
+      "application/pdf",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "application/vnd.ms-excel",
+    ].includes(mimeType)
+  )
+}
+
+function createAttachmentId(prefix = "attachment") {
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 }
 
 function normalizeSearchText(value = "") {
@@ -811,6 +863,40 @@ async function optimizeImageFile(file) {
   }
 }
 
+async function buildAiAttachmentPayload(files, prefix = "attachment") {
+  const fileList = Array.from(files || []).filter(Boolean)
+  if (!fileList.length) return []
+  if (fileList.length > MAX_AI_ATTACHMENT_COUNT) {
+    throw new Error(`Gebruik maximaal ${MAX_AI_ATTACHMENT_COUNT} bijlagen tegelijk.`)
+  }
+
+  const totalBytes = fileList.reduce((sum, file) => sum + (Number(file?.size) || 0), 0)
+  if (totalBytes > MAX_AI_ATTACHMENT_TOTAL_BYTES) {
+    throw new Error(`De bijlagen zijn samen te groot. Gebruik samen maximaal ${formatFileSize(MAX_AI_ATTACHMENT_TOTAL_BYTES)}.`)
+  }
+
+  const payload = []
+  for (const file of fileList) {
+    if (!isSupportedAiAttachmentFile(file)) {
+      throw new Error("Gebruik een PDF, Word-, Excel-, tekst-, CSV- of JSON-bestand.")
+    }
+    if ((Number(file?.size) || 0) > MAX_AI_ATTACHMENT_FILE_BYTES) {
+      throw new Error(`${file.name} is te groot. Gebruik maximaal ${formatFileSize(MAX_AI_ATTACHMENT_FILE_BYTES)} per bestand.`)
+    }
+
+    const buffer = await readFileAsArrayBuffer(file)
+    payload.push({
+      id: createAttachmentId(prefix),
+      name: file.name || "bijlage",
+      mimeType: file.type || "application/octet-stream",
+      size: Number(file.size) || 0,
+      fileDataBase64: arrayBufferToBase64(buffer),
+    })
+  }
+
+  return payload
+}
+
 function App() {
   const path = window.location.pathname
 
@@ -899,11 +985,14 @@ function HostPage() {
   const storedHostSession = readStoredHostSession()
   const [sessionMode, setSessionMode] = useState("battle")
   const [hostWorkspace, setHostWorkspace] = useState("home")
+  const [preloginWorkspaceChoice, setPreloginWorkspaceChoice] = useState("lesson")
   const [managementPanel, setManagementPanel] = useState("learners")
   const [hostMenuOpen, setHostMenuOpen] = useState(false)
   const [hostProfileOpen, setHostProfileOpen] = useState(false)
   const [joinQrOpen, setJoinQrOpen] = useState(false)
   const [showAdvancedOptions, setShowAdvancedOptions] = useState(false)
+  const [showHostPrepPanel, setShowHostPrepPanel] = useState(true)
+  const [showHostSecondaryPanels, setShowHostSecondaryPanels] = useState(false)
   const [topic, setTopic] = useState("")
   const [audience, setAudience] = useState("vmbo")
   const [questionCount, setQuestionCount] = useState(12)
@@ -968,10 +1057,13 @@ function HostPage() {
   const [manualQuestionImageAltDraft, setManualQuestionImageAltDraft] = useState("")
   const [manualQuestionUploadName, setManualQuestionUploadName] = useState("")
   const [questionImageBusy, setQuestionImageBusy] = useState(false)
+  const [hostAiAttachments, setHostAiAttachments] = useState([])
+  const [hostAttachmentBusy, setHostAttachmentBusy] = useState(false)
   const hostSessionRef = useRef(hostSession)
   const loginUsernameRef = useRef(loginForm.username)
   const hostRestoreRetryRef = useRef(false)
   const suppressImmediateHostRestoreRef = useRef(false)
+  const loginCardRef = useRef(null)
 
   const includePracticeTest = lessonPackage === "practice" || lessonPackage === "complete"
   const includePresentation = lessonPackage === "presentation" || lessonPackage === "complete"
@@ -1014,6 +1106,13 @@ function HostPage() {
           ? "Oefentoets opbouwen"
           : "Les opbouwen"
   const currentPresentationSlide = game.lesson?.presentation?.currentSlide || null
+  const hasPreparedWorkspaceContent =
+    Boolean(game.lesson?.phases?.length) ||
+    Boolean(game.question) ||
+    Boolean(game.questions?.length) ||
+    Boolean(game.math?.players?.length) ||
+    Boolean(players.length) ||
+    Boolean(game.status === "finished")
   const liveWorkspaceId =
     game.mode === "battle"
       ? "battle"
@@ -1193,6 +1292,17 @@ function HostPage() {
   }, [hostSession.authenticated])
 
   useEffect(() => {
+    if (!hostSession.authenticated) {
+      setShowHostPrepPanel(true)
+      setShowHostSecondaryPanels(false)
+      return
+    }
+    if (hasPreparedWorkspaceContent && hostWorkspace !== "management" && hostWorkspace !== "home") {
+      setShowHostPrepPanel(false)
+    }
+  }, [hasPreparedWorkspaceContent, hostSession.authenticated, hostWorkspace])
+
+  useEffect(() => {
     if (!hostMenuOpen && !hostProfileOpen) return undefined
     const handleKeyDown = (event) => {
       if (event.key === "Escape") {
@@ -1331,6 +1441,13 @@ function HostPage() {
         username: username || current.username,
         password: "",
       }))
+      const selectedWorkspace = preloginWorkspaceChoice || "home"
+      if (selectedWorkspace && selectedWorkspace !== "home" && selectedWorkspace !== "management") {
+        setHostWorkspace(selectedWorkspace)
+        selectSessionMode(selectedWorkspace)
+      } else {
+        setHostWorkspace("home")
+      }
       setStatus("Beheeraccount verbonden.")
     }
     const onConfigureSuccess = ({ teams: nextTeams, groupModeEnabled: nextGroupModeEnabled }) => {
@@ -1540,7 +1657,7 @@ function HostPage() {
       socket.off("host:room:backup", onRoomBackup)
       socket.off("host:backup:restore:success", onBackupRestoreSuccess)
     }
-  }, [])
+  }, [preloginWorkspaceChoice])
 
   useEffect(() => {
     setManualSlideImageUrlDraft(currentPresentationSlide?.manualImageUrl || "")
@@ -1775,6 +1892,7 @@ function HostPage() {
     setHostMenuOpen(false)
     setHostProfileOpen(false)
     setJoinQrOpen(false)
+    setShowHostPrepPanel(true)
     if (nextWorkspace === "home") return
     if (nextWorkspace === "management") return
     selectSessionMode(nextWorkspace)
@@ -1816,6 +1934,7 @@ function HostPage() {
       questionDurationSec,
       teamNames: preparedTeamNames,
       groupModeEnabled: groupModeEnabledDraft,
+      attachments: hostAiAttachments,
     })
   }
 
@@ -1855,6 +1974,7 @@ function HostPage() {
       includeVideoPlan: includePresentation && includeVideoPlan,
       teamNames: preparedTeamNames,
       groupModeEnabled: groupModeEnabledDraft,
+      attachments: hostAiAttachments,
     })
   }
 
@@ -2022,6 +2142,34 @@ function HostPage() {
       setClassroomImportBusyId("")
       setStatus(error instanceof Error ? error.message : "Het leerlingenbestand kon niet worden gelezen.")
     }
+  }
+
+  const addHostAiAttachmentFiles = async (files) => {
+    const fileList = Array.from(files || []).filter(Boolean)
+    if (!fileList.length) return
+
+    try {
+      setHostAttachmentBusy(true)
+      setStatus("Bijlagen worden voorbereid voor de AI...")
+      const nextAttachments = await buildAiAttachmentPayload(fileList, "host-attachment")
+      setHostAiAttachments((current) => [...current, ...nextAttachments].slice(0, MAX_AI_ATTACHMENT_COUNT))
+      setStatus(`${nextAttachments.length} bijlage${nextAttachments.length === 1 ? "" : "n"} toegevoegd voor de AI.`)
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "De bijlagen konden niet worden toegevoegd.")
+    } finally {
+      setHostAttachmentBusy(false)
+    }
+  }
+
+  const removeHostAiAttachment = (attachmentId) => {
+    setHostAiAttachments((current) => current.filter((attachment) => attachment.id !== attachmentId))
+    setStatus("Bijlage verwijderd uit de AI-opdracht.")
+  }
+
+  const selectPreloginWorkspace = (workspaceId) => {
+    setPreloginWorkspaceChoice(workspaceId)
+    setStatus("Kies nu je docentlogin. Na het inloggen openen we direct die werkruimte.")
+    loginCardRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })
   }
 
   const deleteClassroomLearner = (classId, learnerId) => {
@@ -2372,10 +2520,18 @@ function HostPage() {
                 werkplek. Na het inloggen kies je via het menu alleen het onderdeel dat je op dat moment nodig hebt.
               </p>
               <div className="hero-tags">
-                <span>Les opbouwen</span>
-                <span>Presenteren</span>
-                <span>Battle starten</span>
-                <span>Rekenen volgen</span>
+                <button className={`hero-tag-button ${preloginWorkspaceChoice === "lesson" ? "is-active" : ""}`} onClick={() => selectPreloginWorkspace("lesson")} type="button">
+                  Les opbouwen
+                </button>
+                <button className={`hero-tag-button ${preloginWorkspaceChoice === "presentation" ? "is-active" : ""}`} onClick={() => selectPreloginWorkspace("presentation")} type="button">
+                  Presenteren
+                </button>
+                <button className={`hero-tag-button ${preloginWorkspaceChoice === "battle" ? "is-active" : ""}`} onClick={() => selectPreloginWorkspace("battle")} type="button">
+                  Battle starten
+                </button>
+                <button className={`hero-tag-button ${preloginWorkspaceChoice === "math" ? "is-active" : ""}`} onClick={() => selectPreloginWorkspace("math")} type="button">
+                  Rekenen volgen
+                </button>
               </div>
             </div>
             <div className="hero-panel glass">
@@ -2393,10 +2549,12 @@ function HostPage() {
               </div>
             </div>
           </section>
-          <section className="glass control-card login-card">
+          <section className="glass control-card login-card" ref={loginCardRef}>
             <div className="section-head">
               <h2>Docentenlogin</h2>
-              <span className="pill">{status}</span>
+              <span className="pill">
+                Na inloggen: {HOST_WORKSPACE_OPTIONS.find((option) => option.id === preloginWorkspaceChoice)?.label || "Start"}
+              </span>
             </div>
             <div className="field-row">
               <label className="field">
@@ -2581,7 +2739,8 @@ function HostPage() {
 
       {hostSession.authenticated && !isManagementWorkspace && !isHomeWorkspace ? (
         <>
-      <section className="host-grid">
+      <section className={`host-grid ${!showHostPrepPanel && hasPreparedWorkspaceContent ? "is-live-focused" : ""}`}>
+        {showHostPrepPanel ? (
         <div className="glass control-card teacher-panel teacher-prep-card">
           <div className="section-head">
             <div className="host-panel-heading">
@@ -2842,88 +3001,25 @@ function HostPage() {
             />
           ) : null}
 
+          {controlMode !== "math" ? (
+            <AiAttachmentCard
+              attachments={hostAiAttachments}
+              description="Voeg bronmateriaal toe, zoals een toets, hoofdstuk, woordenlijst, Excel-overzicht of lesbrief. De AI gebruikt die inhoud als extra bron bij het opbouwen."
+              isBusy={hostAttachmentBusy}
+              onAddFiles={addHostAiAttachmentFiles}
+              onRemove={removeHostAiAttachment}
+              title="Bijlagen voor AI"
+            />
+          ) : null}
+
           {game.mode === "math" && controlMode !== "math" ? (
             <div className="field math-config-card">
               <span>Live route blijft actief</span>
               <p>Leerlingen werken nu nog in rekenen. Je kunt hier alvast een les, presentatie of oefentoets voorbereiden. Pas als je op opbouwen/starten klikt, vervang je de live route.</p>
             </div>
           ) : null}
-
-          <div className="action-row">
-            {controlMode !== "math" ? (
-              <button
-                className="button-secondary"
-                disabled={!hostSession.authenticated}
-                onClick={configureTeams}
-                type="button"
-              >
-                Groepsinstellingen opslaan
-              </button>
-            ) : null}
-            <button
-              className="button-primary"
-              disabled={!hostSession.authenticated}
-              onClick={controlMode === "math" ? generateMathSession : controlMode === "lesson" ? generateLesson : generate}
-              type="button"
-            >
-              {controlMode === "lesson" || controlMode === "math" ? buildActionLabel : "Ronde starten"}
-            </button>
-            {game.mode === "battle" && game.source !== "practice" && game.question && game.status === "preview" ? (
-              <button
-                className="button-primary"
-                disabled={!hostSession.authenticated}
-                onClick={startBattleQuestion}
-                type="button"
-              >
-                Start vraag
-              </button>
-            ) : null}
-            {game.mode === "battle" && game.source !== "practice" && game.question && game.status === "live" ? (
-              <button
-                className="button-secondary"
-                disabled={!hostSession.authenticated || !canRevealBattleAnswer}
-                onClick={showBattleAnswer}
-                type="button"
-              >
-                Toon antwoord
-              </button>
-            ) : null}
-            {game.mode === "lesson" ? (
-              <button
-                className="button-ghost"
-                disabled={!hostSession.authenticated || !canGoToPreviousLessonStep}
-                onClick={goToPreviousStep}
-                type="button"
-              >
-                Vorige lesstap
-              </button>
-            ) : null}
-            {game.mode !== "math" ? (
-              <button
-                className="button-secondary"
-                disabled={!hostSession.authenticated}
-                onClick={goToNextStep}
-                type="button"
-              >
-                {game.mode === "lesson"
-                  ? hostInsights?.canAdvance
-                    ? "Volgende lesstap (iedereen klaar)"
-                    : "Volgende lesstap"
-                  : hostInsights?.canAdvance
-                    ? "Volgende vraag (iedereen klaar)"
-                    : "Volgende vraag"}
-              </button>
-            ) : null}
-            <button
-              className="button-ghost"
-              disabled={!hostSession.authenticated}
-              onClick={() => socket.emit("host:reset")}
-              type="button"
-            >
-              Nieuwe ronde
-            </button>
-          </div>
         </div>
+        ) : null}
 
         <div className="glass question-stage teacher-panel teacher-live-card">
           <div className="section-head">
@@ -2969,6 +3065,70 @@ function HostPage() {
                       : "Nog niet gestart"}
               </span>
             </div>
+          </div>
+
+          <div className="teacher-live-toolbar">
+            <button
+              className="button-ghost"
+              onClick={() => setShowHostPrepPanel((current) => !current)}
+              type="button"
+            >
+              {showHostPrepPanel ? "Verberg voorbereiding" : "Toon voorbereiding"}
+            </button>
+            <button
+              className="button-ghost"
+              onClick={() => setShowHostSecondaryPanels((current) => !current)}
+              type="button"
+            >
+              {showHostSecondaryPanels ? "Verberg leerlingen en scores" : "Toon leerlingen en scores"}
+            </button>
+            {controlMode !== "math" ? (
+              <button
+                className="button-secondary"
+                disabled={!hostSession.authenticated}
+                onClick={configureTeams}
+                type="button"
+              >
+                Groepsinstellingen opslaan
+              </button>
+            ) : null}
+            <button
+              className="button-primary"
+              disabled={!hostSession.authenticated}
+              onClick={controlMode === "math" ? generateMathSession : controlMode === "lesson" ? generateLesson : generate}
+              type="button"
+            >
+              {controlMode === "lesson" || controlMode === "math" ? buildActionLabel : "Ronde klaarzetten"}
+            </button>
+            {game.mode === "battle" && game.source !== "practice" && game.question && game.status === "preview" ? (
+              <button className="button-primary" disabled={!hostSession.authenticated} onClick={startBattleQuestion} type="button">
+                Start vraag
+              </button>
+            ) : null}
+            {game.mode === "battle" && game.source !== "practice" && game.question && game.status === "live" ? (
+              <button className="button-secondary" disabled={!hostSession.authenticated || !canRevealBattleAnswer} onClick={showBattleAnswer} type="button">
+                Toon antwoord
+              </button>
+            ) : null}
+            {game.mode === "lesson" ? (
+              <button className="button-ghost" disabled={!hostSession.authenticated || !canGoToPreviousLessonStep} onClick={goToPreviousStep} type="button">
+                Vorige lesstap
+              </button>
+            ) : null}
+            {game.mode !== "math" ? (
+              <button className="button-secondary" disabled={!hostSession.authenticated} onClick={goToNextStep} type="button">
+                {game.mode === "lesson"
+                  ? hostInsights?.canAdvance
+                    ? "Volgende lesstap (iedereen klaar)"
+                    : "Volgende lesstap"
+                  : hostInsights?.canAdvance
+                    ? "Volgende vraag (iedereen klaar)"
+                    : "Volgende vraag"}
+              </button>
+            ) : null}
+            <button className="button-ghost" disabled={!hostSession.authenticated} onClick={() => socket.emit("host:reset")} type="button">
+              Nieuwe ronde
+            </button>
           </div>
 
           {game.mode === "lesson" ? (
@@ -3087,6 +3247,7 @@ function HostPage() {
         </div>
       </section>
 
+      {showHostSecondaryPanels ? (
       <section className="dashboard-grid">
         <ScoreBoard teams={teams} leaderboard={leaderboard} showGroups={liveGroupModeEnabled} />
         <RosterBoard
@@ -3097,6 +3258,7 @@ function HostPage() {
           teams={teams}
         />
       </section>
+      ) : null}
         </>
       ) : hostSession.authenticated && isManagementWorkspace ? (
         <section className="management-workspace">
@@ -3365,6 +3527,8 @@ function PlayerPage() {
   const [selfPracticeTopic, setSelfPracticeTopic] = useState("")
   const [selfPracticeQuestionCount, setSelfPracticeQuestionCount] = useState(8)
   const [selfPracticeQuestionFormat, setSelfPracticeQuestionFormat] = useState("multiple-choice")
+  const [selfPracticeAttachments, setSelfPracticeAttachments] = useState([])
+  const [selfPracticeAttachmentBusy, setSelfPracticeAttachmentBusy] = useState(false)
   const [result, setResult] = useState(null)
   const [chosenAnswer, setChosenAnswer] = useState(null)
   const [answerLocked, setAnswerLocked] = useState(false)
@@ -3525,6 +3689,7 @@ function PlayerPage() {
       setChosenAnswer(null)
       setAnswerLocked(false)
       setResult(null)
+      setSelfPracticeAttachments([])
       setJoined(false)
       setStatus("Je oefentoets staat klaar. Werk rustig vraag voor vraag.")
     }
@@ -3759,8 +3924,31 @@ function PlayerPage() {
       topic: selfPracticeTopic,
       questionCount: selfPracticeQuestionCount,
       questionFormat: selfPracticeQuestionFormat,
+      attachments: selfPracticeAttachments,
     })
     setStatus("Je oefentoets wordt klaargezet...")
+  }
+
+  const addSelfPracticeAttachmentFiles = async (files) => {
+    const fileList = Array.from(files || []).filter(Boolean)
+    if (!fileList.length) return
+
+    try {
+      setSelfPracticeAttachmentBusy(true)
+      setStatus("Bijlagen worden voorbereid voor je oefentoets...")
+      const nextAttachments = await buildAiAttachmentPayload(fileList, "self-practice-attachment")
+      setSelfPracticeAttachments((current) => [...current, ...nextAttachments].slice(0, MAX_AI_ATTACHMENT_COUNT))
+      setStatus(`${nextAttachments.length} bijlage${nextAttachments.length === 1 ? "" : "n"} toegevoegd aan je oefentoets.`)
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "De bijlagen konden niet worden toegevoegd.")
+    } finally {
+      setSelfPracticeAttachmentBusy(false)
+    }
+  }
+
+  const removeSelfPracticeAttachment = (attachmentId) => {
+    setSelfPracticeAttachments((current) => current.filter((attachment) => attachment.id !== attachmentId))
+    setStatus("Bijlage verwijderd uit je oefentoets.")
   }
 
   const submitSelfPracticeAnswer = ({ answerIndex = null, answerText = "" } = {}) => {
@@ -3860,7 +4048,7 @@ function PlayerPage() {
     isHomeMathJoin
       ? Boolean(name.trim()) && /^\d{4}$/.test(learnerCode)
       : roomPreview.valid && (isMathPreview ? /^\d{4}$/.test(learnerCode) : Boolean(name.trim()))
-  const showPlayerSidebar = game.mode !== "math"
+  const showPlayerSidebar = false
   const selfPracticeQuestion = isSelfPracticeActive ? selfPracticeSession.questions?.[selfPracticeSession.currentIndex] || null : null
   const selfPracticeResult = isSelfPracticeActive ? selfPracticeSession.currentResult || null : null
   const selfPracticeAnsweredCount = isSelfPracticeActive ? selfPracticeSession.answers.length : 0
@@ -3880,15 +4068,26 @@ function PlayerPage() {
   if (isLocalHomeMath) {
     return (
       <main className="page-shell player-shell">
-        <section className="player-layout">
-          <div className="glass join-card">
-            <span className="eyebrow">Deelnemen</span>
-            <h1>Zelf oefenen</h1>
-            <p className="muted">{status}</p>
+        <section className="player-layout player-layout-single">
+          <div className="glass battle-card player-focus-card">
+            <div className="section-head">
+              <h2>Jouw rekenroute</h2>
+              <div className="pill-row">
+                <span className="pill timer-pill">
+                  {homeMathSession.placementLevel ? `Route ${homeMathSession.targetLevel || homeMathSession.placementLevel}` : `Instap ${homeMathSession.selectedBand}`}
+                </span>
+                <span className="pill">
+                  {homeMathSession.phase === "practice"
+                    ? `${homeMathSession.practiceQuestionCount || 0} sommen gemaakt`
+                    : `Instap ${Math.min((homeMathSession.intakeIndex || 0) + (homeMathSession.currentTask ? 1 : 0), homeMathSession.intakeTotal || 0)} / ${homeMathSession.intakeTotal || 0}`}
+                </span>
+                {learnerCode ? <span className="pill">Leerlingcode {learnerCode}</span> : null}
+              </div>
+            </div>
 
-            <div className="mode-switch join-mode-switch">
+            <div className="player-focus-toolbar">
               <button
-              className={`mode-chip ${joinMode === PLAYER_JOIN_MODE_CLASSROOM ? "is-active" : ""}`}
+                className="button-ghost"
                 onClick={() => {
                   setJoinMode(PLAYER_JOIN_MODE_CLASSROOM)
                   setJoinCodeLockedFromUrl(Boolean(joinSessionCodeFromUrl))
@@ -3903,70 +4102,8 @@ function PlayerPage() {
                 }}
                 type="button"
               >
-                In de klas
+                Terug naar klassikaal
               </button>
-              <button
-                className={`mode-chip ${isHomeMathJoin ? "is-active" : ""}`}
-                onClick={() => {
-                  setJoinMode(PLAYER_JOIN_MODE_HOME_MATH)
-                  setJoinCodeLockedFromUrl(false)
-                  resetLearnerLiveState()
-                  setLearnerPortal(null)
-                  setHomeMathSession(null)
-                  setSelfPracticeSession(null)
-                  setStatus("Log in met je naam en leerlingcode om zelfstandig te oefenen.")
-                }}
-                type="button"
-              >
-                Zelf oefenen
-              </button>
-            </div>
-
-            <label className="field">
-              <span>Jouw naam</span>
-              <input
-                autoCapitalize="words"
-                autoComplete="nickname"
-                ref={nameInputRef}
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                placeholder="Bijv. Amina"
-              />
-            </label>
-
-            <label className="field">
-              <span>Leerlingcode</span>
-              <input
-                inputMode="numeric"
-                maxLength={4}
-                value={learnerCode}
-                onChange={(event) => setLearnerCode(event.target.value.replace(/\D/g, "").slice(0, 4))}
-                placeholder="Bijv. 4821"
-              />
-            </label>
-
-            <button className="button-primary" disabled={!canJoinRoom} onClick={join} type="button">
-              Oefenroute openen
-            </button>
-
-            <p className="muted learner-code-note">
-              Je opgeslagen oefenroute staat op dit apparaat klaar. Vul alleen je naam en leerlingcode in om door te gaan.
-            </p>
-          </div>
-
-          <div className="glass battle-card">
-            <div className="section-head">
-              <h2>Jouw rekenroute</h2>
-              <div className="pill-row">
-                <span className="pill timer-pill">
-                  {homeMathSession.placementLevel ? `Route ${homeMathSession.targetLevel || homeMathSession.placementLevel}` : `Instap ${homeMathSession.selectedBand}`}
-                </span>
-                <span className="pill">
-                  {homeMathSession.phase === "practice"
-                    ? `${homeMathSession.practiceQuestionCount || 0} sommen gemaakt`
-                    : `Instap ${Math.min((homeMathSession.intakeIndex || 0) + (homeMathSession.currentTask ? 1 : 0), homeMathSession.intakeTotal || 0)} / ${homeMathSession.intakeTotal || 0}`}
-                </span>
-              </div>
             </div>
 
             <MathStudentPanel
@@ -3981,10 +4118,6 @@ function PlayerPage() {
               showNextButton={!homeMathSession.currentTask && Boolean(homeMathSession.awaitingNext)}
             />
           </div>
-
-          <div className="glass side-column">
-            <LearnerCodeCard learnerCode={learnerCode} roomCode={roomCode} />
-          </div>
         </section>
       </main>
     )
@@ -3998,32 +4131,8 @@ function PlayerPage() {
 
     return (
       <main className="page-shell player-shell">
-        <section className="player-layout">
-          <div className="glass join-card">
-            <span className="eyebrow">Zelf oefenen</span>
-            <h1>{selfPracticeSession.title}</h1>
-            <p className="muted">{status}</p>
-            <div className="lesson-library-meta">
-              <span>{selfPracticeSession.topicLabel || cleanSelfPracticeTopicLabel(selfPracticeSession.topic)}</span>
-              <span>{getPracticeQuestionFormatLabel(selfPracticeSession.questionFormat)}</span>
-              <span>{selfPracticeSession.providerLabel}</span>
-            </div>
-            <button
-              className="button-ghost"
-              onClick={() => {
-                setSelfPracticeSession(null)
-                setPracticeTextAnswer("")
-                setChosenAnswer(null)
-                setAnswerLocked(false)
-                setStatus("Kies hieronder een nieuw onderwerp om verder te oefenen.")
-              }}
-              type="button"
-            >
-              Kies een nieuwe oefentoets
-            </button>
-          </div>
-
-          <div className="glass battle-card">
+        <section className="player-layout player-layout-single">
+          <div className="glass battle-card player-focus-card">
             <div className="section-head">
               <h2>{selfPracticeIsFinished ? "Jouw resultaat" : "Jouw oefenvraag"}</h2>
               <div className="pill-row">
@@ -4033,7 +4142,26 @@ function PlayerPage() {
                     : `Vraag ${Math.min(selfPracticeSession.currentIndex + 1, selfPracticeSession.questions.length)} / ${selfPracticeSession.questions.length}`}
                 </span>
                 <span className="pill">{selfPracticeAccuracy}% score</span>
+                <span className="pill">{selfPracticeSession.topicLabel || cleanSelfPracticeTopicLabel(selfPracticeSession.topic)}</span>
+                <span className="pill">{getPracticeQuestionFormatLabel(selfPracticeSession.questionFormat)}</span>
               </div>
+            </div>
+
+            <div className="player-focus-toolbar">
+              <span className="muted">Bron: {selfPracticeSession.providerLabel}</span>
+              <button
+                className="button-ghost"
+                onClick={() => {
+                  setSelfPracticeSession(null)
+                  setPracticeTextAnswer("")
+                  setChosenAnswer(null)
+                  setAnswerLocked(false)
+                  setStatus("Kies hieronder een nieuw onderwerp om verder te oefenen.")
+                }}
+                type="button"
+              >
+                Kies een nieuwe oefentoets
+              </button>
             </div>
 
             {selfPracticeIsFinished ? (
@@ -4133,18 +4261,6 @@ function PlayerPage() {
               </>
             )}
           </div>
-
-          <div className="glass side-column">
-            <LearnerCodeCard learnerCode={learnerCode} roomCode={roomCode} />
-            <div className="result-tile">
-              <span>Gemaakt</span>
-              <strong>{selfPracticeAnsweredCount}</strong>
-            </div>
-            <div className="result-tile">
-              <span>Goed</span>
-              <strong>{selfPracticeCorrectCount}</strong>
-            </div>
-          </div>
         </section>
       </main>
     )
@@ -4153,11 +4269,15 @@ function PlayerPage() {
   if (shouldShowHomeMathPortal) {
     return (
       <main className="page-shell player-shell">
-        <section className="player-layout">
-          <div className="glass join-card">
-            <span className="eyebrow">Leerlinglogin</span>
-            <h1>Zelf oefenen</h1>
-            <p className="muted">{status}</p>
+        <section className="player-layout player-layout-single">
+          <div className="glass battle-card player-focus-card">
+            <div className="section-head">
+              <h2>Zelf oefenen</h2>
+              <div className="pill-row">
+                {learnerCode ? <span className="pill">Leerlingcode {learnerCode}</span> : null}
+                {learnerPortal?.className ? <span className="pill">{learnerPortal.className}</span> : null}
+              </div>
+            </div>
 
             <div className="mode-switch join-mode-switch">
               <button
@@ -4192,39 +4312,37 @@ function PlayerPage() {
               </button>
             </div>
 
-            <label className="field">
-              <span>Jouw naam</span>
-              <input
-                autoCapitalize="words"
-                autoComplete="nickname"
-                ref={nameInputRef}
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                placeholder="Bijv. Layan"
-              />
-            </label>
+            <div className="lesson-library-edit-grid">
+              <label className="field inline-field">
+                <span>Jouw naam</span>
+                <input
+                  autoCapitalize="words"
+                  autoComplete="nickname"
+                  ref={nameInputRef}
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                  placeholder="Bijv. Layan"
+                />
+              </label>
+              <label className="field inline-field">
+                <span>Leerlingcode</span>
+                <input
+                  inputMode="numeric"
+                  maxLength={4}
+                  value={learnerCode}
+                  onChange={(event) => setLearnerCode(event.target.value.replace(/\D/g, "").slice(0, 4))}
+                  placeholder="Bijv. 1122"
+                />
+              </label>
+            </div>
 
-            <label className="field">
-              <span>Leerlingcode</span>
-              <input
-                inputMode="numeric"
-                maxLength={4}
-                value={learnerCode}
-                onChange={(event) => setLearnerCode(event.target.value.replace(/\D/g, "").slice(0, 4))}
-                placeholder="Bijv. 1122"
-              />
-            </label>
+            <div className="player-focus-toolbar">
+              <p className="muted">{status}</p>
+              <button className="button-primary" disabled={!canJoinRoom} onClick={join} type="button">
+                Inloggen als leerling
+              </button>
+            </div>
 
-            <button className="button-primary" disabled={!canJoinRoom} onClick={join} type="button">
-              Inloggen als leerling
-            </button>
-
-            <p className="muted learner-code-note">
-              Na het inloggen kun je een oefentoets kiezen of je rekenroute hervatten als die al klaarstaat.
-            </p>
-          </div>
-
-          <div className="glass battle-card">
             {!learnerPortal ? (
               <div className="empty-state">
                 <h3>Kies hoe je wilt oefenen</h3>
@@ -4293,6 +4411,14 @@ function PlayerPage() {
                         </select>
                       </label>
                     </div>
+                    <AiAttachmentCard
+                      attachments={selfPracticeAttachments}
+                      description="Voeg bijvoorbeeld een hoofdstuk, woordenlijst, werkblad of samenvatting toe. De AI leest dit mee bij het maken van je oefentoets."
+                      isBusy={selfPracticeAttachmentBusy}
+                      onAddFiles={addSelfPracticeAttachmentFiles}
+                      onRemove={removeSelfPracticeAttachment}
+                      title="Bijlagen voor je oefentoets"
+                    />
                     <div className="lesson-library-actions">
                       <button className="button-secondary" disabled={!canStartSelfPractice} onClick={startSelfPractice} type="button">
                         Start oefentoets
@@ -4303,18 +4429,6 @@ function PlayerPage() {
               </>
             )}
           </div>
-
-          <div className="glass side-column">
-            {learnerCode ? <LearnerCodeCard learnerCode={learnerCode} roomCode={roomCode} /> : null}
-            <div className="result-tile">
-              <span>Zelf oefenen</span>
-              <strong>Naam + leerlingcode</strong>
-            </div>
-            <div className="result-tile">
-              <span>Klassikaal meedoen</span>
-              <strong>Naam + sessiecode</strong>
-            </div>
-          </div>
         </section>
       </main>
     )
@@ -4323,8 +4437,8 @@ function PlayerPage() {
   if (!joined) {
     return (
       <main className="page-shell player-shell">
-        <section className="player-layout">
-          <div className="glass join-card">
+        <section className="player-layout player-layout-single">
+          <div className="glass join-card player-focus-card">
             <span className="eyebrow">Deelnemen</span>
             <h1>Doe mee met de klas</h1>
             <p className="muted">{status}</p>
@@ -4411,29 +4525,25 @@ function PlayerPage() {
                 <p>Kies hierboven Zelf oefenen. Dan log je in met je naam en leerlingcode en kies je daarna zelf een oefentoets.</p>
               </div>
             ) : null}
-          </div>
-
-          <div className="glass battle-card">
-            <div className="empty-state">
-              <h3>Klassikaal meedoen</h3>
-              <p>
-                Vul je naam en sessiecode in. Daarna kom je pas in de live les, presentatie, oefentoets of battle van je docent.
-              </p>
+            {!isHomeMathJoin ? (
+              <div className="empty-state compact-empty-state">
+                <h3>Klassikaal meedoen</h3>
+                <p>Vul alleen je naam en sessiecode in. Daarna kom je vanzelf in de live les, presentatie, oefentoets of battle van je docent.</p>
+              </div>
+            ) : (
+              <div className="empty-state compact-empty-state">
+                <h3>Zelf oefenen</h3>
+                <p>Log in met je naam en leerlingcode. Daarna kun je zelfstandig oefenen en eventueel verdergaan waar je gebleven was.</p>
+              </div>
+            )}
+            <div className="player-focus-toolbar">
+              <span className="pill">{isHomeMathJoin ? "Zelfstandig oefenen" : "Klassikaal meedoen"}</span>
+              {joinCodeLockedFromUrl && !isHomeMathJoin ? <span className="pill">QR-koppeling actief</span> : null}
             </div>
-          </div>
-
-          <div className="glass side-column">
-            <div className="result-tile">
-              <span>Stap 1</span>
-              <strong>Naam invullen</strong>
-            </div>
-            <div className="result-tile">
-              <span>Stap 2</span>
-              <strong>Sessiecode invullen</strong>
-            </div>
-            <div className="result-tile">
-              <span>Stap 3</span>
-              <strong>Wachten op start</strong>
+            <div className="host-home-note">
+              {isHomeMathJoin
+                ? "Gebruik deze ingang alleen voor zelfstandig oefenen. Klassikale sessies lopen via de sessiecode van je docent."
+                : "Je ziet pas lesinhoud nadat de docent de sessie live heeft gezet. Tot die tijd blijft dit scherm bewust rustig."}
             </div>
           </div>
         </section>
@@ -4443,129 +4553,8 @@ function PlayerPage() {
 
   return (
     <main className="page-shell player-shell">
-      <section className="player-layout">
-        <div className="glass join-card">
-          <span className="eyebrow">Deelnemen</span>
-          <h1>{isHomeMathJoin ? "Zelf oefenen" : isMathPreview ? "Start rekenen" : "Doe mee aan de sessie"}</h1>
-          <p className="muted">{status}</p>
-
-          <div className="mode-switch join-mode-switch">
-            <button
-              className={`mode-chip ${joinMode === PLAYER_JOIN_MODE_CLASSROOM ? "is-active" : ""}`}
-              onClick={() => {
-                setJoinMode(PLAYER_JOIN_MODE_CLASSROOM)
-                setJoinCodeLockedFromUrl(Boolean(joinSessionCodeFromUrl))
-                if (joinSessionCodeFromUrl) setRoomCode(joinSessionCodeFromUrl)
-                resetLearnerLiveState()
-              }}
-              type="button"
-            >
-              In de klas
-            </button>
-            <button
-              className={`mode-chip ${isHomeMathJoin ? "is-active" : ""}`}
-              onClick={() => {
-                setJoinMode(PLAYER_JOIN_MODE_HOME_MATH)
-                setJoinCodeLockedFromUrl(false)
-                resetLearnerLiveState()
-                setLearnerPortal(null)
-                setHomeMathSession(null)
-                setSelfPracticeSession(null)
-                setStatus("Log in met je naam en leerlingcode om zelfstandig te oefenen.")
-              }}
-              type="button"
-            >
-              Zelf oefenen
-            </button>
-          </div>
-
-          <label className="field">
-            <span>Jouw naam</span>
-            <input
-              autoCapitalize="words"
-              autoComplete="nickname"
-              ref={nameInputRef}
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              placeholder="Bijv. Amina"
-            />
-          </label>
-
-          {joinGroupModeEnabled ? (
-            <label className="field">
-              <span>Groep (optioneel)</span>
-              <select value={teamId} onChange={(event) => setTeamId(event.target.value)}>
-                <option value="">Geen groep</option>
-                {availableTeams.map((team) => (
-                  <option key={team.id} value={team.id}>
-                    {team.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          ) : null}
-
-          {needsRoomCode ? (
-            <label className="field">
-              <span>Sessiecode</span>
-              {joinCodeLockedFromUrl ? (
-                <div className="prefilled-session-code">
-                  <strong>{roomCode || "-----"}</strong>
-                  <span>Deze sessiecode is al ingevuld via de QR-code.</span>
-                </div>
-              ) : (
-                <input
-                  value={roomCode}
-                  onChange={(event) => setRoomCode(event.target.value.toUpperCase())}
-                  placeholder="Bijv. AB12C"
-                />
-              )}
-            </label>
-          ) : null}
-
-          {needsLearnerCode ? (
-            <label className="field">
-              <span>Leerlingcode</span>
-              <input
-                inputMode="numeric"
-                maxLength={4}
-                value={learnerCode}
-                onChange={(event) => setLearnerCode(event.target.value.replace(/\D/g, "").slice(0, 4))}
-                placeholder="Bijv. 4821"
-              />
-            </label>
-          ) : null}
-
-          <button className="button-primary" disabled={!canJoinRoom} onClick={join} type="button">
-            {joined ? "Opnieuw koppelen" : isHomeMathJoin ? "Leerlinglogin starten" : "Ik doe mee"}
-          </button>
-
-          {selectedTeam && joinGroupModeEnabled ? (
-            <div className="team-chip" style={{ "--team-accent": selectedTeam.color }}>
-              {selectedTeam.name}
-            </div>
-          ) : null}
-          {needsLearnerCode ? (
-            <p className="muted learner-code-note">
-              {isHomeMathJoin
-                ? "Vul je naam en leerlingcode in. Dan zoeken we jouw rekenroute automatisch op."
-                : "Vul hier de 4-cijferige code in die je van de docent hebt gekregen."}
-            </p>
-          ) : null}
-          {joinCodeLockedFromUrl && !needsLearnerCode ? (
-            <p className="muted learner-code-note">
-              De sessiecode staat al klaar via de QR-code. Je hoeft dus alleen nog je naam in te vullen.
-            </p>
-          ) : null}
-          {!isHomeMathJoin ? (
-            <div className="join-home-note">
-              <strong>Thuis verder?</strong>
-              <p>Klik hierboven op Zelf oefenen. Dan vul je alleen je naam en leerlingcode in. Een sessiecode is daar niet nodig.</p>
-            </div>
-          ) : null}
-        </div>
-
-        <div className="glass battle-card">
+      <section className="player-layout player-layout-single">
+        <div className="glass battle-card player-focus-card">
           <div className="section-head">
             <h2>{game.mode === "lesson" ? "Jouw lesstap" : game.mode === "math" ? "Jouw rekenroute" : "Jouw battlevraag"}</h2>
             <div className="pill-row">
@@ -4603,9 +4592,26 @@ function PlayerPage() {
                     ? `Vraag ${game.currentQuestionIndex + 1}`
                     : game.status === "revealed"
                       ? "Antwoord"
-                    : "Wachten"}
+                  : "Wachten"}
               </span>
+              {roomCode ? <span className="pill">Sessiecode {roomCode}</span> : null}
             </div>
+          </div>
+
+          <div className="player-focus-toolbar">
+            <p className="muted">{status}</p>
+            <button
+              className="button-ghost"
+              onClick={() => {
+                setJoinMode(PLAYER_JOIN_MODE_CLASSROOM)
+                setJoinCodeLockedFromUrl(Boolean(joinSessionCodeFromUrl))
+                if (joinSessionCodeFromUrl) setRoomCode(joinSessionCodeFromUrl)
+                resetLearnerLiveState()
+              }}
+              type="button"
+            >
+              Opnieuw koppelen
+            </button>
           </div>
 
           {game.mode === "battle" ? (
@@ -4821,14 +4827,6 @@ function PlayerPage() {
             </div>
           )}
         </div>
-
-        {showPlayerSidebar || (game.mode === "math" && game.math && learnerCode) ? (
-          <div className="glass side-column">
-            {game.mode === "math" && game.math && learnerCode ? <LearnerCodeCard learnerCode={learnerCode} roomCode={roomCode} /> : null}
-            {showPlayerSidebar ? <ScoreBoard teams={teams} leaderboard={leaderboard} compact showGroups={liveGroupModeEnabled} /> : null}
-            {showPlayerSidebar ? <RosterBoard groupModeEnabled={liveGroupModeEnabled} players={players} teams={teams} compact /> : null}
-          </div>
-        ) : null}
       </section>
     </main>
   )
@@ -5711,6 +5709,64 @@ function ManualQuestionImageCard({
   )
 }
 
+function AiAttachmentCard({
+  title = "Bijlagen voor AI",
+  description = "Voeg bronmateriaal toe zodat de AI gerichter werkt.",
+  attachments = [],
+  isBusy = false,
+  onAddFiles,
+  onRemove,
+}) {
+  return (
+    <section className="glass board-card ai-attachment-card">
+      <div className="section-head">
+        <h2>{title}</h2>
+        <span className="pill">{attachments.length} bestand{attachments.length === 1 ? "" : "en"}</span>
+      </div>
+      <p className="muted">{description}</p>
+      <div className="manual-image-actions">
+        <label className={`button-ghost manual-upload-button ${isBusy ? "is-disabled" : ""}`}>
+          {isBusy ? "Bezig..." : "Voeg bijlagen toe"}
+          <input
+            accept={AI_ATTACHMENT_ACCEPT}
+            disabled={isBusy}
+            multiple
+            onChange={(event) => {
+              const files = Array.from(event.target.files || [])
+              if (files.length) onAddFiles(files)
+              event.target.value = ""
+            }}
+            type="file"
+          />
+        </label>
+      </div>
+      <div className="manual-image-meta">
+        <span>Ondersteund: PDF, Word, Excel, TXT, CSV en JSON</span>
+        <strong>Max. {MAX_AI_ATTACHMENT_COUNT} bestanden</strong>
+      </div>
+      {attachments.length ? (
+        <div className="ai-attachment-list">
+          {attachments.map((attachment) => (
+            <div className="ai-attachment-item" key={attachment.id}>
+              <div>
+                <strong>{attachment.name}</strong>
+                <span>{formatFileSize(attachment.size)}</span>
+              </div>
+              <button className="button-ghost subtle-danger" onClick={() => onRemove(attachment.id)} type="button">
+                Verwijder
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="host-home-note">
+          Nog geen bijlagen toegevoegd. Gebruik dit voor studiewijzers, paragrafen, toetsen, woordenlijsten of een Excel-overzicht.
+        </div>
+      )}
+    </section>
+  )
+}
+
 function PresentationSlideCanvas({ presentation, slide, compact = false, variant = "default" }) {
   if (!slide) return null
   const stackedLayout = compact || variant === "preview" || variant === "student"
@@ -6074,13 +6130,6 @@ function LessonResponsePanel({ answer, onChange, onSubmit, prompt = "", result, 
         <h3>Jouw antwoord</h3>
         <span className="pill">{result?.label || "Nog niet verstuurd"}</span>
       </div>
-
-      {prompt ? (
-        <div className="lesson-response-callout">
-          <strong>Vraag in deze dia</strong>
-          <p>{prompt}</p>
-        </div>
-      ) : null}
 
       <label className="field">
         <span>Typ je reactie</span>
