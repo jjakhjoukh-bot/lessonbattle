@@ -7512,15 +7512,38 @@ async function extractTextFromAiPromptAttachment(attachment) {
   }
 
   if (extension === ".pdf" || mimeType === "application/pdf") {
-    const { default: pdfParse } = await import("pdf-parse")
-    const parsed = await pdfParse(buffer)
-    return sanitizeAttachmentText(parsed?.text || "")
+    const pdfParseModule = await import("pdf-parse")
+    const PDFParse = pdfParseModule.PDFParse || pdfParseModule.default?.PDFParse
+    if (typeof PDFParse !== "function") {
+      throw new Error("De PDF-lezer kon niet worden gestart.")
+    }
+    const parser = new PDFParse({ data: buffer })
+    try {
+      const parsed = await parser.getText()
+      const extractedText = sanitizeAttachmentText(parsed?.text || "")
+      if (!extractedText) {
+        throw new Error("Deze PDF bevat geen leesbare tekstlaag. Gebruik een doorzoekbare PDF of een Word-/TXT-bestand.")
+      }
+      return extractedText
+    } finally {
+      if (typeof parser.destroy === "function") {
+        await parser.destroy().catch(() => {})
+      }
+    }
   }
 
   if (extension === ".docx" || mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
-    const mammoth = await import("mammoth")
-    const extracted = await mammoth.extractRawText({ buffer })
-    return sanitizeAttachmentText(extracted?.value || "")
+    const mammothModule = await import("mammoth")
+    const extractRawText = mammothModule.extractRawText || mammothModule.default?.extractRawText
+    if (typeof extractRawText !== "function") {
+      throw new Error("De Word-lezer kon niet worden gestart.")
+    }
+    const extracted = await extractRawText({ buffer })
+    const extractedText = sanitizeAttachmentText(extracted?.value || "")
+    if (!extractedText) {
+      throw new Error("Dit Word-bestand bevat geen leesbare tekst.")
+    }
+    return extractedText
   }
 
   if (
@@ -7530,10 +7553,18 @@ async function extractTextFromAiPromptAttachment(attachment) {
     mimeType === "application/vnd.ms-excel"
   ) {
     const workbook = XLSX.read(buffer, { type: "buffer" })
-    return sanitizeAttachmentText(extractWorksheetPreviewText(workbook))
+    const extractedText = sanitizeAttachmentText(extractWorksheetPreviewText(workbook))
+    if (!extractedText) {
+      throw new Error("Dit Excel-bestand bevat geen leesbare celinhoud.")
+    }
+    return extractedText
   }
 
-  return sanitizeAttachmentText(buffer.toString("utf8"))
+  const extractedText = sanitizeAttachmentText(buffer.toString("utf8"))
+  if (!extractedText) {
+    throw new Error("Dit tekstbestand bevat geen leesbare inhoud.")
+  }
+  return extractedText
 }
 
 async function buildAiAttachmentContext(attachments = []) {
@@ -7541,6 +7572,7 @@ async function buildAiAttachmentContext(attachments = []) {
   if (!normalizedAttachments.length) return ""
 
   const snippets = []
+  const readErrors = []
   let remainingChars = MAX_AI_ATTACHMENT_TOTAL_TEXT_CHARS
   let readableAttachmentCount = 0
 
@@ -7555,13 +7587,16 @@ async function buildAiAttachmentContext(attachments = []) {
       snippets.push(`Bestand: ${attachment.name}\n${snippet}`)
       remainingChars -= snippet.length
     } catch (error) {
-      console.warn("[AI] bijlage kon niet worden gelezen:", attachment?.name, error instanceof Error ? error.message : error)
+      const reason = error instanceof Error ? error.message : "Onbekende leesfout."
+      readErrors.push(`${attachment?.name || "Bijlage"}: ${reason}`)
+      console.warn("[AI] bijlage kon niet worden gelezen:", attachment?.name, reason)
     }
   }
 
   if (!snippets.length || readableAttachmentCount === 0) {
+    const extraDetails = readErrors.length ? ` Details: ${readErrors[0]}` : ""
     throw new Error(
-      "De bijlagen konden niet goed worden gelezen. Gebruik een PDF, Word-, Excel-, TXT- of CSV-bestand met echte tekstinhoud."
+      `De bijlagen konden niet goed worden gelezen. Gebruik een PDF, Word-, Excel-, TXT- of CSV-bestand met echte tekstinhoud. Gescande PDF's zonder tekstlaag kunnen we nog niet uitlezen.${extraDetails}`
     )
   }
 
