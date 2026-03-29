@@ -376,10 +376,10 @@ function cleanSelfPracticeTopicLabel(value = "") {
 }
 
 function getSelfPracticeResultHeading(accuracy = 0) {
-  if (accuracy >= 80) return "Sterk gedaan"
-  if (accuracy >= 60) return "Goed op weg"
-  if (accuracy >= 40) return "Nog even oefenen"
-  return "Hier mag nog extra aandacht naartoe"
+  if (accuracy >= 80) return "Goed afgerond"
+  if (accuracy >= 60) return "Basis staat er"
+  if (accuracy >= 40) return "Nog verder oefenen"
+  return "Extra herhaling nodig"
 }
 
 function getSelfPracticeResultFeedback(accuracy = 0) {
@@ -1140,6 +1140,24 @@ function HostPage() {
               ? `${game.totalQuestions} vragen klaar`
               : "Battle nog niet gestart"
         : "Nog geen live sessie"
+  const workspaceHasPreparedContent = (workspaceId) => {
+    if (workspaceId === "math") {
+      return game.mode === "math" && (Boolean(game.math?.players?.length) || Boolean(players.length))
+    }
+    if (workspaceId === "battle") {
+      return game.mode === "battle" && (Boolean(game.question) || Boolean(game.questions?.length) || game.status === "finished")
+    }
+    if (workspaceId === "lesson" || workspaceId === "presentation" || workspaceId === "practice") {
+      return (
+        game.mode === "lesson" &&
+        (Boolean(game.lesson?.phases?.length) ||
+          Boolean(game.lesson?.presentation?.slides?.length) ||
+          Boolean(game.lesson?.practiceTest?.questions?.length) ||
+          game.status === "finished")
+      )
+    }
+    return false
+  }
   const classroomJoinUrl = useMemo(
     () => buildClassroomJoinUrl(hostSession.roomCode),
     [hostSession.roomCode]
@@ -1522,28 +1540,35 @@ function HostPage() {
         setHostSession(DEFAULT_HOST_SESSION)
       }
     }
-    const onSuccess = ({ count, providerLabel }) =>
+    const onSuccess = ({ count, providerLabel }) => {
+      setShowHostPrepPanel(false)
       setStatus(
         providerLabel === "Adaptieve rekenroute"
           ? `De rekenroute staat live. Leerlingen krijgen eerst ${count} instapvragen en gaan daarna adaptief verder.`
           : `${count} AI-vragen klaar${providerLabel ? ` via ${providerLabel}` : ""}. De eerste vraag staat klaar in docent-preview. Klik op Start vraag om hem live te zetten.`
       )
-    const onLessonSuccess = ({ count, providerLabel, lessonModel: nextLessonModel, hasPracticeTest, hasPresentation }) =>
+    }
+    const onLessonSuccess = ({ count, providerLabel, lessonModel: nextLessonModel, hasPracticeTest, hasPresentation }) => {
+      setShowHostPrepPanel(false)
       setStatus(
         `${count} lesstappen klaar${providerLabel ? ` via ${providerLabel}` : ""}. ${String(nextLessonModel || "Lesmodus").toUpperCase()} is live.${hasPracticeTest ? " Oefentoets klaar." : ""}${hasPresentation ? " Presentatiepakket klaar." : ""}`
       )
+    }
     const onLessonPromptSuccess = () => setStatus("Live lesvraag bijgewerkt voor de deelnemers.")
     const onSaveLessonSuccess = ({ title }) => setStatus(`Les opgeslagen in de bibliotheek: ${title}.`)
     const onLoadLessonSuccess = ({ title }) => {
       setSessionMode("lesson")
+      setShowHostPrepPanel(false)
       setStatus(`Les geladen uit de bibliotheek: ${title}.`)
     }
     const onDeleteLessonSuccess = () => setStatus("Les verwijderd uit de bibliotheek.")
     const onFavoriteLessonSuccess = ({ title, isFavorite }) =>
       setStatus(`${title || "Les"} ${isFavorite ? "staat nu als favoriet gemarkeerd." : "is uit de favorieten gehaald."}`)
     const onUpdateLessonMetaSuccess = ({ title }) => setStatus(`Map en tags bijgewerkt voor ${title || "de les"}.`)
-    const onHistoryLoadSuccess = ({ title, type }) =>
+    const onHistoryLoadSuccess = ({ title, type }) => {
+      setShowHostPrepPanel(false)
       setStatus(`${type === "lesson" ? "Les" : type === "practice" ? "Oefentoets" : "Quiz"} geladen uit geschiedenis: ${title}.`)
+    }
     const onHistoryDeleteSuccess = () => setStatus("Geschiedenis-item verwijderd.")
     const onTeacherAccountsSuccess = ({ message }) => {
       setTeacherAccountForm((current) => ({ ...current, username: "", displayName: "", password: "" }))
@@ -1892,7 +1917,7 @@ function HostPage() {
     setHostMenuOpen(false)
     setHostProfileOpen(false)
     setJoinQrOpen(false)
-    setShowHostPrepPanel(true)
+    setShowHostPrepPanel(!workspaceHasPreparedContent(nextWorkspace))
     if (nextWorkspace === "home") return
     if (nextWorkspace === "management") return
     selectSessionMode(nextWorkspace)
@@ -2759,6 +2784,23 @@ function HostPage() {
             <p>{activeWorkspaceMeta.description}</p>
           </div>
 
+          <div className="builder-step-strip" aria-label="Opbouwstappen">
+            <div className="builder-step-chip is-active">
+              <span>1</span>
+              <strong>{controlMode === "math" ? "Route kiezen" : "Onderwerp kiezen"}</strong>
+            </div>
+            <div className="builder-step-chip">
+              <span>2</span>
+              <strong>{controlMode === "math" ? "Instellingen" : "Bronmateriaal toevoegen"}</strong>
+            </div>
+            <div className="builder-step-chip">
+              <span>3</span>
+              <strong>{buildActionLabel}</strong>
+            </div>
+          </div>
+
+          <div className="builder-anchor-card">
+
           {controlMode === "math" ? (
             <MathBandSelector selectedBand={mathBand} onChange={setMathBand} />
           ) : (
@@ -2996,19 +3038,11 @@ function HostPage() {
           {controlMode !== "math" ? (
             <AiAttachmentCard
               attachments={hostAiAttachments}
-              description="Voeg bronmateriaal toe, zoals een toets, hoofdstuk, woordenlijst, Excel-overzicht of lesbrief. De AI gebruikt die inhoud als extra bron bij het opbouwen."
+              description="Voeg hier je bronmateriaal toe. Lesson Battle gebruikt deze bestanden eerst en bouwt daarna pas de les, battle of oefentoets op."
               isBusy={hostAttachmentBusy}
               onAddFiles={addHostAiAttachmentFiles}
               onRemove={removeHostAiAttachment}
-              title="Bijlagen voor AI"
-            />
-          ) : null}
-
-          {controlMode === "lesson" ? (
-            <LessonSummaryCard
-              lesson={game.lesson}
-              onSave={game.lesson?.phases?.length ? saveCurrentLesson : null}
-              onStartPractice={game.lesson?.practiceTest?.questionCount ? startPracticeTest : null}
+              title="Bronmateriaal"
             />
           ) : null}
 
@@ -3032,6 +3066,15 @@ function HostPage() {
               {controlMode === "lesson" || controlMode === "math" ? buildActionLabel : "Ronde klaarzetten"}
             </button>
           </div>
+          </div>
+
+          {controlMode === "lesson" ? (
+            <LessonSummaryCard
+              lesson={game.lesson}
+              onSave={game.lesson?.phases?.length ? saveCurrentLesson : null}
+              onStartPractice={game.lesson?.practiceTest?.questionCount ? startPracticeTest : null}
+            />
+          ) : null}
 
           {game.mode === "math" && controlMode !== "math" ? (
             <div className="field math-config-card">
@@ -3961,7 +4004,11 @@ function PlayerPage() {
     setPracticeTextAnswer(String(answerText || "").trim())
     setChosenAnswer(Number.isInteger(answerIndex) ? answerIndex : null)
     setAnswerLocked(true)
-    setStatus(nextSession.currentResult?.correct ? "Goed gedaan. Kijk naar de uitleg en ga daarna verder." : "Kijk naar de uitleg en probeer de volgende vraag daarna opnieuw.")
+    setStatus(
+      nextSession.currentResult?.correct
+        ? "Antwoord verwerkt. Bekijk de uitleg en ga daarna verder."
+        : "Bekijk de uitleg rustig en ga daarna verder naar de volgende vraag."
+    )
     socket.emit("player:self-practice:progress", {
       name: name.trim(),
       learnerCode,
@@ -4559,7 +4606,7 @@ function PlayerPage() {
       <section className="player-layout player-layout-single">
         <div className="glass battle-card player-focus-card">
           <div className="section-head">
-            <h2>{game.mode === "lesson" ? "Jouw lesstap" : game.mode === "math" ? "Jouw rekenroute" : "Jouw battlevraag"}</h2>
+            <h2>{game.mode === "lesson" ? "Jouw lesstap" : game.mode === "math" ? "Jouw rekenroute" : "Jouw vraag"}</h2>
             <div className="pill-row">
               <span className="pill timer-pill">
                 {game.mode === "lesson"
@@ -5713,7 +5760,7 @@ function ManualQuestionImageCard({
 }
 
 function AiAttachmentCard({
-  title = "Bijlagen voor AI",
+  title = "Bronmateriaal",
   description = "Voeg bronmateriaal toe zodat de AI gerichter werkt.",
   attachments = [],
   isBusy = false,
@@ -5727,6 +5774,9 @@ function AiAttachmentCard({
         <span className="pill">{attachments.length} bestand{attachments.length === 1 ? "" : "en"}</span>
       </div>
       <p className="muted">{description}</p>
+      <div className="host-home-note compact-note">
+        De AI gebruikt deze bestanden eerst als bron. Daarna wordt de les, battle of oefentoets opgebouwd.
+      </div>
       <div className="manual-image-actions">
         <label className={`button-ghost manual-upload-button ${isBusy ? "is-disabled" : ""}`}>
           {isBusy ? "Bezig..." : "Voeg bijlagen toe"}
@@ -7680,10 +7730,10 @@ function HostStartPanel({
       <section className="glass board-card host-start-hero">
         <div className="host-start-copy">
           <span className="eyebrow">Docentenomgeving</span>
-          <h1>Rustig starten.</h1>
+          <h1>Overzicht en focus.</h1>
           <p>
-            Kies linksboven alleen de werkruimte die je nu nodig hebt. Zo blijft het scherm rustig en houd je overzicht
-            tijdens de les.
+            Open alleen de werkruimte die je nu nodig hebt. Zo blijft de live inhoud centraal en bouw je nieuw materiaal
+            zonder te zoeken naar knoppen of overbodige panelen.
           </p>
           <div className="host-start-actions">
             <button className="button-primary" onClick={() => onOpenWorkspace("lesson")} type="button">
@@ -7806,7 +7856,7 @@ function HostStartPanel({
           )}
           <div className="host-support-actions">
             <a className="button-primary support-link-button" href={SUPPORT_MAILTO_LINK} onClick={onMailClick}>
-              Open mailapp
+              Mail of vraag sturen
             </a>
             <button className="button-ghost" onClick={() => onOpenWorkspace("management")} type="button">
               Naar beheer

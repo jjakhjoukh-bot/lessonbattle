@@ -7679,6 +7679,8 @@ Regels:
 - Pas taalniveau, moeilijkheid en context aan op de doelgroep.
 - Als er bronmateriaal is meegegeven, is dat bronmateriaal leidend.
 - Gebruik alleen informatie uit het bronmateriaal of directe, logische afleidingen daarvan.
+- Lees bij bronmateriaal eerst de kernbegrippen en hoofdonderwerpen uit de bestanden en baseer daar de vragen direct op.
+- Als het bronmateriaal te weinig bruikbare informatie geeft, verbreed dan niet naar een ander thema en ga niet gokken.
 - Genereer nooit vragen over een ander vak, ander land, andere religie of ander thema tenzij dat expliciet in het bronmateriaal staat.
 - Als het onderwerp basisniveau vraagt, gebruik dan korte zinnen en concrete voorbeelden.
 - Als het onderwerp specialistischer is, maak de vragen inhoudelijk preciezer maar nog steeds helder.
@@ -7769,6 +7771,8 @@ Regels:
 - De les moet direct inzetbaar zijn in een groep.
 - Werk het onderwerp concreet uit en blijf dicht bij de invoer van de docent.
 - Als er bronmateriaal is meegegeven, is dat bronmateriaal leidend.
+- Lees bij bronmateriaal eerst de kernbegrippen en hoofdonderwerpen uit de bestanden en baseer daar de lesfasen direct op.
+- Als het bronmateriaal te weinig bruikbare informatie geeft, verbreed dan niet naar een ander vak, land, religie of thema.
 - Gebruik geen ander vak of thema dan wat expliciet in de invoer of het bronmateriaal staat.
 - Zorg voor afwisseling tussen uitleg, begeleide oefening, interactie en controle van begrip.
 - Verwerk minimaal 5 en maximaal 7 lesfasen.
@@ -8731,7 +8735,7 @@ function ensureAttachmentAlignment({ sourceContext = "", topic = "", generatedTe
 
   const generatedLower = String(generatedText || "").toLowerCase()
   const matchedKeywords = sourceKeywords.filter((keyword) => generatedLower.includes(keyword))
-  const minimumMatches = Math.min(3, Math.max(2, Math.ceil(sourceKeywords.length / 6)))
+  const minimumMatches = Math.min(5, Math.max(3, Math.ceil(sourceKeywords.length / 5)))
 
   if (matchedKeywords.length >= minimumMatches) return
 
@@ -8967,62 +8971,25 @@ async function generateLessonPlan({
   const safeDuration = Math.max(20, Math.min(90, Number(durationMinutes) || 45))
   const targetAudience = audience?.trim() || "vmbo"
   const targetModel = String(lessonModel ?? "edi").trim() || "edi"
-  const attempts = [
-    ...(genAI
-      ? [{
-          name: "gemini",
-          run: () =>
-            generateLessonPlanWithProvider("gemini", {
-              topic,
-              audience: targetAudience,
-              lessonModel: targetModel,
-              durationMinutes: safeDuration,
-              practiceQuestionCount,
-              slideCount,
-              includePracticeTest,
-              includePresentation,
-              includeVideoPlan,
-              sourceContext,
-            }),
-        }]
-      : []),
-    ...(groq
-      ? [{
-          name: "groq",
-          run: () =>
-            generateLessonPlanWithProvider("groq", {
-              topic,
-              audience: targetAudience,
-              lessonModel: targetModel,
-              durationMinutes: safeDuration,
-              practiceQuestionCount,
-              slideCount,
-              includePracticeTest,
-              includePresentation,
-              includeVideoPlan,
-              sourceContext,
-            }),
-        }]
-      : []),
-    ...(openAI
-      ? [{
-          name: "openai",
-          run: () =>
-            generateLessonPlanWithProvider("openai", {
-              topic,
-              audience: targetAudience,
-              lessonModel: targetModel,
-              durationMinutes: safeDuration,
-              practiceQuestionCount,
-              slideCount,
-              includePracticeTest,
-              includePresentation,
-              includeVideoPlan,
-              sourceContext,
-            }),
-        }]
-      : []),
-  ]
+  const preferredProviderOrder = String(sourceContext || "").trim() ? ["openai", "gemini", "groq"] : ["gemini", "openai", "groq"]
+  const attempts = preferredProviderOrder
+    .filter((provider) => (provider === "openai" ? Boolean(openAI) : provider === "gemini" ? Boolean(genAI) : Boolean(groq)))
+    .map((provider) => ({
+      name: provider,
+      run: () =>
+        generateLessonPlanWithProvider(provider, {
+          topic,
+          audience: targetAudience,
+          lessonModel: targetModel,
+          durationMinutes: safeDuration,
+          practiceQuestionCount,
+          slideCount,
+          includePracticeTest,
+          includePresentation,
+          includeVideoPlan,
+          sourceContext,
+        }),
+    }))
 
   const errors = []
   for (let index = 0; index < attempts.length; index += 1) {
@@ -9088,11 +9055,18 @@ async function generateQuestions({ topic, audience, questionCount, questionForma
   const safeQuestionCount = Math.max(6, Math.min(24, Number(questionCount) || 12))
   const targetAudience = audience?.trim() || "vmbo"
   const requestedFormat = normalizePracticeQuestionFormat(questionFormat)
-  const attempts = [
-    ...(genAI ? [{ name: "gemini", run: () => generateQuestionsWithGemini(topic, targetAudience, safeQuestionCount, requestedFormat, sourceContext) }] : []),
-    ...(groq ? [{ name: "groq", run: () => generateQuestionsWithGroq(topic, targetAudience, safeQuestionCount, requestedFormat, sourceContext) }] : []),
-    ...(openAI ? [{ name: "openai", run: () => generateQuestionsWithOpenAI(topic, targetAudience, safeQuestionCount, requestedFormat, sourceContext) }] : []),
-  ]
+  const preferredProviderOrder = String(sourceContext || "").trim() ? ["openai", "gemini", "groq"] : ["gemini", "openai", "groq"]
+  const attempts = preferredProviderOrder
+    .filter((provider) => (provider === "openai" ? Boolean(openAI) : provider === "gemini" ? Boolean(genAI) : Boolean(groq)))
+    .map((provider) => ({
+      name: provider,
+      run: () =>
+        provider === "openai"
+          ? generateQuestionsWithOpenAI(topic, targetAudience, safeQuestionCount, requestedFormat, sourceContext)
+          : provider === "gemini"
+            ? generateQuestionsWithGemini(topic, targetAudience, safeQuestionCount, requestedFormat, sourceContext)
+            : generateQuestionsWithGroq(topic, targetAudience, safeQuestionCount, requestedFormat, sourceContext),
+    }))
 
   const errors = []
   for (let index = 0; index < attempts.length; index += 1) {
