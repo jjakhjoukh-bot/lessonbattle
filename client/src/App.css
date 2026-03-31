@@ -3392,7 +3392,7 @@ body::after {
 
 .classroom-learner-row {
   display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(120px, 0.8fr) minmax(140px, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1.4fr) minmax(120px, 0.7fr) minmax(140px, 0.9fr) minmax(140px, 0.9fr) auto auto;
   gap: 10px;
 }
 
@@ -3465,6 +3465,85 @@ body::after {
 .classroom-import-button.is-busy {
   opacity: 0.72;
   pointer-events: none;
+}
+
+.portal-login-switch {
+  margin-bottom: 12px;
+}
+
+.classroom-assignment-panel {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.classroom-assignment-list {
+  display: grid;
+  gap: 10px;
+}
+
+.classroom-assignment-list.compact-list {
+  gap: 12px;
+}
+
+.classroom-assignment-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.classroom-assignment-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.classroom-assignment-head strong {
+  display: block;
+  font-size: 1rem;
+}
+
+.classroom-assignment-head span {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.classroom-assignment-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.learner-assignment-card {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.status-pill.status-finished {
+  background: rgba(62, 176, 111, 0.18);
+  color: #b4f3cf;
+}
+
+.status-pill.status-active {
+  background: rgba(46, 117, 255, 0.18);
+  color: #d7e5ff;
+}
+
+.status-pill.status-open {
+  background: rgba(255, 255, 255, 0.08);
+  color: #d9e4f4;
+}
+
+.status-pill.status-overdue {
+  background: rgba(208, 74, 74, 0.18);
+  color: #ffd2d2;
 }
 
 .lesson-library-meta span {
@@ -3936,6 +4015,14 @@ body::after {
   .math-summary-row,
   .learner-code-grid {
     grid-template-columns: 1fr;
+  }
+
+  .classroom-learner-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .classroom-assignment-head {
+    flex-direction: column;
   }
 
   .presentation-slide-canvas {

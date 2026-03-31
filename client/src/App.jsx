@@ -29,6 +29,8 @@ const MAX_AI_ATTACHMENT_COUNT = 3
 const MATH_LEVEL_OPTIONS = ["0f", "1f", "2f", "3f", "4f"]
 const PLAYER_JOIN_MODE_CLASSROOM = "classroom"
 const PLAYER_JOIN_MODE_HOME_MATH = "home-math"
+const LEARNER_PORTAL_LOGIN_MODE_CODE = "name-code"
+const LEARNER_PORTAL_LOGIN_MODE_ACCOUNT = "student-password"
 const SUPPORT_MAILTO_LINK = "mailto:?subject=Vraag%20over%20Lesson%20Battle&body=Hallo,%0D%0A%0D%0AIk%20heb%20een%20vraag%20over%20Lesson%20Battle:%0D%0A%0D%0A"
 const QR_IMAGE_SERVICE_BASE = "https://api.qrserver.com/v1/create-qr-code/"
 const DEFAULT_HOST_SESSION = {
@@ -463,6 +465,10 @@ function createSelfPracticeSession(payload = {}) {
       "Werk zelfstandig, kijk na elke vraag naar de uitleg en ga daarna verder.",
     topic: String(payload.topic || "").trim(),
     topicLabel: cleanSelfPracticeTopicLabel(payload.topicLabel || payload.topic || ""),
+    assignmentId: String(payload.assignmentId || "").trim(),
+    assignmentTitle: String(payload.assignmentTitle || "").trim(),
+    dueAt: String(payload.dueAt || "").trim(),
+    sourceFiles: Array.isArray(payload.sourceFiles) ? payload.sourceFiles.map((entry) => String(entry || "").trim()).filter(Boolean) : [],
     providerLabel: String(payload.providerLabel || "Lesson Battle").trim() || "Lesson Battle",
     questionFormat: String(payload.questionFormat || "multiple-choice").trim() || "multiple-choice",
     questions,
@@ -481,6 +487,10 @@ function buildSelfPracticeProgressPayload(session) {
     title: String(session.title || "Oefentoets").trim() || "Oefentoets",
     topic: String(session.topic || "").trim(),
     topicLabel: cleanSelfPracticeTopicLabel(session.topicLabel || session.topic || ""),
+    assignmentId: String(session.assignmentId || "").trim(),
+    assignmentTitle: String(session.assignmentTitle || "").trim(),
+    dueAt: String(session.dueAt || "").trim(),
+    sourceFiles: Array.isArray(session.sourceFiles) ? session.sourceFiles.map((entry) => String(entry || "").trim()).filter(Boolean) : [],
     questionFormat: String(session.questionFormat || "multiple-choice").trim() || "multiple-choice",
     providerLabel: String(session.providerLabel || "Lesson Battle").trim() || "Lesson Battle",
     questionTotal: Array.isArray(session.questions) ? session.questions.length : 0,
@@ -1043,6 +1053,9 @@ function HostPage() {
   const [classroomDrafts, setClassroomDrafts] = useState({})
   const [classroomLearnerDrafts, setClassroomLearnerDrafts] = useState({})
   const [classroomLearnerEditDrafts, setClassroomLearnerEditDrafts] = useState({})
+  const [classroomAssignmentDrafts, setClassroomAssignmentDrafts] = useState({})
+  const [classroomAssignmentAttachments, setClassroomAssignmentAttachments] = useState({})
+  const [classroomAssignmentBusyIds, setClassroomAssignmentBusyIds] = useState({})
   const [classroomImportBusyId, setClassroomImportBusyId] = useState("")
   const [loginForm, setLoginForm] = useState(storedHostSession.loginForm)
   const [hostSession, setHostSession] = useState(storedHostSession.hostSession)
@@ -1270,8 +1283,10 @@ function HostPage() {
               learner.name,
               learner.learnerCode,
               learner.studentNumber,
+              learner.portalPassword,
               learner.selfPracticeSummary?.latestSession?.topicLabel,
             ]),
+            ...(classroom.assignments || []).flatMap((assignment) => [assignment.title, assignment.topicLabel]),
           ]
             .filter(Boolean)
             .join(" "),
@@ -1412,7 +1427,7 @@ function HostPage() {
     setClassroomLearnerDrafts((current) => {
       const nextDrafts = { ...current }
       for (const classroom of classrooms) {
-        nextDrafts[classroom.id] = nextDrafts[classroom.id] || { name: "", learnerCode: "", studentNumber: "" }
+        nextDrafts[classroom.id] = nextDrafts[classroom.id] || { name: "", learnerCode: "", studentNumber: "", portalPassword: "" }
       }
       return nextDrafts
     })
@@ -1424,8 +1439,24 @@ function HostPage() {
             name: nextDrafts[learner.id]?.name ?? learner.name ?? "",
             learnerCode: nextDrafts[learner.id]?.learnerCode ?? learner.learnerCode ?? "",
             studentNumber: nextDrafts[learner.id]?.studentNumber ?? learner.studentNumber ?? "",
+            portalPassword: nextDrafts[learner.id]?.portalPassword ?? learner.portalPassword ?? "",
           }
         }
+      }
+      return nextDrafts
+    })
+    setClassroomAssignmentDrafts((current) => {
+      const nextDrafts = { ...current }
+      for (const classroom of classrooms) {
+        nextDrafts[classroom.id] =
+          nextDrafts[classroom.id] || { title: "", topic: "", questionCount: 8, questionFormat: "multiple-choice", dueAt: "" }
+      }
+      return nextDrafts
+    })
+    setClassroomAssignmentAttachments((current) => {
+      const nextDrafts = { ...current }
+      for (const classroom of classrooms) {
+        nextDrafts[classroom.id] = nextDrafts[classroom.id] || []
       }
       return nextDrafts
     })
@@ -2119,17 +2150,18 @@ function HostPage() {
   }
 
   const addLearnerToClassroom = (classId) => {
-    const draft = classroomLearnerDrafts[classId] || { name: "", learnerCode: "", studentNumber: "" }
+    const draft = classroomLearnerDrafts[classId] || { name: "", learnerCode: "", studentNumber: "", portalPassword: "" }
     setStatus("Leerling wordt aan de klas toegevoegd...")
     socket.emit("host:classes:learner:add", {
       classId,
       name: draft.name,
       learnerCode: draft.learnerCode,
       studentNumber: draft.studentNumber,
+      portalPassword: draft.portalPassword,
     })
     setClassroomLearnerDrafts((current) => ({
       ...current,
-      [classId]: { name: "", learnerCode: "", studentNumber: "" },
+      [classId]: { name: "", learnerCode: "", studentNumber: "", portalPassword: "" },
     }))
   }
 
@@ -2143,7 +2175,60 @@ function HostPage() {
       name: draft.name,
       learnerCode: draft.learnerCode,
       studentNumber: draft.studentNumber,
+      portalPassword: draft.portalPassword,
     })
+  }
+
+  const addClassroomAssignmentAttachmentFiles = async (classId, files) => {
+    const fileList = Array.from(files || []).filter(Boolean)
+    if (!fileList.length) return
+    try {
+      setClassroomAssignmentBusyIds((current) => ({ ...current, [classId]: true }))
+      setStatus("Bronmateriaal voor de klasopdracht wordt voorbereid...")
+      const nextAttachments = await buildAiAttachmentPayload(fileList, `class-assignment-${classId}`)
+      setClassroomAssignmentAttachments((current) => ({
+        ...current,
+        [classId]: [...(current[classId] || []), ...nextAttachments].slice(0, MAX_AI_ATTACHMENT_COUNT),
+      }))
+      setStatus(`${nextAttachments.length} bronbestand(en) toegevoegd aan deze klasopdracht.`)
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "De bronbestanden konden niet worden toegevoegd.")
+    } finally {
+      setClassroomAssignmentBusyIds((current) => ({ ...current, [classId]: false }))
+    }
+  }
+
+  const removeClassroomAssignmentAttachment = (classId, attachmentId) => {
+    setClassroomAssignmentAttachments((current) => ({
+      ...current,
+      [classId]: (current[classId] || []).filter((attachment) => attachment.id !== attachmentId),
+    }))
+    setStatus("Bronbestand verwijderd uit deze klasopdracht.")
+  }
+
+  const createClassroomAssignment = (classId) => {
+    const draft = classroomAssignmentDrafts[classId]
+    if (!draft) return
+    setStatus("Klasopdracht wordt klaargezet...")
+    socket.emit("host:classes:assignment:create", {
+      classId,
+      title: draft.title,
+      topic: draft.topic,
+      questionCount: draft.questionCount,
+      questionFormat: draft.questionFormat,
+      dueAt: draft.dueAt,
+      attachments: classroomAssignmentAttachments[classId] || [],
+    })
+    setClassroomAssignmentDrafts((current) => ({
+      ...current,
+      [classId]: { title: "", topic: "", questionCount: 8, questionFormat: "multiple-choice", dueAt: "" },
+    }))
+    setClassroomAssignmentAttachments((current) => ({ ...current, [classId]: [] }))
+  }
+
+  const deleteClassroomAssignment = (classId, assignmentId) => {
+    setStatus("Klasopdracht wordt verwijderd...")
+    socket.emit("host:classes:assignment:delete", { classId, assignmentId })
   }
 
   const importLearnersIntoClassroom = async (classId, file) => {
@@ -2286,10 +2371,12 @@ function HostPage() {
         "Leerling",
         "Leerlingnummer",
         "Leerlingcode",
+        "Portalwachtwoord",
         "Laatste oefentoets",
         "Oefentoets status",
         "Oefentoets score",
         "Oefentoets laatst actief",
+        "Recente onderwerpen",
         "Aangemaakt",
         "Laatst bijgewerkt",
       ],
@@ -2302,6 +2389,7 @@ function HostPage() {
                 name: "",
                 studentNumber: "",
                 learnerCode: "",
+                portalPassword: "",
                 selfPracticeSummary: null,
                 createdAt: "",
                 updatedAt: "",
@@ -2315,10 +2403,12 @@ function HostPage() {
           learner.name || "",
           learner.studentNumber || "",
           learner.learnerCode || "",
+          learner.portalPassword || "",
           learner.selfPracticeSummary?.latestSession?.topicLabel || "",
           learner.selfPracticeSummary?.latestSession?.status === "finished" ? "Afgerond" : learner.selfPracticeSummary?.latestSession ? "Bezig" : "",
           learner.selfPracticeSummary?.latestSession ? `${learner.selfPracticeSummary.latestSession.correctCount || 0}/${learner.selfPracticeSummary.latestSession.answeredCount || 0}` : "",
           learner.selfPracticeSummary?.lastPracticedAt ? formatHistoryDate(learner.selfPracticeSummary.lastPracticedAt) : "",
+          (learner.selfPracticeSummary?.recentTopics || []).join(", "),
           learner.createdAt ? formatHistoryDate(learner.createdAt) : "",
           learner.updatedAt ? formatHistoryDate(learner.updatedAt) : "",
         ])
@@ -3364,6 +3454,9 @@ function HostPage() {
           {managementPanel === "classes" ? (
             <ClassesSection
               audienceFilter={classroomAudienceFilter}
+              classroomAssignmentAttachments={classroomAssignmentAttachments}
+              classroomAssignmentBusyIds={classroomAssignmentBusyIds}
+              classroomAssignmentDrafts={classroomAssignmentDrafts}
               classroomImportBusyId={classroomImportBusyId}
               classroomDrafts={classroomDrafts}
               classroomLearnerDrafts={classroomLearnerDrafts}
@@ -3371,7 +3464,19 @@ function HostPage() {
               classrooms={filteredClassrooms}
               availableAudiences={classroomAudiences}
               newClassroomForm={newClassroomForm}
+              onAddAssignmentAttachment={addClassroomAssignmentAttachmentFiles}
               onAudienceFilterChange={setClassroomAudienceFilter}
+              onAssignmentCreate={createClassroomAssignment}
+              onAssignmentDelete={deleteClassroomAssignment}
+              onAssignmentDraftChange={(classId, updater) =>
+                setClassroomAssignmentDrafts((current) => ({
+                  ...current,
+                  [classId]:
+                    typeof updater === "function"
+                      ? updater(current[classId] || { title: "", topic: "", questionCount: 8, questionFormat: "multiple-choice", dueAt: "" })
+                      : updater,
+                }))
+              }
               onClassroomDelete={deleteClassroom}
               onClassroomDraftChange={(classId, updater) =>
                 setClassroomDrafts((current) => ({
@@ -3389,7 +3494,7 @@ function HostPage() {
                   ...current,
                   [classId]:
                     typeof updater === "function"
-                      ? updater(current[classId] || { name: "", learnerCode: "", studentNumber: "" })
+                      ? updater(current[classId] || { name: "", learnerCode: "", studentNumber: "", portalPassword: "" })
                       : updater,
                 }))
               }
@@ -3398,7 +3503,7 @@ function HostPage() {
                   ...current,
                   [learnerId]:
                     typeof updater === "function"
-                      ? updater(current[learnerId] || { name: "", learnerCode: "", studentNumber: "" })
+                      ? updater(current[learnerId] || { name: "", learnerCode: "", studentNumber: "", portalPassword: "" })
                       : updater,
                 }))
               }
@@ -3408,6 +3513,7 @@ function HostPage() {
               onCreateClassroom={createClassroom}
               onNewClassroomChange={setNewClassroomForm}
               onExportCsv={exportClassroomsCsv}
+              onRemoveAssignmentAttachment={removeClassroomAssignmentAttachment}
               onSearchChange={setClassroomSearch}
               onSelectForMath={(classId) => {
                 setSelectedMathClassId(classId)
@@ -3561,6 +3667,9 @@ function PlayerPage() {
   const [playerId, setPlayerId] = useState(playerSession.playerId || "")
   const [playerSessionId, setPlayerSessionId] = useState(playerSession.playerSessionId || createPlayerSessionId())
   const [learnerCode, setLearnerCode] = useState(playerSession.learnerCode || "")
+  const [portalLoginMode, setPortalLoginMode] = useState(LEARNER_PORTAL_LOGIN_MODE_CODE)
+  const [portalStudentNumber, setPortalStudentNumber] = useState("")
+  const [portalPassword, setPortalPassword] = useState("")
   const [joinMode, setJoinMode] = useState(storedJoinMode)
   const [joinCodeLockedFromUrl, setJoinCodeLockedFromUrl] = useState(Boolean(joinSessionCodeFromUrl))
   const [roomPreview, setRoomPreview] = useState({ valid: false, teams: [], intakeTotal: 0, mode: "battle", groupModeEnabled: false })
@@ -3725,8 +3834,18 @@ function PlayerPage() {
       setJoined(false)
       setPlayerId("")
       setLearnerPortal(payload)
+      if (payload?.name) setName(payload.name)
+      if (payload?.learnerCode) setLearnerCode(payload.learnerCode)
+      if (payload?.studentNumber) setPortalStudentNumber(payload.studentNumber)
       if (joinMode === PLAYER_JOIN_MODE_HOME_MATH && !homeMathSession && !selfPracticeSession) {
         setStatus("Je bent ingelogd. Kies hieronder of je verder rekent of een oefentoets start.")
+      }
+      if (joinMode === PLAYER_JOIN_MODE_HOME_MATH && portalLoginMode === LEARNER_PORTAL_LOGIN_MODE_ACCOUNT && payload?.canResumeMath) {
+        socket.emit("player:resume-math", {
+          name: payload.name,
+          learnerCode: payload.learnerCode,
+          playerSessionId,
+        })
       }
     }
     const onSelfPracticeStarted = (payload) => {
@@ -3761,7 +3880,7 @@ function PlayerPage() {
       socket.off("player:portal:ready", onPortalReady)
       socket.off("player:self-practice:started", onSelfPracticeStarted)
     }
-  }, [homeMathSession, joinMode, joined, learnerCode, name, roomCode.length, selfPracticeSession])
+  }, [homeMathSession, joinMode, joined, learnerCode, name, playerSessionId, portalLoginMode, roomCode.length, selfPracticeSession])
 
   useEffect(() => {
     const nextSession = { name, teamId, roomCode, joined, playerId, playerSessionId, learnerCode, joinMode }
@@ -3845,12 +3964,14 @@ function PlayerPage() {
     if (joined) return
     setStatus(
       joinMode === PLAYER_JOIN_MODE_HOME_MATH
-        ? "Vul je naam en leerlingcode in. Daarna kun je zelfstandig oefenen of je rekenroute hervatten."
+        ? portalLoginMode === LEARNER_PORTAL_LOGIN_MODE_ACCOUNT
+          ? "Vul je leerlingnummer en wachtwoord in. Daarna zie je je klasopdrachten en kun je zelfstandig oefenen."
+          : "Vul je naam en leerlingcode in. Daarna kun je zelfstandig oefenen of je rekenroute hervatten."
         : joinCodeLockedFromUrl
           ? "Sessiecode is al ingevuld via de QR-code. Vul alleen je naam in."
           : "Vul je gegevens in en sluit aan."
     )
-  }, [joinCodeLockedFromUrl, joinMode, joined])
+  }, [joinCodeLockedFromUrl, joinMode, joined, portalLoginMode])
 
   useEffect(() => {
     const onConnect = () => {
@@ -3894,22 +4015,26 @@ function PlayerPage() {
       setSelfPracticeSession(null)
       setStatus("Je leerlinglogin wordt gecontroleerd...")
       socket.emit("player:portal:login", {
-        name: name.trim(),
-        learnerCode,
+        name: portalLoginMode === LEARNER_PORTAL_LOGIN_MODE_CODE ? name.trim() : "",
+        learnerCode: portalLoginMode === LEARNER_PORTAL_LOGIN_MODE_CODE ? learnerCode : "",
+        studentNumber: portalLoginMode === LEARNER_PORTAL_LOGIN_MODE_ACCOUNT ? portalStudentNumber.trim() : "",
+        portalPassword: portalLoginMode === LEARNER_PORTAL_LOGIN_MODE_ACCOUNT ? portalPassword : "",
       })
-      const localSnapshot = readHomeMathSnapshot(name.trim(), learnerCode)
-      const localMath = activateHomeMathSnapshot(localSnapshot)
-      if (localMath) {
-        setHomeMathSession(localMath)
-        setJoined(true)
-        if (localSnapshot?.roomCode) setRoomCode(localSnapshot.roomCode)
-        setStatus("Je oefenroute staat klaar. Je kunt direct verder.")
+      if (portalLoginMode === LEARNER_PORTAL_LOGIN_MODE_CODE) {
+        const localSnapshot = readHomeMathSnapshot(name.trim(), learnerCode)
+        const localMath = activateHomeMathSnapshot(localSnapshot)
+        if (localMath) {
+          setHomeMathSession(localMath)
+          setJoined(true)
+          if (localSnapshot?.roomCode) setRoomCode(localSnapshot.roomCode)
+          setStatus("Je oefenroute staat klaar. Je kunt direct verder.")
+        }
+        socket.emit("player:resume-math", {
+          name: name.trim(),
+          learnerCode,
+          playerSessionId,
+        })
       }
-      socket.emit("player:resume-math", {
-        name: name.trim(),
-        learnerCode,
-        playerSessionId,
-      })
       return
     }
 
@@ -3973,6 +4098,17 @@ function PlayerPage() {
       attachments: selfPracticeAttachments,
     })
     setStatus("Je oefentoets wordt klaargezet...")
+  }
+
+  const startClassAssignment = (assignmentId) => {
+    socket.emit("player:self-practice:start-assignment", {
+      name: name.trim(),
+      learnerCode,
+      studentNumber: portalStudentNumber.trim(),
+      portalPassword,
+      assignmentId,
+    })
+    setStatus("Je klasopdracht wordt klaargezet...")
   }
 
   const addSelfPracticeAttachmentFiles = async (files) => {
@@ -4096,7 +4232,9 @@ function PlayerPage() {
     Boolean(game.math?.awaitingNext)
   const canJoinRoom =
     isHomeMathJoin
-      ? Boolean(name.trim()) && /^\d{4}$/.test(learnerCode)
+      ? portalLoginMode === LEARNER_PORTAL_LOGIN_MODE_ACCOUNT
+        ? Boolean(portalStudentNumber.trim()) && portalPassword.trim().length >= 4
+        : Boolean(name.trim()) && /^\d{4}$/.test(learnerCode)
       : roomPreview.valid && (isMathPreview ? /^\d{4}$/.test(learnerCode) : Boolean(name.trim()))
   const showPlayerSidebar = false
   const selfPracticeQuestion = isSelfPracticeActive ? selfPracticeSession.questions?.[selfPracticeSession.currentIndex] || null : null
@@ -4362,29 +4500,106 @@ function PlayerPage() {
               </button>
             </div>
 
-            <div className="lesson-library-edit-grid">
-              <label className="field inline-field">
-                <span>Jouw naam</span>
-                <input
-                  autoCapitalize="words"
-                  autoComplete="nickname"
-                  ref={nameInputRef}
-                  value={name}
-                  onChange={(event) => setName(event.target.value)}
-                  placeholder="Bijv. Layan"
-                />
-              </label>
-              <label className="field inline-field">
-                <span>Leerlingcode</span>
-                <input
-                  inputMode="numeric"
-                  maxLength={4}
-                  value={learnerCode}
-                  onChange={(event) => setLearnerCode(event.target.value.replace(/\D/g, "").slice(0, 4))}
-                  placeholder="Bijv. 1122"
-                />
-              </label>
-            </div>
+            {isHomeMathJoin ? (
+              <>
+                <div className="mode-switch join-mode-switch portal-login-switch">
+                  <button
+                    className={`mode-chip ${portalLoginMode === LEARNER_PORTAL_LOGIN_MODE_CODE ? "is-active" : ""}`}
+                    onClick={() => {
+                      setPortalLoginMode(LEARNER_PORTAL_LOGIN_MODE_CODE)
+                      setStatus("Log in met je naam en leerlingcode om zelfstandig te oefenen.")
+                    }}
+                    type="button"
+                  >
+                    Naam + leerlingcode
+                  </button>
+                  <button
+                    className={`mode-chip ${portalLoginMode === LEARNER_PORTAL_LOGIN_MODE_ACCOUNT ? "is-active" : ""}`}
+                    onClick={() => {
+                      setPortalLoginMode(LEARNER_PORTAL_LOGIN_MODE_ACCOUNT)
+                      setStatus("Log in met je leerlingnummer en wachtwoord om je klasopdrachten te openen.")
+                    }}
+                    type="button"
+                  >
+                    Leerlingnummer + wachtwoord
+                  </button>
+                </div>
+
+                <div className="lesson-library-edit-grid">
+                  {portalLoginMode === LEARNER_PORTAL_LOGIN_MODE_CODE ? (
+                    <>
+                      <label className="field inline-field">
+                        <span>Jouw naam</span>
+                        <input
+                          autoCapitalize="words"
+                          autoComplete="nickname"
+                          ref={nameInputRef}
+                          value={name}
+                          onChange={(event) => setName(event.target.value)}
+                          placeholder="Bijv. Layan"
+                        />
+                      </label>
+                      <label className="field inline-field">
+                        <span>Leerlingcode</span>
+                        <input
+                          inputMode="numeric"
+                          maxLength={4}
+                          value={learnerCode}
+                          onChange={(event) => setLearnerCode(event.target.value.replace(/\D/g, "").slice(0, 4))}
+                          placeholder="Bijv. 1122"
+                        />
+                      </label>
+                    </>
+                  ) : (
+                    <>
+                      <label className="field inline-field">
+                        <span>Leerlingnummer</span>
+                        <input
+                          inputMode="numeric"
+                          value={portalStudentNumber}
+                          onChange={(event) => setPortalStudentNumber(event.target.value.replace(/\s+/g, "").slice(0, 12))}
+                          placeholder="Bijv. 000123"
+                        />
+                      </label>
+                      <label className="field inline-field">
+                        <span>Wachtwoord</span>
+                        <input
+                          autoComplete="current-password"
+                          type="password"
+                          value={portalPassword}
+                          onChange={(event) => setPortalPassword(event.target.value.replace(/\s+/g, "").slice(0, 24))}
+                          placeholder="Minimaal 4 tekens"
+                        />
+                      </label>
+                    </>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="lesson-library-edit-grid">
+                <label className="field inline-field">
+                  <span>Jouw naam</span>
+                  <input
+                    autoCapitalize="words"
+                    autoComplete="nickname"
+                    ref={nameInputRef}
+                    value={name}
+                    onChange={(event) => setName(event.target.value)}
+                    placeholder="Bijv. Layan"
+                  />
+                </label>
+                <label className="field inline-field">
+                  <span>Leerlingcode</span>
+                  <input
+                    inputMode="numeric"
+                    maxLength={4}
+                    value={learnerCode}
+                    onChange={(event) => setLearnerCode(event.target.value.replace(/\D/g, "").slice(0, 4))}
+                    placeholder="Bijv. 1122"
+                  />
+                </label>
+              </div>
+            )}
 
             <div className="player-focus-toolbar">
               <p className="muted">{status}</p>
@@ -4406,6 +4621,7 @@ function PlayerPage() {
                   <h2>Welkom {learnerPortal.name}</h2>
                   <div className="pill-row">
                     {learnerPortal.className ? <span className="pill">{learnerPortal.className}</span> : null}
+                    {learnerPortal.studentNumber ? <span className="pill">Nr. {learnerPortal.studentNumber}</span> : null}
                     <span className="pill">{learnerPortal.audience || "vmbo"}</span>
                   </div>
                 </div>
@@ -4427,7 +4643,51 @@ function PlayerPage() {
                         {learnerPortal.selfPracticeSummary.latestSession.accuracyRate || 0}%
                       </span>
                     ) : null}
+                    {learnerPortal.selfPracticeSummary?.recentTopics?.length ? (
+                      <div className="score-chip-row">
+                        {learnerPortal.selfPracticeSummary.recentTopics.map((topic) => (
+                          <span className="score-chip" key={topic}>
+                            {topic}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
+                  {learnerPortal.assignments?.length ? (
+                    <div className="lesson-box accent-box practice-box">
+                      <strong>Klasopdrachten</strong>
+                      <p>Kies een opdracht van je docent en ga meteen aan de slag.</p>
+                      <div className="classroom-assignment-list compact-list">
+                        {learnerPortal.assignments.map((assignment) => (
+                          <article className="classroom-assignment-card learner-assignment-card" key={assignment.id}>
+                            <div className="classroom-assignment-head">
+                              <div>
+                                <strong>{assignment.title}</strong>
+                                <span>{assignment.topicLabel}</span>
+                              </div>
+                              <span className={`pill status-pill status-${assignment.status}`}>{assignment.statusLabel}</span>
+                            </div>
+                            <div className="classroom-assignment-meta">
+                              <span>{assignment.questionCount} vragen</span>
+                              <span>{getPracticeQuestionFormatLabel(assignment.questionFormat)}</span>
+                              {assignment.dueAt ? <span>Deadline {formatHistoryDate(assignment.dueAt)}</span> : null}
+                            </div>
+                            {assignment.lastActivityAt ? (
+                              <div className="classroom-assignment-meta">
+                                <span>Laatst actief {formatHistoryDate(assignment.lastActivityAt)}</span>
+                                <span>{assignment.accuracyRate || 0}% score</span>
+                              </div>
+                            ) : null}
+                            <div className="lesson-library-actions">
+                              <button className="button-secondary" onClick={() => startClassAssignment(assignment.id)} type="button">
+                                {assignment.status === "active" ? "Ga verder" : "Open opdracht"}
+                              </button>
+                            </div>
+                          </article>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
                   <div className="lesson-box accent-box practice-box">
                     <strong>Start een oefentoets</strong>
                     <p>Kies een onderwerp en laat Lesson Battle meteen oefenvragen voor je klaarzetten.</p>
@@ -6454,10 +6714,17 @@ function LessonLibrarySection({
 function ClassesSection({
   audienceFilter,
   availableAudiences,
+  classroomAssignmentAttachments,
+  classroomAssignmentBusyIds,
+  classroomAssignmentDrafts,
   classroomImportBusyId,
   classrooms,
   newClassroomForm,
+  onAddAssignmentAttachment,
   onAudienceFilterChange,
+  onAssignmentDraftChange,
+  onAssignmentCreate,
+  onAssignmentDelete,
   onCreateClassroom,
   onClassroomImport,
   onExportCsv,
@@ -6474,6 +6741,7 @@ function ClassesSection({
   onClassroomLearnerEditChange,
   onClassroomLearnerSave,
   onClassroomLearnerDelete,
+  onRemoveAssignmentAttachment,
   searchValue,
   selectedMathClassId,
   onSelectForMath,
@@ -6552,7 +6820,7 @@ function ClassesSection({
         </div>
       </div>
 
-      <p className="math-task-preview">Import ondersteunt Excel en CSV met kolommen zoals naam, leerlingcode en leerlingnummer.</p>
+      <p className="math-task-preview">Import ondersteunt Excel en CSV met kolommen zoals naam, leerlingcode, leerlingnummer en wachtwoord.</p>
 
       {classrooms.length ? (
         <div className="lesson-library-grid">
@@ -6562,7 +6830,9 @@ function ClassesSection({
               sectionName: classroom.sectionName,
               audience: classroom.audience,
             }
-            const learnerDraft = classroomLearnerDrafts[classroom.id] || { name: "", learnerCode: "", studentNumber: "" }
+            const learnerDraft = classroomLearnerDrafts[classroom.id] || { name: "", learnerCode: "", studentNumber: "", portalPassword: "" }
+            const assignmentDraft =
+              classroomAssignmentDrafts[classroom.id] || { title: "", topic: "", questionCount: 8, questionFormat: "multiple-choice", dueAt: "" }
             return (
               <article className="lesson-library-card classroom-card" key={classroom.id}>
                 <div className="lesson-library-head">
@@ -6630,7 +6900,7 @@ function ClassesSection({
                   <div className="math-host-card-head">
                     <div>
                       <strong>Leerlingen in deze klas</strong>
-                      <span>Leerlingen kunnen met hun naam en leerlingcode later verdergaan. Je kunt ook een Excel- of CSV-lijst importeren.</span>
+                      <span>Leerlingen kunnen later inloggen met naam + leerlingcode of met leerlingnummer + wachtwoord. Je kunt ook een Excel- of CSV-lijst importeren.</span>
                     </div>
                     <label className={`button-ghost classroom-import-button ${classroomImportBusyId === classroom.id ? "is-busy" : ""}`}>
                       {classroomImportBusyId === classroom.id ? "Importeren..." : "Importeer Excel / CSV"}
@@ -6678,11 +6948,22 @@ function ClassesSection({
                       placeholder="Leerlingnummer (optioneel)"
                       value={learnerDraft.studentNumber}
                     />
+                    <input
+                      className="math-code-input"
+                      onChange={(event) =>
+                        onClassroomLearnerDraftChange(classroom.id, (current) => ({
+                          ...current,
+                          portalPassword: event.target.value.replace(/\s+/g, "").slice(0, 24),
+                        }))
+                      }
+                      placeholder="Wachtwoord (optioneel)"
+                      value={learnerDraft.portalPassword}
+                    />
                     <button className="button-primary" onClick={() => onClassroomLearnerAdd(classroom.id)} type="button">
                       Voeg leerling toe
                     </button>
                   </div>
-                  <p className="math-task-preview">Laat leerlingcode of leerlingnummer leeg als Lesson Battle die automatisch mag maken.</p>
+                  <p className="math-task-preview">Laat leerlingcode, leerlingnummer of wachtwoord leeg als Lesson Battle die automatisch mag maken.</p>
 
                   <div className="classroom-learner-list">
                     {(classroom.learners || []).map((learner) => {
@@ -6690,6 +6971,7 @@ function ClassesSection({
                         name: learner.name,
                         learnerCode: learner.learnerCode,
                         studentNumber: learner.studentNumber,
+                        portalPassword: learner.portalPassword,
                       }
                       const latestSelfPractice = learner.selfPracticeSummary?.latestSession || null
                       return (
@@ -6725,6 +7007,17 @@ function ClassesSection({
                               placeholder="Leerlingnummer"
                               value={learnerEditDraft.studentNumber}
                             />
+                            <input
+                              className="math-code-input"
+                              onChange={(event) =>
+                                onClassroomLearnerEditChange(learner.id, (current) => ({
+                                  ...current,
+                                  portalPassword: event.target.value.replace(/\s+/g, "").slice(0, 24),
+                                }))
+                              }
+                              placeholder="Portalwachtwoord"
+                              value={learnerEditDraft.portalPassword}
+                            />
                             <button className="button-ghost" onClick={() => onClassroomLearnerSave(classroom.id, learner.id)} type="button">
                               Bewaar
                             </button>
@@ -6733,6 +7026,20 @@ function ClassesSection({
                             </button>
                           </div>
                           <div className="classroom-learner-progress">
+                            <div className="classroom-learner-progress-row">
+                              <span>Leerlingnummer {learner.studentNumber || "-"}</span>
+                              <span>Leerlingcode {learner.learnerCode || "-"}</span>
+                              <span>Portal {learner.portalPassword || "-"}</span>
+                            </div>
+                            {learner.growthSummary ? (
+                              <div className="classroom-learner-progress-row">
+                                <span>{learner.growthSummary.sessionCount || 0} rekenroutes</span>
+                                <span>{learner.growthSummary.averageAccuracy || 0}% gemiddeld</span>
+                                {learner.growthSummary.lastPracticedAt ? (
+                                  <span>Laatst rekenen {formatHistoryDate(learner.growthSummary.lastPracticedAt)}</span>
+                                ) : null}
+                              </div>
+                            ) : null}
                             <strong>Zelfstandige oefentoetsen</strong>
                             {latestSelfPractice ? (
                               <>
@@ -6764,6 +7071,27 @@ function ClassesSection({
                                     ))}
                                   </div>
                                 ) : null}
+                                {learner.selfPracticeSummary?.recentTopics?.length ? (
+                                  <div className="classroom-learner-progress-list">
+                                    {learner.selfPracticeSummary.recentTopics.map((topic) => (
+                                      <span className="score-chip" key={`${learner.id}-topic-${topic}`}>
+                                        Onderwerp {topic}
+                                      </span>
+                                    ))}
+                                  </div>
+                                ) : null}
+                                {learner.selfPracticeSummary?.assignmentSessions?.length ? (
+                                  <div className="classroom-learner-answer-list">
+                                    {learner.selfPracticeSummary.assignmentSessions.map((session) => (
+                                      <div className="classroom-learner-answer-row" key={`${learner.id}-assignment-${session.assignmentId}`}>
+                                        <strong>{session.status === "finished" ? "Opdracht af" : "Opdracht"}</strong>
+                                        <span>
+                                          {session.assignmentTitle} · {session.accuracyRate || 0}% · {session.updatedAt ? formatHistoryDate(session.updatedAt) : ""}
+                                        </span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : null}
                               </>
                             ) : (
                               <span className="muted">Nog geen zelfstandige oefentoets geregistreerd.</span>
@@ -6773,6 +7101,119 @@ function ClassesSection({
                       )
                     })}
                     {!classroom.learners?.length ? <p className="math-task-preview">Nog geen leerlingen in deze klas.</p> : null}
+                  </div>
+
+                  <div className="classroom-assignment-panel">
+                    <div className="math-host-card-head">
+                      <div>
+                        <strong>Opdrachten voor deze klas</strong>
+                        <span>Maak een opdracht met bronmateriaal. Leerlingen zien die daarna direct in hun leerlingportaal.</span>
+                      </div>
+                    </div>
+                    <div className="lesson-library-edit-grid">
+                      <label className="field inline-field">
+                        <span>Titel</span>
+                        <input
+                          onChange={(event) =>
+                            onAssignmentDraftChange(classroom.id, (current) => ({ ...current, title: event.target.value }))
+                          }
+                          placeholder="Bijv. Toets hoofdstuk 3"
+                          value={assignmentDraft.title}
+                        />
+                      </label>
+                      <label className="field inline-field">
+                        <span>Onderwerp</span>
+                        <input
+                          onChange={(event) =>
+                            onAssignmentDraftChange(classroom.id, (current) => ({ ...current, topic: event.target.value }))
+                          }
+                          placeholder="Bijv. Korting, btw en verkoopprijs"
+                          value={assignmentDraft.topic}
+                        />
+                      </label>
+                      <label className="field inline-field">
+                        <span>Aantal vragen</span>
+                        <input
+                          max="24"
+                          min="6"
+                          onChange={(event) =>
+                            onAssignmentDraftChange(classroom.id, (current) => ({ ...current, questionCount: Number(event.target.value) }))
+                          }
+                          type="number"
+                          value={assignmentDraft.questionCount}
+                        />
+                      </label>
+                      <label className="field inline-field">
+                        <span>Vorm</span>
+                        <select
+                          onChange={(event) =>
+                            onAssignmentDraftChange(classroom.id, (current) => ({ ...current, questionFormat: event.target.value }))
+                          }
+                          value={assignmentDraft.questionFormat}
+                        >
+                          {PRACTICE_QUESTION_FORMAT_OPTIONS.map((option) => (
+                            <option key={option.id} value={option.id}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="field inline-field">
+                        <span>Deadline</span>
+                        <input
+                          onChange={(event) =>
+                            onAssignmentDraftChange(classroom.id, (current) => ({ ...current, dueAt: event.target.value }))
+                          }
+                          type="datetime-local"
+                          value={assignmentDraft.dueAt}
+                        />
+                      </label>
+                    </div>
+                    <AiAttachmentCard
+                      attachments={classroomAssignmentAttachments[classroom.id] || []}
+                      description="Gebruik hier hoofdstukken, samenvattingen of werkbladen. Deze opdracht blijft daarna klaarstaan voor de hele klas."
+                      isBusy={Boolean(classroomAssignmentBusyIds[classroom.id])}
+                      onAddFiles={(files) => onAddAssignmentAttachment(classroom.id, files)}
+                      onRemove={(attachmentId) => onRemoveAssignmentAttachment(classroom.id, attachmentId)}
+                      title="Bronmateriaal voor deze opdracht"
+                    />
+                    <div className="lesson-library-actions">
+                      <button className="button-secondary" onClick={() => onAssignmentCreate(classroom.id)} type="button">
+                        Zet opdracht klaar
+                      </button>
+                    </div>
+
+                    {(classroom.assignments || []).length ? (
+                      <div className="classroom-assignment-list">
+                        {classroom.assignments.map((assignment) => (
+                          <article className="classroom-assignment-card" key={assignment.id}>
+                            <div className="classroom-assignment-head">
+                              <div>
+                                <strong>{assignment.title}</strong>
+                                <span>{assignment.topicLabel}</span>
+                              </div>
+                              <div className="pill-row">
+                                <span className="pill">{assignment.questionCount} vragen</span>
+                                {assignment.dueAt ? <span className="pill">Deadline {formatHistoryDate(assignment.dueAt)}</span> : null}
+                              </div>
+                            </div>
+                            <div className="classroom-assignment-meta">
+                              <span>{getPracticeQuestionFormatLabel(assignment.questionFormat)}</span>
+                              {(assignment.sourceFiles || []).map((file) => (
+                                <span key={`${assignment.id}-${file}`}>{file}</span>
+                              ))}
+                            </div>
+                            <div className="lesson-library-actions">
+                              <button className="button-ghost" onClick={() => onAssignmentDelete(classroom.id, assignment.id)} type="button">
+                                Verwijder opdracht
+                              </button>
+                            </div>
+                          </article>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="math-task-preview">Nog geen klasopdrachten klaargezet.</p>
+                    )}
                   </div>
                 </div>
               </article>

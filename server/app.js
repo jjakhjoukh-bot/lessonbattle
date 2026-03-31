@@ -506,6 +506,16 @@ function normalizeStudentNumber(value = "") {
   return String(value ?? "").trim().slice(0, 32)
 }
 
+function normalizePortalPassword(value = "") {
+  return String(value ?? "")
+    .replace(/\s+/g, "")
+    .slice(0, 24)
+}
+
+function isValidPortalPassword(value = "") {
+  return normalizePortalPassword(value).length >= 4
+}
+
 function generateUniqueLearnerCode(room) {
   const takenCodes = new Set((room?.players || []).map((player) => String(player.learnerCode || "")))
   for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -537,6 +547,18 @@ function generateNextStudentNumber(existingNumbers = []) {
   return String(maxNumber + 1).padStart(6, "0")
 }
 
+function generateUniquePortalPassword(classroom, extraTakenPasswords = new Set()) {
+  const takenPasswords = new Set((classroom?.learners || []).map((learner) => normalizePortalPassword(learner.portalPassword)))
+  for (const password of extraTakenPasswords) {
+    if (password) takenPasswords.add(normalizePortalPassword(password))
+  }
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const candidate = String(randomInt(1000, 9999))
+    if (!takenPasswords.has(candidate)) return candidate
+  }
+  return `${Date.now()}`.slice(-4)
+}
+
 function normalizeImportHeaderKey(value = "") {
   return String(value ?? "")
     .normalize("NFD")
@@ -557,6 +579,7 @@ const CLASSROOM_IMPORT_FIELD_ALIASES = {
     "volledigenaam",
   ],
   learnerCode: ["leerlingcode", "leercode", "logincode", "incode", "pincode", "code", "passcode"],
+  portalPassword: ["wachtwoord", "portalwachtwoord", "portalcode", "inlogwachtwoord", "password", "loginpassword", "portalpassword"],
   studentNumber: ["leerlingnummer", "studentnummer", "nummer", "studentid", "leerlingid", "studentnumber"],
   className: ["klas", "classname", "class", "groep", "group"],
   sectionName: ["sectie", "vak", "section", "sectionname", "subject"],
@@ -588,6 +611,7 @@ function parseClassroomLearnerImport(fileBuffer, fileName = "") {
       const name = String(readImportFieldValue(rawRow, "name") || "").trim()
       if (!name) continue
       const learnerCode = normalizeLearnerCode(readImportFieldValue(rawRow, "learnerCode"))
+      const portalPassword = normalizePortalPassword(readImportFieldValue(rawRow, "portalPassword"))
       const studentNumber = normalizeStudentNumber(readImportFieldValue(rawRow, "studentNumber"))
       if (!detectedClassName) {
         detectedClassName = String(readImportFieldValue(rawRow, "className") || "").trim()
@@ -602,6 +626,7 @@ function parseClassroomLearnerImport(fileBuffer, fileName = "") {
         id: generateEntityId("class-import-row"),
         name,
         learnerCode,
+        portalPassword,
         studentNumber,
         sourceSheet: sheetName,
         sourceFileName: fileName,
@@ -5042,6 +5067,8 @@ function normalizeSelfPracticeSessionEntry(rawEntry) {
     title: String(rawEntry.title ?? "Oefentoets").trim() || "Oefentoets",
     topic: String(rawEntry.topic ?? "").trim(),
     topicLabel: cleanSelfPracticeTopicLabel(rawEntry.topicLabel ?? rawEntry.topic ?? ""),
+    assignmentId: String(rawEntry.assignmentId ?? "").trim(),
+    assignmentTitle: String(rawEntry.assignmentTitle ?? "").trim(),
     questionFormat: normalizePracticeQuestionFormat(rawEntry.questionFormat),
     providerLabel: String(rawEntry.providerLabel ?? "Lesson Battle").trim() || "Lesson Battle",
     questionTotal,
@@ -5049,6 +5076,10 @@ function normalizeSelfPracticeSessionEntry(rawEntry) {
     correctCount,
     accuracyRate,
     status: rawEntry.status === "finished" ? "finished" : "active",
+    dueAt: normalizeIsoDateTime(rawEntry.dueAt) || "",
+    sourceFiles: Array.isArray(rawEntry.sourceFiles)
+      ? rawEntry.sourceFiles.map((entry) => String(entry || "").trim()).filter(Boolean).slice(0, MAX_AI_ATTACHMENT_COUNT)
+      : [],
     startedAt: normalizeIsoDateTime(rawEntry.startedAt) || new Date().toISOString(),
     updatedAt: normalizeIsoDateTime(rawEntry.updatedAt) || new Date().toISOString(),
     finishedAt: normalizeIsoDateTime(rawEntry.finishedAt) || "",
@@ -5118,23 +5149,48 @@ function summarizeSelfPracticeRecord(record) {
   const totalAnswered = sortedSessions.reduce((sum, entry) => sum + (Number(entry.answeredCount) || 0), 0)
   const totalCorrect = sortedSessions.reduce((sum, entry) => sum + (Number(entry.correctCount) || 0), 0)
   const averageAccuracy = totalAnswered ? Math.round((totalCorrect / Math.max(1, totalAnswered)) * 100) : 0
+  const recentTopics = [...new Set(sortedSessions.map((entry) => entry.topicLabel).filter(Boolean))].slice(0, 5)
+  const assignmentSessions = []
+  const assignmentIds = new Set()
+  for (const session of sortedSessions) {
+    if (!session.assignmentId || assignmentIds.has(session.assignmentId)) continue
+    assignmentIds.add(session.assignmentId)
+    assignmentSessions.push({
+      assignmentId: session.assignmentId,
+      assignmentTitle: session.assignmentTitle || session.title,
+      topicLabel: session.topicLabel,
+      status: session.status,
+      accuracyRate: session.accuracyRate,
+      answeredCount: session.answeredCount,
+      correctCount: session.correctCount,
+      updatedAt: session.updatedAt,
+      finishedAt: session.finishedAt,
+      dueAt: session.dueAt || "",
+    })
+  }
   return {
     sessionCount: sortedSessions.length,
     totalAnswered,
     totalCorrect,
     averageAccuracy,
+    recentTopics,
+    assignmentSessions: assignmentSessions.slice(0, 5),
     lastPracticedAt: latestSession?.updatedAt || record.updatedAt || "",
     latestSession: latestSession
       ? {
           sessionId: latestSession.sessionId,
           title: latestSession.title,
           topicLabel: latestSession.topicLabel,
+          assignmentId: latestSession.assignmentId || "",
+          assignmentTitle: latestSession.assignmentTitle || "",
           questionFormat: latestSession.questionFormat,
           status: latestSession.status,
           questionTotal: latestSession.questionTotal,
           answeredCount: latestSession.answeredCount,
           correctCount: latestSession.correctCount,
           accuracyRate: latestSession.accuracyRate,
+          dueAt: latestSession.dueAt || "",
+          sourceFiles: latestSession.sourceFiles || [],
           updatedAt: latestSession.updatedAt,
           finishedAt: latestSession.finishedAt,
           recentAnswers: latestSession.recentAnswers || [],
@@ -5144,14 +5200,26 @@ function summarizeSelfPracticeRecord(record) {
       sessionId: session.sessionId,
       title: session.title,
       topicLabel: session.topicLabel,
+      assignmentId: session.assignmentId || "",
+      assignmentTitle: session.assignmentTitle || "",
       questionFormat: session.questionFormat,
       status: session.status,
       questionTotal: session.questionTotal,
       answeredCount: session.answeredCount,
       correctCount: session.correctCount,
       accuracyRate: session.accuracyRate,
+      dueAt: session.dueAt || "",
       updatedAt: session.updatedAt,
       finishedAt: session.finishedAt,
+    })),
+    recentTimeline: sortedSessions.slice(0, 8).map((session) => ({
+      sessionId: session.sessionId,
+      title: session.assignmentTitle || session.title,
+      topicLabel: session.topicLabel,
+      status: session.status,
+      accuracyRate: session.accuracyRate,
+      updatedAt: session.updatedAt,
+      dueAt: session.dueAt || "",
     })),
   }
 }
@@ -5351,13 +5419,39 @@ function normalizeClassroomLearner(rawEntry) {
   if (!rawEntry || typeof rawEntry !== "object") return null
   const name = String(rawEntry.name ?? "").trim()
   const learnerCode = normalizeLearnerCode(rawEntry.learnerCode)
+  const portalPassword = normalizePortalPassword(rawEntry.portalPassword)
   const studentNumber = normalizeStudentNumber(rawEntry.studentNumber)
   if (!name || !isValidLearnerCode(learnerCode)) return null
   return {
     id: String(rawEntry.id ?? generateEntityId("class-learner")),
     name,
     learnerCode,
+    portalPassword,
     studentNumber,
+    createdAt: String(rawEntry.createdAt ?? new Date().toISOString()),
+    updatedAt: String(rawEntry.updatedAt ?? new Date().toISOString()),
+  }
+}
+
+function normalizeClassroomAssignment(rawEntry) {
+  if (!rawEntry || typeof rawEntry !== "object") return null
+  const title = String(rawEntry.title ?? rawEntry.topicLabel ?? "").trim()
+  const topic = String(rawEntry.topic ?? "").trim()
+  if (!title || !topic) return null
+  return {
+    id: String(rawEntry.id ?? generateEntityId("class-assignment")),
+    title,
+    topic,
+    topicLabel: cleanSelfPracticeTopicLabel(rawEntry.topicLabel ?? topic),
+    questionCount: Math.max(6, Math.min(24, Number(rawEntry.questionCount) || 8)),
+    questionFormat: normalizePracticeQuestionFormat(rawEntry.questionFormat),
+    dueAt: normalizeIsoDateTime(rawEntry.dueAt),
+    sourceContext: String(rawEntry.sourceContext ?? "").trim(),
+    sourceFiles: Array.isArray(rawEntry.sourceFiles)
+      ? rawEntry.sourceFiles.map((entry) => String(entry || "").trim()).filter(Boolean).slice(0, MAX_AI_ATTACHMENT_COUNT)
+      : [],
+    ownerUsername: normalizeTeacherUsername(rawEntry.ownerUsername),
+    ownerDisplayName: String(rawEntry.ownerDisplayName ?? rawEntry.ownerUsername ?? "Docent").trim() || "Docent",
     createdAt: String(rawEntry.createdAt ?? new Date().toISOString()),
     updatedAt: String(rawEntry.updatedAt ?? new Date().toISOString()),
   }
@@ -5370,6 +5464,9 @@ function normalizeClassroomEntry(rawEntry) {
   const learners = Array.isArray(rawEntry.learners)
     ? rawEntry.learners.map(normalizeClassroomLearner).filter(Boolean)
     : []
+  const assignments = Array.isArray(rawEntry.assignments)
+    ? rawEntry.assignments.map(normalizeClassroomAssignment).filter(Boolean)
+    : []
   return {
     id: String(rawEntry.id ?? generateEntityId("classroom")),
     name,
@@ -5378,6 +5475,7 @@ function normalizeClassroomEntry(rawEntry) {
     ownerUsername: normalizeTeacherUsername(rawEntry.ownerUsername),
     ownerDisplayName: String(rawEntry.ownerDisplayName ?? rawEntry.ownerUsername ?? "Docent").trim() || "Docent",
     learners,
+    assignments,
     createdAt: String(rawEntry.createdAt ?? new Date().toISOString()),
     updatedAt: String(rawEntry.updatedAt ?? new Date().toISOString()),
   }
@@ -5542,11 +5640,23 @@ function classroomSummaries() {
       ownerUsername: entry.ownerUsername,
       ownerDisplayName: entry.ownerDisplayName,
       learnerCount: entry.learners.length,
+      assignments: (entry.assignments || []).map((assignment) => ({
+        id: assignment.id,
+        title: assignment.title,
+        topicLabel: assignment.topicLabel,
+        questionCount: assignment.questionCount,
+        questionFormat: assignment.questionFormat,
+        dueAt: assignment.dueAt || "",
+        sourceFiles: assignment.sourceFiles || [],
+        updatedAt: assignment.updatedAt,
+      })),
       learners: entry.learners.map((learner) => ({
         id: learner.id,
         name: learner.name,
         learnerCode: learner.learnerCode,
+        portalPassword: learner.portalPassword || "",
         studentNumber: learner.studentNumber || "",
+        growthSummary: getMathGrowthSummary(learner.name, learner.learnerCode),
         selfPracticeSummary: getSelfPracticeSummary(learner.name, learner.learnerCode),
         createdAt: learner.createdAt,
         updatedAt: learner.updatedAt,
@@ -5574,20 +5684,99 @@ function findClassroomLearnerByCredentials(name = "", learnerCode = "") {
   return { classroom: null, learner: null }
 }
 
-function resolveLearnerPortalProfile(name = "", learnerCode = "") {
-  const trimmedName = String(name ?? "").trim()
-  const normalizedCode = normalizeLearnerCode(learnerCode)
-  if (!trimmedName || !isValidLearnerCode(normalizedCode)) return null
+function findClassroomLearnerByPortalCredentials(studentNumber = "", portalPassword = "") {
+  const normalizedStudentNumber = normalizeStudentNumber(studentNumber)
+  const normalizedPortalPassword = normalizePortalPassword(portalPassword)
+  if (!normalizedStudentNumber || !isValidPortalPassword(normalizedPortalPassword)) {
+    return { classroom: null, learner: null }
+  }
 
-  const { classroom, learner } = findClassroomLearnerByCredentials(trimmedName, normalizedCode)
-  const growthSummary = getMathGrowthSummary(trimmedName, normalizedCode)
-  const selfPracticeSummary = getSelfPracticeSummary(trimmedName, normalizedCode)
+  for (const classroom of classrooms) {
+    const learner =
+      classroom.learners.find(
+        (entry) =>
+          normalizeStudentNumber(entry.studentNumber) === normalizedStudentNumber &&
+          normalizePortalPassword(entry.portalPassword) === normalizedPortalPassword
+      ) || null
+    if (learner) return { classroom, learner }
+  }
+
+  return { classroom: null, learner: null }
+}
+
+function buildLearnerAssignmentSummary(assignment, selfPracticeRecord = null) {
+  if (!assignment) return null
+  const matchingSession =
+    Array.isArray(selfPracticeRecord?.sessions)
+      ? [...selfPracticeRecord.sessions]
+          .filter((session) => session.assignmentId === assignment.id)
+          .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime())[0] || null
+      : null
+  const dueAt = assignment.dueAt || ""
+  const overdue = Boolean(dueAt && !matchingSession?.finishedAt && new Date(dueAt).getTime() < Date.now())
+  const status = matchingSession ? matchingSession.status : overdue ? "overdue" : "open"
+  const statusLabel =
+    status === "finished" ? "Afgerond" : status === "active" ? "Bezig" : status === "overdue" ? "Verlopen" : "Open"
+
+  return {
+    id: assignment.id,
+    title: assignment.title,
+    topicLabel: assignment.topicLabel,
+    questionCount: assignment.questionCount,
+    questionFormat: assignment.questionFormat,
+    dueAt,
+    status,
+    statusLabel,
+    lastActivityAt: matchingSession?.updatedAt || "",
+    accuracyRate: matchingSession?.accuracyRate || 0,
+    answeredCount: matchingSession?.answeredCount || 0,
+    correctCount: matchingSession?.correctCount || 0,
+    assignmentId: assignment.id,
+    sourceFiles: assignment.sourceFiles || [],
+  }
+}
+
+function resolveLearnerPortalProfile(credentials = "", learnerCode = "") {
+  const lookup =
+    credentials && typeof credentials === "object"
+      ? credentials
+      : {
+          name: credentials,
+          learnerCode,
+          studentNumber: "",
+          portalPassword: "",
+        }
+
+  const trimmedName = String(lookup.name ?? "").trim()
+  const normalizedCode = normalizeLearnerCode(lookup.learnerCode)
+  const normalizedStudentNumber = normalizeStudentNumber(lookup.studentNumber)
+  const normalizedPortalPassword = normalizePortalPassword(lookup.portalPassword)
+
+  const byNameAndCode =
+    trimmedName && isValidLearnerCode(normalizedCode) ? findClassroomLearnerByCredentials(trimmedName, normalizedCode) : { classroom: null, learner: null }
+  const byPortal =
+    normalizedStudentNumber && isValidPortalPassword(normalizedPortalPassword)
+      ? findClassroomLearnerByPortalCredentials(normalizedStudentNumber, normalizedPortalPassword)
+      : { classroom: null, learner: null }
+
+  const classroom = byNameAndCode.classroom || byPortal.classroom || null
+  const learner = byNameAndCode.learner || byPortal.learner || null
+  const identityName = learner?.name || trimmedName
+  const identityCode = learner?.learnerCode || normalizedCode
+
+  if (!identityName || !isValidLearnerCode(identityCode)) return null
+
+  const growthSummary = getMathGrowthSummary(identityName, identityCode)
+  const selfPracticeSummary = getSelfPracticeSummary(identityName, identityCode)
+  const selfPracticeRecord = selfPracticeHistory.get(buildMathCloudResumeDocId(identityName, identityCode)) || null
 
   if (!learner && !growthSummary && !selfPracticeSummary) return null
 
   return {
-    name: learner?.name || trimmedName,
-    learnerCode: normalizedCode,
+    learnerId: learner?.id || "",
+    name: identityName,
+    learnerCode: identityCode,
+    studentNumber: learner?.studentNumber || normalizedStudentNumber,
     classId: classroom?.id || "",
     className: classroom?.name || "",
     sectionName: classroom?.sectionName || "",
@@ -5595,6 +5784,9 @@ function resolveLearnerPortalProfile(name = "", learnerCode = "") {
     canResumeMath: Boolean(growthSummary?.sessionCount),
     growthSummary: growthSummary || null,
     selfPracticeSummary: selfPracticeSummary || null,
+    assignments: Array.isArray(classroom?.assignments)
+      ? classroom.assignments.map((assignment) => buildLearnerAssignmentSummary(assignment, selfPracticeRecord)).filter(Boolean)
+      : [],
   }
 }
 
@@ -5617,10 +5809,12 @@ function mergeImportedLearnersIntoClassroom(classroom, importedLearners = []) {
   const nextLearners = (classroom?.learners || []).map((learner) => ({ ...learner }))
   const codeOwnerMap = new Map()
   const studentNumberOwnerMap = new Map()
+  const passwordSet = new Set()
 
   for (const learner of nextLearners) {
     if (learner.learnerCode) codeOwnerMap.set(learner.learnerCode, learner.id)
     if (learner.studentNumber) studentNumberOwnerMap.set(learner.studentNumber, learner.id)
+    if (learner.portalPassword) passwordSet.add(normalizePortalPassword(learner.portalPassword))
   }
 
   let addedCount = 0
@@ -5635,6 +5829,7 @@ function mergeImportedLearnersIntoClassroom(classroom, importedLearners = []) {
     }
 
     const importedCode = normalizeLearnerCode(importedLearner?.learnerCode)
+    const importedPortalPassword = normalizePortalPassword(importedLearner?.portalPassword)
     const importedStudentNumber = normalizeStudentNumber(importedLearner?.studentNumber)
     const matchedLearner =
       (importedStudentNumber
@@ -5665,11 +5860,19 @@ function mergeImportedLearnersIntoClassroom(classroom, importedLearners = []) {
             .map((learner) => learner.studentNumber)
             .concat([...studentNumberOwnerMap.keys()].filter(Boolean))
         )
+      const nextPortalPassword =
+        isValidPortalPassword(importedPortalPassword) &&
+        (!passwordSet.has(importedPortalPassword) || normalizePortalPassword(matchedLearner.portalPassword) === importedPortalPassword)
+          ? importedPortalPassword
+          : isValidPortalPassword(matchedLearner.portalPassword)
+            ? normalizePortalPassword(matchedLearner.portalPassword)
+            : generateUniquePortalPassword({ learners: nextLearners.filter((learner) => learner.id !== matchedLearner.id) }, passwordSet)
 
       const changed =
         matchedLearner.name !== trimmedName ||
         matchedLearner.learnerCode !== nextCode ||
-        normalizeStudentNumber(matchedLearner.studentNumber) !== nextStudentNumber
+        normalizeStudentNumber(matchedLearner.studentNumber) !== nextStudentNumber ||
+        normalizePortalPassword(matchedLearner.portalPassword) !== nextPortalPassword
 
       if (!changed) {
         skippedCount += 1
@@ -5678,14 +5881,17 @@ function mergeImportedLearnersIntoClassroom(classroom, importedLearners = []) {
 
       codeOwnerMap.delete(matchedLearner.learnerCode)
       if (matchedLearner.studentNumber) studentNumberOwnerMap.delete(matchedLearner.studentNumber)
+      if (matchedLearner.portalPassword) passwordSet.delete(normalizePortalPassword(matchedLearner.portalPassword))
 
       matchedLearner.name = trimmedName
       matchedLearner.learnerCode = nextCode
       matchedLearner.studentNumber = nextStudentNumber
+      matchedLearner.portalPassword = nextPortalPassword
       matchedLearner.updatedAt = now
 
       codeOwnerMap.set(nextCode, matchedLearner.id)
       studentNumberOwnerMap.set(nextStudentNumber, matchedLearner.id)
+      passwordSet.add(nextPortalPassword)
       updatedCount += 1
       continue
     }
@@ -5698,10 +5904,15 @@ function mergeImportedLearnersIntoClassroom(classroom, importedLearners = []) {
       importedStudentNumber && !studentNumberOwnerMap.has(importedStudentNumber)
         ? importedStudentNumber
         : generateNextStudentNumber(nextLearners.map((learner) => learner.studentNumber).concat([...studentNumberOwnerMap.keys()]))
+    const nextPortalPassword =
+      isValidPortalPassword(importedPortalPassword) && !passwordSet.has(importedPortalPassword)
+        ? importedPortalPassword
+        : generateUniquePortalPassword({ learners: nextLearners }, passwordSet)
     const nextLearner = normalizeClassroomLearner({
       id: generateEntityId("class-learner"),
       name: trimmedName,
       learnerCode: nextCode,
+      portalPassword: nextPortalPassword,
       studentNumber: nextStudentNumber,
       createdAt: now,
       updatedAt: now,
@@ -5713,6 +5924,7 @@ function mergeImportedLearnersIntoClassroom(classroom, importedLearners = []) {
     nextLearners.push(nextLearner)
     codeOwnerMap.set(nextCode, nextLearner.id)
     studentNumberOwnerMap.set(nextStudentNumber, nextLearner.id)
+    passwordSet.add(nextPortalPassword)
     addedCount += 1
   }
 
@@ -9455,6 +9667,7 @@ io.on("connection", (socket) => {
       ownerUsername: getRoomOwnerUsername(room),
       ownerDisplayName: room.ownerDisplayName || room.ownerUsername || "Docent",
       learners: [],
+      assignments: [],
       createdAt: now,
       updatedAt: now,
     })
@@ -9533,7 +9746,7 @@ io.on("connection", (socket) => {
     })
   })
 
-  socket.on("host:classes:learner:add", async ({ classId, name, learnerCode, studentNumber }) => {
+  socket.on("host:classes:learner:add", async ({ classId, name, learnerCode, studentNumber, portalPassword }) => {
     const room = requireHostRoom(socket)
     if (!room) return
     await ensureClassroomsHydratedFromCloud()
@@ -9545,6 +9758,7 @@ io.on("connection", (socket) => {
     }
     const trimmedName = String(name ?? "").trim()
     const normalizedCode = normalizeLearnerCode(learnerCode)
+    const normalizedPortalPassword = normalizePortalPassword(portalPassword)
     if (!trimmedName) {
       socket.emit("host:error", { message: "Vul eerst de naam van de leerling in." })
       return
@@ -9562,12 +9776,27 @@ io.on("connection", (socket) => {
       socket.emit("host:error", { message: "Dit leerlingnummer is al in gebruik binnen deze klas." })
       return
     }
+    if (
+      normalizedPortalPassword &&
+      !isValidPortalPassword(normalizedPortalPassword)
+    ) {
+      socket.emit("host:error", { message: "Gebruik een portalwachtwoord van minimaal 4 tekens." })
+      return
+    }
+    if (
+      normalizedPortalPassword &&
+      classroom.learners.some((entry) => normalizePortalPassword(entry.portalPassword) === normalizedPortalPassword)
+    ) {
+      socket.emit("host:error", { message: "Dit portalwachtwoord is al in gebruik binnen deze klas." })
+      return
+    }
 
     const now = new Date().toISOString()
     const nextLearner = normalizeClassroomLearner({
       id: generateEntityId("class-learner"),
       name: trimmedName,
       learnerCode: normalizedCode || generateUniqueClassroomLearnerCode(classroom),
+      portalPassword: normalizedPortalPassword || generateUniquePortalPassword(classroom),
       studentNumber: normalizedStudentNumber || generateNextStudentNumber(classroom.learners.map((entry) => entry.studentNumber)),
       createdAt: now,
       updatedAt: now,
@@ -9583,7 +9812,7 @@ io.on("connection", (socket) => {
     })
   })
 
-  socket.on("host:classes:learner:update", async ({ classId, learnerId, name, learnerCode, studentNumber }) => {
+  socket.on("host:classes:learner:update", async ({ classId, learnerId, name, learnerCode, studentNumber, portalPassword }) => {
     const room = requireHostRoom(socket)
     if (!room) return
     await ensureClassroomsHydratedFromCloud()
@@ -9601,6 +9830,7 @@ io.on("connection", (socket) => {
 
     const trimmedName = String(name ?? currentLearner.name).trim()
     const normalizedCode = normalizeLearnerCode(learnerCode)
+    const normalizedPortalPassword = normalizePortalPassword(portalPassword)
     if (!trimmedName) {
       socket.emit("host:error", { message: "Vul eerst de naam van de leerling in." })
       return
@@ -9623,6 +9853,19 @@ io.on("connection", (socket) => {
       socket.emit("host:error", { message: "Dit leerlingnummer is al in gebruik binnen deze klas." })
       return
     }
+    if (normalizedPortalPassword && !isValidPortalPassword(normalizedPortalPassword)) {
+      socket.emit("host:error", { message: "Gebruik een portalwachtwoord van minimaal 4 tekens." })
+      return
+    }
+    if (
+      normalizedPortalPassword &&
+      classroom.learners.some(
+        (entry) => entry.id !== currentLearner.id && normalizePortalPassword(entry.portalPassword) === normalizedPortalPassword
+      )
+    ) {
+      socket.emit("host:error", { message: "Dit portalwachtwoord is al in gebruik binnen deze klas." })
+      return
+    }
 
     const now = new Date().toISOString()
     const nextClassroom = updateClassroomInMemory(classroom.id, (entry) => ({
@@ -9633,6 +9876,10 @@ io.on("connection", (socket) => {
               ...learnerEntry,
               name: trimmedName,
               learnerCode: normalizedCode || learnerEntry.learnerCode || generateUniqueClassroomLearnerCode(classroom),
+              portalPassword:
+                normalizedPortalPassword ||
+                normalizePortalPassword(learnerEntry.portalPassword) ||
+                generateUniquePortalPassword(classroom),
               studentNumber:
                 normalizedStudentNumber ||
                 normalizeStudentNumber(learnerEntry.studentNumber) ||
@@ -9650,6 +9897,87 @@ io.on("connection", (socket) => {
     }
     socket.emit("host:classes:success", {
       message: `Gegevens van ${trimmedName} zijn bijgewerkt.`,
+    })
+  })
+
+  socket.on("host:classes:assignment:create", async ({ classId, title, topic, questionCount, questionFormat, dueAt, attachments }) => {
+    const room = requireHostRoom(socket)
+    if (!room) return
+    await ensureClassroomsHydratedFromCloud()
+
+    const classroom = findClassroomById(classId)
+    if (!classroom) {
+      socket.emit("host:error", { message: "Deze klas bestaat niet meer." })
+      return
+    }
+
+    const trimmedTitle = String(title ?? "").trim()
+    const trimmedTopic = String(topic ?? "").trim()
+    if (trimmedTitle.length < 2 || trimmedTopic.length < 2) {
+      socket.emit("host:error", { message: "Geef zowel een titel als een onderwerp voor deze klasopdracht." })
+      return
+    }
+
+    let sourceContext = ""
+    try {
+      sourceContext = await buildAiAttachmentContext(attachments)
+    } catch (error) {
+      socket.emit("host:error", {
+        message: error instanceof Error ? error.message : "Het bronmateriaal voor deze opdracht kon niet worden gelezen.",
+      })
+      return
+    }
+
+    const now = new Date().toISOString()
+    const nextAssignment = normalizeClassroomAssignment({
+      id: generateEntityId("class-assignment"),
+      title: trimmedTitle,
+      topic: trimmedTopic,
+      topicLabel: cleanSelfPracticeTopicLabel(trimmedTopic),
+      questionCount: Math.max(6, Math.min(24, Number(questionCount) || 8)),
+      questionFormat,
+      dueAt,
+      sourceContext,
+      sourceFiles: normalizeAiPromptAttachments(attachments).map((entry) => entry.name).slice(0, MAX_AI_ATTACHMENT_COUNT),
+      ownerUsername: getRoomOwnerUsername(room),
+      ownerDisplayName: room.ownerDisplayName || room.ownerUsername || "Docent",
+      createdAt: now,
+      updatedAt: now,
+    })
+
+    const nextClassroom = updateClassroomInMemory(classroom.id, (entry) => ({
+      ...entry,
+      assignments: [nextAssignment, ...(entry.assignments || [])],
+      updatedAt: now,
+    }))
+
+    socket.emit("host:classes:success", {
+      message: `Opdracht ${nextAssignment.title} is klaargezet voor ${nextClassroom?.name || classroom.name}.`,
+    })
+  })
+
+  socket.on("host:classes:assignment:delete", async ({ classId, assignmentId }) => {
+    const room = requireHostRoom(socket)
+    if (!room) return
+    await ensureClassroomsHydratedFromCloud()
+
+    const classroom = findClassroomById(classId)
+    if (!classroom) {
+      socket.emit("host:error", { message: "Deze klas bestaat niet meer." })
+      return
+    }
+    const currentAssignment = (classroom.assignments || []).find((entry) => entry.id === String(assignmentId ?? "").trim()) || null
+    if (!currentAssignment) {
+      socket.emit("host:error", { message: "Deze opdracht bestaat niet meer." })
+      return
+    }
+    updateClassroomInMemory(classroom.id, (entry) => ({
+      ...entry,
+      assignments: (entry.assignments || []).filter((assignment) => assignment.id !== currentAssignment.id),
+      updatedAt: new Date().toISOString(),
+    }))
+    socket.emit("host:classes:success", {
+      message: `Opdracht ${currentAssignment.title} is verwijderd uit ${classroom.name}.`,
     })
   })
 
@@ -11493,12 +11821,12 @@ io.on("connection", (socket) => {
     await syncMathResumeIndexForPlayer(room, player)
   })
 
-  socket.on("player:portal:login", async ({ name, learnerCode }) => {
+  socket.on("player:portal:login", async ({ name, learnerCode, studentNumber, portalPassword }) => {
     await ensureClassroomsHydratedFromCloud()
-    const profile = resolveLearnerPortalProfile(name, learnerCode)
+    const profile = resolveLearnerPortalProfile({ name, learnerCode, studentNumber, portalPassword })
     if (!profile) {
       socket.emit("player:error", {
-        message: "We herkennen deze naam en leerlingcode nog niet. Vraag je docent om je eerst aan een klas toe te voegen.",
+        message: "We herkennen deze leerlinggegevens nog niet. Controleer je leerlingnummer/wachtwoord of naam/leerlingcode.",
       })
       return
     }
@@ -11620,6 +11948,82 @@ io.on("connection", (socket) => {
       providerLabel: "Lokale reserve",
       startedAt,
     })
+  })
+
+  socket.on("player:self-practice:start-assignment", async ({ name, learnerCode, studentNumber, portalPassword, assignmentId }) => {
+    await ensureClassroomsHydratedFromCloud()
+    const profile = resolveLearnerPortalProfile({ name, learnerCode, studentNumber, portalPassword })
+    if (!profile) {
+      socket.emit("player:error", {
+        message: "We herkennen deze leerlinggegevens nog niet. Controleer je leerlingnummer/wachtwoord of naam/leerlingcode.",
+      })
+      return
+    }
+
+    const classroom = findClassroomById(profile.classId)
+    const assignment = (classroom?.assignments || []).find((entry) => entry.id === String(assignmentId ?? "").trim()) || null
+    if (!assignment) {
+      socket.emit("player:error", { message: "Deze klasopdracht bestaat niet meer." })
+      return
+    }
+
+    const sessionId = generateEntityId("self-practice")
+    const startedAt = new Date().toISOString()
+
+    try {
+      const practiceResult = await withTimeout(
+        generateQuestions({
+          topic: `${assignment.topic}\nMaak hier een zelfstandige oefentoets van voor een leerling.`,
+          audience: profile.audience || "vmbo",
+          questionCount: assignment.questionCount,
+          questionFormat: assignment.questionFormat,
+          sourceContext: assignment.sourceContext || "",
+        }),
+        AI_ROUND_GENERATION_TIMEOUT_MS
+      )
+
+      upsertSelfPracticeSession(profile, {
+        sessionId,
+        title: assignment.title,
+        topic: assignment.topic,
+        topicLabel: assignment.topicLabel,
+        assignmentId: assignment.id,
+        assignmentTitle: assignment.title,
+        dueAt: assignment.dueAt || "",
+        sourceFiles: assignment.sourceFiles || [],
+        questionFormat: assignment.questionFormat,
+        providerLabel: practiceResult.providerLabel || "AI",
+        questionTotal: practiceResult.questions.length,
+        answeredCount: 0,
+        correctCount: 0,
+        status: "active",
+        startedAt,
+        updatedAt: startedAt,
+        finishedAt: "",
+        recentAnswers: [],
+      })
+      socket.emit("player:self-practice:started", {
+        sessionId,
+        title: assignment.title,
+        instructions: "Werk zelfstandig, kijk na elke vraag naar de uitleg en ga daarna verder.",
+        topic: assignment.topic,
+        topicLabel: assignment.topicLabel,
+        assignmentId: assignment.id,
+        assignmentTitle: assignment.title,
+        dueAt: assignment.dueAt || "",
+        sourceFiles: assignment.sourceFiles || [],
+        questionFormat: assignment.questionFormat,
+        questions: cloneQuestionsForStorage(practiceResult.questions),
+        providerLabel: practiceResult.providerLabel || "AI",
+        startedAt,
+      })
+      return
+    } catch (error) {
+      console.error("Klasopdracht genereren mislukt:", error instanceof Error ? error.message : error)
+      socket.emit("player:error", {
+        message: "We konden van deze opdracht nog geen goede oefentoets maken. Probeer het zo opnieuw of vraag je docent om de opdracht na te kijken.",
+      })
+    }
   })
 
   socket.on("player:self-practice:progress", async ({ name, learnerCode, session }) => {
