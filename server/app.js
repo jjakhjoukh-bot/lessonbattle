@@ -10298,11 +10298,13 @@ io.on("connection", (socket) => {
     emitStateToRoom(room)
   })
 
-  socket.on("host:generate", async ({ topic, audience, questionCount, teamNames, questionDurationSec, groupModeEnabled, attachments }) => {
+  socket.on("host:generate", async ({ topic, audience, questionCount, teamNames, questionDurationSec, groupModeEnabled, attachments, questionFormat, sourceMode }) => {
     const room = requireHostRoom(socket)
     if (!room) return
 
     const safeDuration = Math.max(8, Math.min(60, Number(questionDurationSec) || 20))
+    const safeSourceMode = String(sourceMode || "").trim() === "practice" ? "practice" : "battle"
+    const safeQuestionFormat = normalizePracticeQuestionFormat(questionFormat)
     socket.emit("host:generate:started", { message: "AI is bezig met de ronde..." })
 
     applyGroupModeSettings(room, groupModeEnabled, Array.isArray(teamNames) ? teamNames : DEFAULT_TEAMS)
@@ -10312,7 +10314,7 @@ io.on("connection", (socket) => {
     try {
       sourceContext = await buildAiAttachmentContext(attachments)
       generationResult = await withTimeout(
-        generateQuestions({ topic, audience, questionCount, sourceContext }),
+        generateQuestions({ topic, audience, questionCount, questionFormat: safeQuestionFormat, sourceContext }),
         AI_ROUND_GENERATION_TIMEOUT_MS
       )
       room.questions = generationResult.questions.map((question, index) => ({
@@ -10320,7 +10322,10 @@ io.on("connection", (socket) => {
         id: question.id || `battle-${index + 1}`,
         prompt: String(question.prompt || question.question_text || "").trim(),
         options: [...(question.options || [])],
-        durationSec: safeDuration,
+        durationSec:
+          safeSourceMode === "practice" && normalizePracticeQuestionFormat(question.questionType) === "typed"
+            ? 35
+            : safeDuration,
       }))
       console.info(
         `[AI] ronde voor room ${room.code} gegenereerd via ${generationResult.providerLabel}`
@@ -10361,19 +10366,20 @@ io.on("connection", (socket) => {
       questionStartedAt: null,
       status: room.questions.length ? "preview" : "idle",
       answerRevealed: false,
-      source: generationResult?.provider || "ai",
+      source: safeSourceMode === "practice" ? "practice" : generationResult?.provider || "ai",
       providerLabel: generationResult?.providerLabel || "AI",
       generatedAt: new Date().toISOString(),
       mode: "battle",
     }
     setCurrentQuestionPreview(room, room.questions.length ? 0 : -1)
 
-    recordSessionHistory(buildSessionHistoryEntryFromRoom(room, "battle"))
+    recordSessionHistory(buildSessionHistoryEntryFromRoom(room, safeSourceMode === "practice" ? "practice" : "battle"))
     emitStateToRoom(room)
     socket.emit("host:generate:success", {
       count: room.questions.length,
       provider: generationResult?.provider || null,
       providerLabel: generationResult?.providerLabel || null,
+      sourceType: safeSourceMode,
     })
   })
 
@@ -11502,6 +11508,9 @@ io.on("connection", (socket) => {
     room.math = createEmptyMathState()
     room.game = createIdleGameState(Boolean(room.game?.groupModeEnabled))
     emitStateToRoom(room)
+    socket.emit("host:reset:success", {
+      message: `Sessie leeggemaakt. ${room.players.length} leerling${room.players.length === 1 ? "" : "en"} blijven verbonden aan deze sessiecode.`,
+    })
   })
 
   socket.on("host:remove-player", async ({ playerId }) => {

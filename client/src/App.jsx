@@ -1128,7 +1128,9 @@ function HostPage() {
     Boolean(game.status === "finished")
   const liveWorkspaceId =
     game.mode === "battle"
-      ? "battle"
+      ? game.source === "practice"
+        ? "practice"
+        : "battle"
       : game.mode === "math"
         ? "math"
         : game.mode === "lesson"
@@ -1147,20 +1149,36 @@ function HostPage() {
       : game.mode === "math"
         ? `${game.math?.players?.length || 0} leerlingen oefenen`
         : game.mode === "battle"
-          ? game.status === "finished"
-            ? "Battle afgerond"
-            : game.totalQuestions
-              ? `${game.totalQuestions} vragen klaar`
-              : "Battle nog niet gestart"
+          ? game.source === "practice"
+            ? game.status === "finished"
+              ? "Oefentoets afgerond"
+              : game.totalQuestions
+                ? `${game.totalQuestions} oefenvragen klaar`
+                : "Oefentoets nog niet gestart"
+            : game.status === "finished"
+              ? "Battle afgerond"
+              : game.totalQuestions
+                ? `${game.totalQuestions} vragen klaar`
+                : "Battle nog niet gestart"
         : "Nog geen live sessie"
   const workspaceHasPreparedContent = (workspaceId) => {
     if (workspaceId === "math") {
       return game.mode === "math" && (Boolean(game.math?.players?.length) || Boolean(players.length))
     }
     if (workspaceId === "battle") {
-      return game.mode === "battle" && (Boolean(game.question) || Boolean(game.questions?.length) || game.status === "finished")
+      return (
+        game.mode === "battle" &&
+        game.source !== "practice" &&
+        (Boolean(game.question) || Boolean(game.questions?.length) || game.status === "finished")
+      )
     }
-    if (workspaceId === "lesson" || workspaceId === "presentation" || workspaceId === "practice") {
+    if (workspaceId === "practice") {
+      return (
+        (game.mode === "battle" && game.source === "practice" && (Boolean(game.question) || Boolean(game.questions?.length) || game.status === "finished")) ||
+        (game.mode === "lesson" && Boolean(game.lesson?.practiceTest?.questions?.length))
+      )
+    }
+    if (workspaceId === "lesson" || workspaceId === "presentation") {
       return (
         game.mode === "lesson" &&
         (Boolean(game.lesson?.phases?.length) ||
@@ -1571,10 +1589,12 @@ function HostPage() {
         setHostSession(DEFAULT_HOST_SESSION)
       }
     }
-    const onSuccess = ({ count, providerLabel }) => {
+    const onSuccess = ({ count, providerLabel, sourceType }) => {
       setShowHostPrepPanel(false)
       setStatus(
-        providerLabel === "Adaptieve rekenroute"
+        sourceType === "practice"
+          ? `${count} oefenvragen klaar${providerLabel ? ` via ${providerLabel}` : ""}. Leerlingen kunnen direct starten zonder dat je eerst een les hoeft te openen.`
+          : providerLabel === "Adaptieve rekenroute"
           ? `De rekenroute staat live. Leerlingen krijgen eerst ${count} instapvragen en gaan daarna adaptief verder.`
           : `${count} AI-vragen klaar${providerLabel ? ` via ${providerLabel}` : ""}. De eerste vraag staat klaar in docent-preview. Klik op Start vraag om hem live te zetten.`
       )
@@ -1653,6 +1673,10 @@ function HostPage() {
       writeHostLastRoomCode(username, roomCode)
       setStatus(`Lokale backup hersteld${title ? `: ${title}` : ""}. Sessiecode ${roomCode}.`)
     }
+    const onResetSuccess = ({ message }) => {
+      setShowHostPrepPanel(true)
+      setStatus(message || "Sessie leeggemaakt. Leerlingen blijven verbonden.")
+    }
 
     socket.on("host:login:success", onLoginSuccess)
     socket.on("host:configure:success", onConfigureSuccess)
@@ -1682,6 +1706,7 @@ function HostPage() {
     socket.on("host:question-image:success", onQuestionImageSuccess)
     socket.on("host:room:backup", onRoomBackup)
     socket.on("host:backup:restore:success", onBackupRestoreSuccess)
+    socket.on("host:reset:success", onResetSuccess)
 
     return () => {
       socket.off("host:login:success", onLoginSuccess)
@@ -1712,6 +1737,7 @@ function HostPage() {
       socket.off("host:question-image:success", onQuestionImageSuccess)
       socket.off("host:room:backup", onRoomBackup)
       socket.off("host:backup:restore:success", onBackupRestoreSuccess)
+      socket.off("host:reset:success", onResetSuccess)
     }
   }, [preloginWorkspaceChoice])
 
@@ -1994,6 +2020,21 @@ function HostPage() {
     })
   }
 
+  const generatePractice = () => {
+    setStatus("AI bouwt de oefentoets op...")
+    socket.emit("host:generate", {
+      topic,
+      audience,
+      questionCount: practiceQuestionCount,
+      questionDurationSec,
+      questionFormat: practiceQuestionFormat,
+      sourceMode: "practice",
+      teamNames: preparedTeamNames,
+      groupModeEnabled: groupModeEnabledDraft,
+      attachments: hostAiAttachments,
+    })
+  }
+
   const generateMathSession = () => {
     setStatus("Adaptieve rekenroute wordt klaargezet...")
     socket.emit("host:start-math", {
@@ -2013,6 +2054,11 @@ function HostPage() {
   const showBattleAnswer = () => {
     setStatus("Juiste antwoord wordt getoond...")
     socket.emit("host:show-answer")
+  }
+
+  const resetCurrentSession = () => {
+    setStatus("Sessie wordt leeggemaakt. Leerlingen blijven verbonden aan deze sessiecode.")
+    socket.emit("host:reset")
   }
 
   const generateLesson = () => {
@@ -2901,9 +2947,11 @@ function HostPage() {
                 value={topic}
                 onChange={(event) => setTopic(event.target.value)}
                 placeholder={
-                  controlMode === "lesson"
-                    ? "Bijv. procenten rekenen met korting voor vmbo basis, 45 minuten, veel interactie"
-                    : "Bijv. economie vmbo leerjaar 3 over verzekeringen en sparen"
+                  selectedSuiteMode === "practice"
+                    ? "Bijv. economie vmbo leerjaar 3 over verzekeringen en sparen"
+                    : controlMode === "lesson"
+                      ? "Bijv. procenten rekenen met korting voor vmbo basis, 45 minuten, veel interactie"
+                      : "Bijv. economie vmbo leerjaar 3 over verzekeringen en sparen"
                 }
               />
             </label>
@@ -3150,7 +3198,15 @@ function HostPage() {
             <button
               className="button-primary"
               disabled={!hostSession.authenticated}
-              onClick={controlMode === "math" ? generateMathSession : controlMode === "lesson" ? generateLesson : generate}
+              onClick={
+                controlMode === "math"
+                  ? generateMathSession
+                  : selectedSuiteMode === "practice"
+                    ? generatePractice
+                    : controlMode === "lesson"
+                      ? generateLesson
+                      : generate
+              }
               type="button"
             >
               {controlMode === "lesson" || controlMode === "math" ? buildActionLabel : "Ronde klaarzetten"}
@@ -3158,7 +3214,7 @@ function HostPage() {
           </div>
           </div>
 
-          {controlMode === "lesson" ? (
+          {controlMode === "lesson" && selectedSuiteMode !== "practice" ? (
             <LessonSummaryCard
               lesson={game.lesson}
               onSave={game.lesson?.phases?.length ? saveCurrentLesson : null}
@@ -3179,7 +3235,15 @@ function HostPage() {
           <div className="section-head">
             <div className="host-panel-heading">
               <span className="host-panel-kicker">Live in de klas</span>
-              <h2>{game.mode === "lesson" ? "Live les" : game.mode === "math" ? "Live rekenen" : "Live vraag"}</h2>
+              <h2>
+                {game.mode === "lesson"
+                  ? "Live les"
+                  : game.mode === "math"
+                    ? "Live rekenen"
+                    : game.source === "practice"
+                      ? "Live oefentoets"
+                      : "Live vraag"}
+              </h2>
             </div>
             <div className="pill-row">
               <span className="pill timer-pill">
@@ -3208,15 +3272,25 @@ function HostPage() {
                       : "Nog niet gestart"
                   : game.mode === "math"
                     ? `${players.length} leerlingen in route`
-                  : game.status === "preview"
-                    ? `Preview ${game.currentQuestionIndex + 1} / ${game.totalQuestions}`
-                  : game.status === "live"
-                    ? `Vraag ${game.currentQuestionIndex + 1} / ${game.totalQuestions}`
-                    : game.status === "revealed"
-                      ? `Antwoord ${game.currentQuestionIndex + 1} / ${game.totalQuestions}`
-                    : game.status === "finished"
-                      ? "Ronde klaar"
-                      : "Nog niet gestart"}
+                  : game.source === "practice"
+                    ? game.status === "preview"
+                      ? `Oefentoets ${game.currentQuestionIndex + 1} / ${game.totalQuestions}`
+                      : game.status === "live"
+                        ? `Vraag ${game.currentQuestionIndex + 1} / ${game.totalQuestions}`
+                        : game.status === "revealed"
+                          ? `Uitleg ${game.currentQuestionIndex + 1} / ${game.totalQuestions}`
+                          : game.status === "finished"
+                            ? "Oefentoets klaar"
+                            : "Nog niet gestart"
+                    : game.status === "preview"
+                      ? `Preview ${game.currentQuestionIndex + 1} / ${game.totalQuestions}`
+                      : game.status === "live"
+                        ? `Vraag ${game.currentQuestionIndex + 1} / ${game.totalQuestions}`
+                        : game.status === "revealed"
+                          ? `Antwoord ${game.currentQuestionIndex + 1} / ${game.totalQuestions}`
+                          : game.status === "finished"
+                            ? "Ronde klaar"
+                            : "Nog niet gestart"}
               </span>
             </div>
           </div>
@@ -3262,8 +3336,8 @@ function HostPage() {
                     : "Volgende vraag"}
               </button>
             ) : null}
-            <button className="button-ghost" disabled={!hostSession.authenticated} onClick={() => socket.emit("host:reset")} type="button">
-              Nieuwe ronde
+            <button className="button-secondary" disabled={!hostSession.authenticated} onClick={resetCurrentSession} type="button">
+              Sessie beëindigen
             </button>
           </div>
 
